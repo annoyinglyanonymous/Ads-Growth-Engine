@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Bash(python -m intel *)",
+      "Bash(python -m pytest*)",
+      "Bash(python ads_migrate.py --status)",
+      "Bash(python ads_migrate.py --dry-run)",
+      "Bash(python ads_migrate.py --print *)",
+      "Bash(python scripts/seed_angles.py*)",
+      "Bash(python scripts/scan_secrets.py*)"
+    ],
+    "deny": [
+      "Bash(python ads_migrate.py --apply*)",
+      "Bash(psql *)",
+      "Bash(python -c *)",
+      "Bash(python3 -c *)",
+      "Bash(py -c *)",
+      "Bash(*python.exe -c *)",
+      "Bash(*/python -c *)",
+      "Bash(.venv/Scripts/python.exe -c *)",
+      "Bash(.venv/bin/python -c *)"
+    ]
+  }
+}

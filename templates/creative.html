@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Creative — Ads Intelligence{% endblock %}
+{% block page_title %}Fatigue{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  Five named symptoms and their count, each ad's most recent {{ window }} days
+  against the {{ window }} before. The score is a count, not a weighting —
+  which symptom fired matters more than the total.
+</div>
+{% endblock %}
+
+{% block toolbar %}
+<form class="filters" method="get" action="/creative">
+  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
+  <label>Window
+    <select name="window">
+      {% for n in [3, 7, 14] %}
+        <option value="{{ n }}" {{ 'selected' if n == window }}>{{ n }} days</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Min spend<input name="min_spend" value="{{ min_spend }}" size="6"></label>
+  <label>Low-volume
+    <select name="unconfident">
+      <option value="0" {{ 'selected' if not unconfident }}>hide</option>
+      <option value="1" {{ 'selected' if unconfident }}>show</option>
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+<div class="caveat">
+  <strong>Daily frequency.</strong>
+  <span>{{ d.frequency_note }} An ad at 1.4 has not been seen 1.4 times by each
+    person — it was shown 1.4 times per person <em>that day</em>.</span>
+</div>
+
+{% if d.suppressed_unconfident and not unconfident %}
+  <div class="card quiet" style="margin-bottom:18px">
+    {{ d.suppressed_unconfident }} ad(s) show symptoms but fall below the spend
+    or impression floor, so the score would be arithmetically correct and
+    meaningless. <a href="?brand={{ d.brand }}&amp;window={{ window }}&amp;unconfident=1">Show them anyway</a>.
+  </div>
+{% endif %}
+
+<section class="stage">
+  {% if not d.rows %}
+    <div class="empty">
+      No ad ran in both the recent {{ window }} days and the {{ window }} before
+      them, so there is nothing to compare. That is the usual answer on a new
+      account.
+    </div>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Ad</th><th>Symptoms</th><th>Link CTR</th>
+        <th class="num">Score</th><th class="num">Spend</th>
+        <th class="num">CPA now</th><th class="num">CPA before</th>
+        <th class="num">Daily freq</th>
+      </tr></thead>
+      <tbody>
+      {% for r in d.rows %}
+        <tr>
+          <td class="name">
+            <a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
+            <div class="why">
+              {{ r.optimization_goal or 'no goal recorded' }}
+              {% if not r.confident %} · low volume{% endif %}
+            </div>
+          </td>
+          <td>
+            {#- The word travels with the mark. The palette is one hue, so a
+                colour alone cannot say which symptom this is. -#}
+            {% for flag, label in [
+                 (r.link_ctr_decline, 'CTR down'),
+                 (r.cpm_rise,         'CPM up'),
+                 (r.cpa_rise,         'CPA up'),
+                 (r.frequency_rise,   'freq up'),
+                 (r.ranking_drop,     'ranking down')] %}
+              {% if flag %}<span class="pill warn">{{ label }}</span> {% endif %}
+            {% endfor %}
+            {% if r.score == 0 %}<span class="muted small">none</span>{% endif %}
+          </td>
+          <td>{{ sparkline(spark.get(r.ad_key, [])) | safe }}</td>
+          <td class="num"><strong>{{ r.score }}</strong>/5</td>
+          <td class="num">{{ money(r.spend_recent) }}</td>
+          <td class="num">{{ money(r.recent.rates.cpa) if r.recent.rates and r.recent.rates.cpa else '--' }}</td>
+          <td class="num">{{ money(r.prior.rates.cpa) if r.prior.rates and r.prior.rates.cpa else '--' }}</td>
+          <td class="num">
+            {{ num(r.recent.daily_frequency_avg, 2) }}
+            <div class="why">was {{ num(r.prior.daily_frequency_avg, 2) }}</div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% block title %}Overview — Ads Intelligence{% endblock %}
+{% block page_title %}Overview{% endblock %}
+
+{% block toolbar %}
+<form class="filters" method="get" action="/">
+  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
+  <label>Window
+    <select name="days">
+      {% for n in [7, 14, 28, 60, 90] %}
+        <option value="{{ n }}" {{ 'selected' if n == days }}>{{ n }} days</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Level
+    <select name="level">
+      {% for v, t in [('ad','Ad'), ('ad_group','Ad group'), ('campaign','Campaign')] %}
+        <option value="{{ v }}" {{ 'selected' if v == level }}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">{{ ico.i('filters') }}Apply</button>
+</form>
+{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  {{ d.since }} to {{ d.until }} &middot; {{ d.days }} days &middot;
+  {{ d.row_count }} {{ level.replace('_', ' ') }}{{ 's' if d.row_count != 1 }} &middot;
+  every rate is the window total over the window total, never an average of daily rates
+</div>
+{% endblock %}
+
+{% block body %}
+
+{% if agg.mixed_currency %}
+  <div class="caveat">{{ ico.i('warn') }}<span><strong>Mixed currency.</strong>
+    This brand's accounts do not all report in one currency, so the totals
+    below add different units together. Filter to one account before reading
+    them.</span></div>
+{% endif %}
+
+<div class="grid">
+
+  {#- Row 1: the four additive headline numbers, and CPA on its own. -#}
+  <section class="card span2" aria-label="Headline metrics">
+    <div class="kpis">
+      <div class="kpi">
+        <div class="k">Spend</div>
+        <div class="v">{{ money(agg.spend) }}</div>
+        {#- Spend has no merit direction. More spend is not better and not
+            worse, so this delta gets an arrow and the muted colour -- the
+            same reason a weather report does not colour rainfall red. -#}
+        <div class="delta {{ 'up' if deltas.spend > 0 else 'down' if deltas.spend < 0 else 'flat' }}">
+          {{ money(deltas.spend) }} vs prior {{ d.days }}d</div>
+      </div>
+      <div class="kpi">
+        <div class="k">Conversions</div>
+        <div class="v">{{ num(agg.conversions) }}</div>
+        <div class="delta {{ 'up good' if deltas.conversions > 0 else 'down bad' if deltas.conversions < 0 else 'flat' }}">
+          {{ num(deltas.conversions) }} vs prior {{ d.days }}d</div>
+      </div>
+      <div class="kpi">
+        <div class="k">Link CTR</div>
+        <div class="v">{{ pct(agg.link_ctr) }}</div>
+        <div class="delta flat">link clicks, not all clicks</div>
+      </div>
+      <div class="kpi">
+        <div class="k">CPM</div>
+        <div class="v">{{ money(agg.cpm) }}</div>
+        <div class="delta flat">{{ num(agg.impressions) }} impressions</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card dark" aria-label="Cost per acquisition">
+    <div class="k" style="font-size:11.5px">CPA</div>
+    <div class="big" style="margin-top:2px">{{ money(agg.cpa) }}</div>
+    {#- No delta on this tile, and that is the point. A per-ad CPA delta is
+        not additive, so summing one produces a confident wrong number. The
+        honest brand-level movement is a decomposition and it has its own
+        page. -#}
+    <div class="n" style="margin-top:6px">
+      A brand CPA delta is not the sum of its ads&rsquo; deltas &mdash; it is a
+      decomposition.</div>
+    <a class="btn ghost" style="margin-top:12px"
+       href="/why?brand={{ d.brand }}">What moved it{{ ico.i('arrow-right') }}</a>
+    <div class="n" style="margin-top:10px">
+      {{ deltas.appeared }} started, {{ deltas.disappeared }} stopped this window.</div>
+  </section>
+
+  {#- Row 2: two charts, never one with two y-axes. Spend and conversions on
+      a shared plot would cross wherever the two arbitrary scales happen to
+      cross, and a reader takes that crossover for a finding. -#}
+  <section class="card span2" aria-label="Spend per day">
+    <div class="card-head"><h2 class="card-t">Spend per day</h2>
+      <span class="more">{{ d.days }} days</span></div>
+    {{ line_chart(spend_series, kind='spend') | safe }}
+  </section>
+
+  <section class="card" aria-label="Conversions per day">
+    <div class="card-head"><h2 class="card-t">Conversions per day</h2></div>
+    <div class="n" style="margin-bottom:6px">as defined in
+      <code>ads.conversion_definition</code></div>
+    {{ line_chart(conv_series, kind='count') | safe }}
+  </section>
+
+  {#- Row 3: the table, and the ask box beside it. -#}
+  <section class="card span2 pad0" aria-label="Breakdown">
+    <div class="card-head" style="margin-bottom:8px">
+      <h2 class="card-t">By {{ level.replace('_', ' ') }}</h2>
+      <span class="more">ranked by spend</span>
+    </div>
+
+    {% if not d.rows %}
+      <div class="empty" style="margin:8px 0 16px">
+        Nothing imported for this window. A pull is a command somebody runs,
+        not something this page fires:
+        <code>python -m meta_ads --pull --brand {{ d.brand }}</code>
+        in the growth-engine repo.
+      </div>
+    {% else %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Name</th><th>Angle</th>
+          <th class="num">Spend</th><th class="num">Conv</th><th class="num">CPA</th>
+          <th class="num">Link CTR</th><th class="num">CPM</th><th class="num">Days</th>
+          <th class="num">Review</th>
+        </tr></thead>
+        <tbody>
+        {% for r in d.rows %}
+          <tr>
+            <td class="name">
+              <span class="thumb" aria-hidden="true">{{ ico.i('creative', 12) }}</span>
+              {% if level == 'ad' %}
+                <a href="/ad/{{ r.entity_key }}?brand={{ d.brand }}">{{ r.entity_name or r.platform_id }}</a>
+              {% else %}{{ r.entity_name or r.platform_id }}{% endif %}
+              {% if r.optimization_goal %}
+                {#- Carried down to the fact so a CPA can be segmented on it.
+                    Link clicks and conversions are different animals. -#}
+                <div class="why">{{ r.optimization_goal }}{% if r.format %} &middot; {{ r.format }}{% endif %}</div>
+              {% elif r.format %}<div class="why">{{ r.format }}</div>{% endif %}
+            </td>
+            <td>
+              {% if r.angle_name %}
+                <span class="pill quiet">{{ r.angle_name }}</span>
+              {% elif r.angle_observed %}
+                <span class="subtle small" title="a reviewer's handle, not yet mapped to the bank">{{ r.angle_observed }}</span>
+              {% else %}<span class="subtle">&mdash;</span>{% endif %}
+            </td>
+            <td class="num">{{ money(r.spend) }}</td>
+            <td class="num">{{ num(r.conversions) }}</td>
+            {#- NULL, never 0. A zero would sort to the top of a cheapest-CPA
+                column and read as the best ad on the page. -#}
+            <td class="num">{{ money(r.rates.cpa) if r.rates and r.rates.cpa else '—' }}</td>
+            <td class="num">{{ pct(r.rates.link_ctr) if r.rates and r.rates.link_ctr else '—' }}</td>
+            <td class="num">{{ money(r.rates.cpm) if r.rates and r.rates.cpm else '—' }}</td>
+            <td class="num">{{ r.days }}</td>
+            <td class="num">{{ num(r.review_overall, 1) if r.review_overall else '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+
+  {% include "_ask.html" %}
+
+</div>
+{% endblock %}

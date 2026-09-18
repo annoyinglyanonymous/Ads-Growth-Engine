@@ -1,0 +1,49 @@
+{#- The ask box.
+
+    It is a form with a GET action, so it works with JavaScript switched off:
+    submitting navigates to /ask and the answer renders as a page. app.js then
+    intercepts it and fetches /ask.json so the answer appears in place. The
+    enhancement is the inline rendering, never the ability to ask -- a console
+    that needs a script to function is a console that is blank when the script
+    is blocked.
+
+    Everything it prints is a verb's own output. There is no model here and no
+    sentence is generated, which is why it cannot contradict the card above it.
+-#}
+{% import "_icons.html" as ico %}
+
+<section class="card ask" id="ask" aria-labelledby="ask-t">
+  <div class="card-head">
+    <h2 class="card-t" id="ask-t">Ask</h2>
+    <span class="more">read-only</span>
+  </div>
+  <div class="n">Routes your question to one of the same verbs this page
+    calls. It reports; it does not conclude.</div>
+
+  <div class="ask-log" id="ask-log" aria-live="polite" aria-atomic="false">
+    <div class="ask-row">
+      <span class="ask-orb" aria-hidden="true"></span>
+      <div class="ask-bubble">
+        Try <em>why did CPA move</em>, <em>what is fatiguing</em>, or
+        <em>which angles have we never tested</em>. Add a window like
+        <em>last 14 days</em> and it will use it.
+      </div>
+    </div>
+  </div>
+
+  <div class="ask-sugg">
+    <button type="button" data-ask="why did CPA move in the last 7 days">Why did CPA move?</button>
+    <button type="button" data-ask="what creatives are fatiguing">What's fatiguing?</button>
+    <button type="button" data-ask="which angles have we never tested">Untested angles</button>
+    <button type="button" data-ask="status">Is this data fresh?</button>
+  </div>
+
+  <form class="ask-form" id="ask-form" method="get" action="/ask">
+    <input type="hidden" name="brand" value="{{ brand or '' }}">
+    {{ ico.i('ask') }}
+    <label class="ah-sr-only" for="ask-q" hidden>Ask a question</label>
+    <input id="ask-q" name="q" type="text" autocomplete="off"
+           placeholder="Ask about spend, CPA, fatigue, angles&hellip;">
+    <button type="submit" aria-label="Ask">{{ ico.i('arrow-up') }}</button>
+  </form>
+</section>

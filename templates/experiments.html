@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Experiments — Ads Intelligence{% endblock %}
+{% block page_title %}Experiments{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  What we decided to test, and what would have counted as an answer — both
+  registered before any number existed. There is no winner column: the result
+  reports whether the registered effect was cleared, and naming a winner is a
+  decision a person makes.
+</div>
+{% endblock %}
+
+{% block toolbar %}
+<form class="filters" method="get" action="/experiments">
+  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+
+{% if d.awaiting_launch %}
+  <div class="card quiet" style="margin-bottom:18px">
+    {{ d.awaiting_launch }} proposed experiment(s) have never been launched. A
+    proposal nobody ran is a different problem from a test that came back
+    inconclusive.
+  </div>
+{% endif %}
+
+{% if not d.rows %}
+  <div class="empty">
+    Nothing has been proposed yet. An experiment is filed with
+    <code>python -m intel record --kind experiment --json &lt;path&gt;</code>,
+    and launched by a person in Ads Manager.
+  </div>
+{% else %}
+<div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th>Name</th><th>State</th><th>Hypothesis</th><th>Metric</th>
+      <th class="num">Min effect</th><th class="num">Min spend/arm</th>
+      <th>Arms</th><th>Conclusion</th>
+    </tr></thead>
+    <tbody>
+    {% for r in d.rows %}
+      <tr>
+        <td class="name"><strong>{{ r.name }}</strong>
+          <div class="why">{{ r.question }}</div></td>
+        <td>
+          {% set tone = {'concluded':'ok','running':'warn',
+                         'proposed':'quiet','awaiting_conclusion':'warn'}[r.state] %}
+          <span class="pill {{ tone }}">{{ r.state.replace('_',' ') }}</span>
+        </td>
+        <td class="small">{{ r.hypothesis | truncate(90) }}</td>
+        <td><span class="pill quiet">{{ r.primary_metric }}</span></td>
+        <td class="num">{{ num(r.minimum_effect_pct, 1) }}%</td>
+        <td class="num">{{ money(r.minimum_spend_per_arm) }}</td>
+        <td class="small">
+          {% for a in (r.arms or []) %}
+            {{ a.label }}{% if not loop.last %} vs {% endif %}
+          {% endfor %}
+        </td>
+        <td class="small">
+          {% if r.conclusion %}{{ r.conclusion }}
+            <div class="why">{{ r.concluded_by }}</div>
+          {% else %}<span class="muted">--</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

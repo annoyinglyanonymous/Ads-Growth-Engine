@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Angles — Ads Intelligence{% endblock %}
+{% block page_title %}Angles{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  What each angle cost, and — the part free-text handles cannot answer —
+  which ones have never run at all.
+</div>
+{% endblock %}
+
+{% block toolbar %}
+<form class="filters" method="get" action="/angles">
+  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
+  <label>Window
+    <select name="days">
+      {% for n in [30, 90, 180, 365] %}
+        <option value="{{ n }}" {{ 'selected' if n == days }}>{{ n }} days</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Product<input name="product" value="{{ d.product or '' }}" placeholder="all"></label>
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+
+<div class="stats">
+  <div class="stat"><div class="k">Tested</div>
+    <div class="v">{{ d.tested | length }}</div></div>
+  <div class="stat"><div class="k">Under-spent</div>
+    <div class="v">{{ d.under_spent | length }}</div>
+    <div class="sub">ran, but not enough to read</div></div>
+  <div class="stat"><div class="k">Never run</div>
+    <div class="v">{{ d.never_run | length }}</div></div>
+  <div class="stat"><div class="k">Untagged ads</div>
+    <div class="v">{{ queue.row_count }}</div>
+    <div class="sub">{{ money(queue.untagged_spend_in_window) }} unattributed</div></div>
+</div>
+
+{% if bars %}
+<section class="stage">
+  <div class="stage-head">
+    <h2>CPA by angle</h2>
+    <span class="state">sorted; identity is the label, not the colour</span>
+  </div>
+  <div class="card">
+    {{ bar_chart(bars, kind='cpa') | safe }}
+    <p class="small muted" style="margin:10px 0 0">
+      Only comparable between angles whose ads ran under the same optimisation
+      goal. An ad group optimising link clicks and one optimising conversions
+      are different animals, however similar the copy.
+    </p>
+  </div>
+</section>
+{% endif %}
+
+<div class="boards">
+  <section class="board">
+    <header>
+      <h2>Never run</h2>
+      <div class="note">the set difference the bank exists for</div>
+    </header>
+    <div class="body">
+      {% if not d.never_run %}
+        <p class="muted small">Every active angle has run in this window.</p>
+      {% else %}
+        {% for r in d.never_run %}
+          <div style="margin-bottom:10px">
+            <span class="pill quiet">{{ r.family }}</span>
+            <strong>{{ r.angle_name }}</strong>
+            {% set prior = d.prior_experiments | selectattr('angle_slug', 'equalto', r.angle_slug) | list %}
+            {% if prior %}
+              <div class="why">
+                tested before: {{ prior[0].name }}
+                {% if prior[0].conclusion %}— {{ prior[0].conclusion }}
+                {% else %}— no conclusion recorded{% endif %}
+              </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="board">
+    <header>
+      <h2>Unmapped handles</h2>
+      <div class="note">what reviewers called things, with no angle behind it yet</div>
+    </header>
+    <div class="body">
+      {% if not candidates %}
+        <p class="muted small">Every handle a reviewer wrote maps to an angle.</p>
+      {% else %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Observed</th><th class="num">Reviews</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {% for c in candidates[:12] %}
+                <tr>
+                  <td>{{ c.observed }}</td>
+                  <td class="num">{{ c.reviews }}</td>
+                  <td class="small muted">{{ c.last_seen.strftime('%Y-%m-%d') }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="small muted" style="margin:10px 0 0">
+          Mapping one of these is a decision about vocabulary, so it is filed by
+          a person rather than by a tagging pass.
+        </p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+
+<hr class="sep">
+
+<section class="stage">
+  <div class="stage-head">
+    <h2>Untagged ads</h2>
+    <span class="state">ranked by spend — tagging follows the money</span>
+  </div>
+  {% if not queue.rows %}
+    <div class="empty">Every ad that spent in this window carries a tag.</div>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Ad</th><th>Headline</th><th class="num">Spend</th>
+        <th class="num">Conv</th><th>Can be inherited</th>
+      </tr></thead>
+      <tbody>
+      {% for r in queue.rows %}
+        <tr>
+          <td class="name"><a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name }}</a></td>
+          <td class="small">{{ (r.first_headline or '--') | truncate(60) }}</td>
+          <td class="num">{{ money(r.spend) }}</td>
+          <td class="num">{{ num(r.conversions) }}</td>
+          <td>
+            {% if r.inheritable %}
+              <span class="pill ok">{{ r.campaign_angle_name }}</span>
+              <div class="why">from the approved campaign angle — no judgement needed</div>
+            {% elif r.angle_observed %}
+              <span class="muted small">reviewer said "{{ r.angle_observed }}"</span>
+            {% else %}
+              <span class="muted small">needs reading</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

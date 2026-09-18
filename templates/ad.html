@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}{{ ad.ad.name }} — Ads Intelligence{% endblock %}
+{% block page_title %}{{ ad.ad.name }}{% endblock %}
+
+{% block page_sub %}
+{% set a = ad.ad %}
+<div class="sub">
+  <span class="eyebrow">{{ a.campaign_name or 'campaign' }} ·
+    {{ a.ad_group_name or 'ad group' }}</span><br>
+  {{ a.format }} · {{ a.effective_status }} ·
+  first seen {{ a.first_seen_at.strftime('%Y-%m-%d') }},
+  last seen {{ a.last_seen_at.strftime('%Y-%m-%d') }}
+  {% if a.optimization_goal %} · optimising {{ a.optimization_goal }}{% endif %}
+</div>
+{% endblock %}
+
+{% block body %}
+{% set a = ad.ad %}
+
+{% if ad.tag_is_stale %}
+  <div class="caveat"><strong>Stale tag.</strong>
+    <span>This ad's copy has changed since it was tagged, so the angle below
+      describes wording that is no longer running. Re-tag it before counting it
+      toward an angle.</span></div>
+{% endif %}
+
+<div class="boards">
+  <section class="board">
+    <header><h2>Copy</h2>
+      <div class="note">as Meta reports it, across all creative shapes</div></header>
+    <div class="body">
+      {% if a.thumbnail_url %}
+        <img src="{{ a.thumbnail_url }}" alt="" style="border-radius:8px;margin-bottom:12px;max-height:180px">
+      {% endif %}
+      {% if ad.copy and ad.copy.texts %}
+        {% for t in ad.copy.texts %}
+          <div style="margin-bottom:9px">
+            <span class="pill quiet">{{ t.field }}{% if t.ordinal %} {{ t.ordinal }}{% endif %}</span>
+            <div style="margin-top:3px">{{ t.text }}</div>
+          </div>
+        {% endfor %}
+      {% elif a.needs_page_scope %}
+        <p class="muted small">This is a boosted page post, so its copy is not
+          readable through the ads API.</p>
+      {% else %}
+        <p class="muted small">No copy imported.</p>
+      {% endif %}
+      <hr class="sep">
+      <p class="small">
+        <strong>CTA button:</strong> {{ a.cta or '--' }}<br>
+        <strong>Destination:</strong>
+        {% if a.link_url %}<span class="mono">{{ a.link_url | truncate(90) }}</span>
+        {% else %}--{% endif %}<br>
+        <strong>utm_content:</strong> <span class="mono">{{ a.utm_content or '--' }}</span>
+      </p>
+    </div>
+  </section>
+
+  <section class="board">
+    <header><h2>What we think it is</h2></header>
+    <div class="body">
+      {% if ad.facet %}
+        <p>
+          <span class="pill quiet">{{ ad.facet.family or 'angle' }}</span>
+          <strong>{{ ad.facet.angle_name or 'no angle' }}</strong>
+        </p>
+        <p class="small">
+          <strong>Hook:</strong> {{ ad.facet.hook or '--' }} ·
+          <strong>Offer:</strong> {{ ad.facet.offer or '--' }}<br>
+          <strong>Source:</strong> {{ ad.facet.source }} ·
+          <strong>Confidence:</strong> {{ ad.facet.confidence }}<br>
+          <strong>Tagged by:</strong> {{ ad.facet.tagged_by }}
+        </p>
+        {% if ad.facet.rationale %}
+          <p class="small muted">{{ ad.facet.rationale }}</p>
+        {% endif %}
+      {% else %}
+        <p class="muted small">Not tagged. It will appear in
+          <a href="/angles?brand={{ brand }}">the untagged queue</a>.</p>
+      {% endif %}
+
+      {% if ad.review %}
+        <hr class="sep">
+        <p class="small">
+          <strong>Copy review:</strong> {{ num(ad.review.overall, 1) }}/10
+          {% if ad.review.angle_observed %}
+            — reviewer called it "{{ ad.review.angle_observed }}"
+          {% endif %}
+          <div class="why">
+            An opinion about the writing, by {{ ad.review.reviewed_by }}. Not a
+            verdict about the spend.
+          </div>
+        </p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+
+<hr class="sep">
+
+<div class="boards">
+  <section class="board">
+    <header><h2>Spend per day</h2></header>
+    <div class="body">{{ line_chart(spend_series, kind='spend') | safe }}</div>
+  </section>
+  <section class="board">
+    <header><h2>Conversions per day</h2></header>
+    <div class="body">{{ line_chart(conv_series, kind='count') | safe }}</div>
+  </section>
+</div>
+
+<section class="stage" style="margin-top:26px">
+  <div class="stage-head"><h2>Daily</h2>
+    <span class="state">{{ ad.day_count }} days</span></div>
+  {% if not ad.daily %}
+    <div class="empty">No insights rows for this ad.</div>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Day</th><th class="num">Spend</th><th class="num">Impressions</th>
+        <th class="num">Link clicks</th><th class="num">Conv</th>
+        <th class="num">Daily freq</th><th class="num">Reach that day</th>
+      </tr></thead>
+      <tbody>
+      {% for r in ad.daily %}
+        <tr>
+          <td>{{ r.day }}</td>
+          <td class="num">{{ money(r.spend) }}</td>
+          <td class="num">{{ num(r.impressions) }}</td>
+          <td class="num">{{ num(r.link_clicks) }}</td>
+          <td class="num">{{ num(r.conversions) }}</td>
+          <td class="num">{{ num(r.frequency_this_day, 2) }}</td>
+          <td class="num">{{ num(r.reach_this_day) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin-top:8px">
+    Reach is per day and deduplicated within that day. Adding this column up
+    would count the same person once per day.
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

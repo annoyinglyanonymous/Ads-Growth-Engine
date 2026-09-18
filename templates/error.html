@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Not available — Ads Intelligence{% endblock %}
+{% block page_title %}This page cannot answer yet{% endblock %}
+
+{% block body %}
+<div class="card">
+  <p><strong>{{ error }}</strong></p>
+  {% if detail and detail != error %}
+    <pre class="mono small muted" style="white-space:pre-wrap;margin:10px 0 0">{{ detail }}</pre>
+  {% endif %}
+  <hr class="sep">
+  <p class="small muted">
+    The usual causes, in the order they happen:
+  </p>
+  <ul class="small muted">
+    <li><code>ADS_DATABASE_URL_RO</code> is unset — see <code>.env.example</code>.</li>
+    <li>The migrations have not been applied. <code>python ads_migrate.py --status</code></li>
+    <li>The RLS policies in <code>006_ads_roles.sql</code> are missing, in which
+        case queries succeed and return nothing rather than failing.</li>
+    <li>Nothing has been imported yet:
+        <code>python -m meta_ads --pull --brand renegade</code> in growth-engine.</li>
+  </ul>
+</div>
+{% endblock %}

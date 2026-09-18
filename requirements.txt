@@ -1,0 +1,21 @@
+# Pinned to match growth-engine, which shares this database. Two repos running
+# different psycopg majors against one Supabase pooler is a debugging session
+# nobody needs.
+fastapi==0.141.1
+# The live Graph reader (intel/graph.py). Structure calls only.
+httpx==0.28.1
+Jinja2==3.1.6
+psycopg==3.3.4
+psycopg-binary==3.3.4
+psycopg-pool==3.3.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+starlette==1.6.0
+uvicorn==0.52.4
+
+# Account-local day boundaries. An insights `date` is a day in the ad
+# account's timezone, not UTC -- see ads.settled_through.
+tzdata==2026.3
+
+pytest==9.1.1

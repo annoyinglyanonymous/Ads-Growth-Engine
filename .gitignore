@@ -1,0 +1,17 @@
+# Secrets. Must be ignored BEFORE the first commit -- .env holds two working
+# Supabase passwords in plaintext (ads_owner and ads_reader).
+.env
+.env.*
+!.env.example
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# intel context snapshots. Transport between a read verb and `intel record`;
+# the durable copy is knowledge_snapshot on the row itself.
+.intel/
+
+# Local operational history, not source.
+logs/

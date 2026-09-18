@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% block title %}Ask — Ads Intelligence{% endblock %}
+{% block page_title %}Ask{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  The page this form lands on when JavaScript is off. Same routing, same
+  verbs, same output — only the rendering differs.
+</div>
+{% endblock %}
+
+{% block body %}
+<div class="grid">
+
+  <section class="card span2">
+    <form class="ask-form" method="get" action="/ask" style="margin-bottom:14px">
+      <input type="hidden" name="brand" value="{{ brand or '' }}">
+      {{ ico.i('ask') }}
+      <input name="q" type="text" value="{{ q }}" autocomplete="off"
+             placeholder="Ask about spend, CPA, fatigue, angles&hellip;">
+      <button type="submit" aria-label="Ask">{{ ico.i('arrow-up') }}</button>
+    </form>
+
+    {% if failed %}
+      <div class="flash error">{{ failed }}</div>
+    {% elif answer %}
+      <div class="card-head">
+        <h2 class="card-t">{{ answer.verb }}</h2>
+        <span class="more">{{ answer.says }}</span>
+      </div>
+      <div class="n" style="margin-bottom:8px">
+        {%- if answer.args -%}
+          called with {{ answer.args }}
+        {%- else -%}
+          called with its defaults
+        {%- endif -%}
+      </div>
+      {#- The verb's own JSON, not a sentence about it. A paragraph here would
+          be a second account of the same numbers, and the two would drift. -#}
+      <pre class="mono small" style="white-space:pre-wrap;word-break:break-word;
+           background:var(--surface-2);border:1px solid var(--line);
+           border-radius:var(--radius-sm);padding:12px;margin:0;
+           max-height:520px;overflow:auto">{{ answer.result | tojson(indent=2) }}</pre>
+    {% else %}
+      <div class="empty">Ask something, or pick one from the list beside this.</div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2 class="card-t">What it can answer</h2></div>
+    <div class="n" style="margin-bottom:10px">
+      A fixed list. A question that matches none of these is refused rather
+      than guessed at, and there is no free-text path to the database.
+    </div>
+    <table>
+      <tbody>
+      {% for verb, says in verbs.items() %}
+        <tr>
+          <td style="padding-left:0"><a href="/ask?brand={{ brand }}&q={{ verb }}"
+             class="mono">{{ verb }}</a></td>
+          <td class="small muted" style="padding-right:0">{{ says }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="n" style="margin-top:12px">
+      <code>record</code> and <code>live</code> are deliberately absent: one
+      writes, and the other spends a rate limit.
+    </div>
+  </section>
+
+</div>
+{% endblock %}

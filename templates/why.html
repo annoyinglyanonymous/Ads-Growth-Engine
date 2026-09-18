@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Why — Ads Intelligence{% endblock %}
+{% block page_title %}What moved CPA{% endblock %}
+
+{% block toolbar %}
+<form class="filters" method="get" action="/why">
+  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
+  <label>Window
+    <select name="days">
+      {% for n in [7, 14, 28] %}
+        <option value="{{ n }}" {{ 'selected' if n == days }}>{{ n }} days</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  A CPA change is almost never one thing. It splits into
+  <strong>rate effect</strong> — a creative got more expensive — and
+  <strong>mix effect</strong> — budget moved toward a creative that already
+  was. They are different problems with different fixes, so they are
+  different columns.
+</div>
+{% endblock %}
+
+{% block body %}
+
+{% set t = d.totals %}
+<div class="stats">
+  <div class="stat">
+    <div class="k">CPA change</div>
+    <div class="v">{{ money(t.cpa_change) }}</div>
+    <div class="sub">{{ d.since }} vs the {{ d.days }} days before</div>
+  </div>
+  <div class="stat">
+    <div class="k">Rate effect</div>
+    <div class="v">{{ money(t.rate_effect) }}</div>
+    <div class="sub">creatives got more (or less) expensive</div>
+  </div>
+  <div class="stat">
+    <div class="k">Mix effect</div>
+    <div class="v">{{ money(t.mix_effect) }}</div>
+    <div class="sub">budget moved between creatives</div>
+  </div>
+  <div class="stat">
+    <div class="k">Unattributable</div>
+    <div class="v">{{ t.unattributable_ads }}</div>
+    <div class="sub">ads that converted in only one window</div>
+  </div>
+</div>
+
+{% if t.unattributable_ads %}
+  <div class="caveat"><strong>Partly unattributable.</strong>
+    <span>{{ t.unattributable_ads }} ad(s) converted in only one of the two
+      windows, so the rate/mix split is undefined for them. Their contribution
+      is still counted in the total — it is the rows below marked
+      <em>no conversions</em> — but it cannot be blamed on a creative getting
+      worse or on the budget moving, because both need two defined CPAs.</span>
+  </div>
+{% endif %}
+
+<section class="stage">
+  <div class="stage-head">
+    <h2>Per ad</h2>
+    <span class="state">largest contribution first; the column sums to the total</span>
+  </div>
+  {% if not d.rows %}
+    <div class="empty">Nothing spent in either window.</div>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Ad</th>
+        <th class="num">Spend now</th><th class="num">Spend before</th>
+        <th class="num">CPA now</th><th class="num">CPA before</th>
+        <th class="num">Rate</th><th class="num">Mix</th><th class="num">Total</th>
+      </tr></thead>
+      <tbody>
+      {% for r in d.rows %}
+        <tr>
+          <td class="name">
+            <a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
+            {% if r.reason != 'attributable' %}
+              <div class="why">{{ r.reason.replace('_', ' ') }}</div>
+            {% endif %}
+          </td>
+          <td class="num">{{ money(r.spend_current) }}</td>
+          <td class="num">{{ money(r.spend_prior) }}</td>
+          <td class="num">{{ money(r.cpa_current) if r.cpa_current else '--' }}</td>
+          <td class="num">{{ money(r.cpa_prior) if r.cpa_prior else '--' }}</td>
+          <td class="num">{{ money(r.rate_effect) if r.rate_effect is not none else '--' }}</td>
+          <td class="num">{{ money(r.mix_effect) if r.mix_effect is not none else '--' }}</td>
+          <td class="num"><strong>{{ money(r.total_effect) }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="stage">
+  <div class="stage-head">
+    <h2>What changed in the account</h2>
+    <span class="state">budget, status and goal edits</span>
+  </div>
+
+  {% set ch = d.structure_changes %}
+  {% if not ch.available %}
+    <div class="empty">
+      {{ ch.why }}
+    </div>
+  {% elif not ch.rows %}
+    <div class="empty">No budget, status or goal edits recorded in this window.</div>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>When</th><th>What</th><th>Field</th><th>From</th><th>To</th>
+      </tr></thead>
+      <tbody>
+      {% for c in ch.rows %}
+        <tr>
+          <td class="small">{{ c.changed_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="name">{{ c.entity_name or c.entity_id }}
+            <div class="why">{{ c.entity_type }}</div></td>
+          <td><span class="pill quiet">{{ c.field }}</span></td>
+          <td class="mono">{{ c.old_value or '--' }}</td>
+          <td class="mono">{{ c.new_value or '--' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}Ads Intelligence{% endblock %}</title>
+
+{#- ===================================================================
+    Agency Heights foundations, applied to the ads dashboard.
+
+    The token NAMES are the ones the templates already used; only the VALUES
+    moved to the Agency Heights palette. That is deliberate and it is the
+    whole reason this restyle touches six templates rather than sixty: a page
+    asks for `var(--surface)` and does not care which design system is
+    answering. The next palette change is a diff in this block.
+
+    Two deviations from the Foundations file, both stated rather than smuggled:
+
+    1. IBM Plex Mono survives for `code` and `.mono`. Foundations says
+       Instrument Sans is the only face and maps --ah-font-mono to it. That
+       holds for a marketing site; it does not hold for a page whose job
+       includes printing `python -m meta_ads --pull --brand renegade` for
+       somebody to copy. A proportional shell command is a shell command
+       people mistype. Numerals stay Instrument Sans with tabular figures.
+
+    2. Green and red now carry meaning. The previous palette was blue-only,
+       and its rule -- severity by intensity, direction by arrow -- existed
+       because one hue cannot say "good". Agency Heights ships success and
+       error families, so they are used. The arrows STAY: colour is the
+       second channel, never the only one, or the 8% of men with a red-green
+       deficiency read a rising CPA as a win.
+
+    And one rule that outranks both palettes, in `.delta` below: in
+    advertising, up is not good. Spend up is neither. CPA up is bad.
+    Conversions up is good. The delta classes are `.good` / `.bad` / `.flat`
+    and the TEMPLATE decides which, because only the template knows what the
+    number means. `.up` / `.down` are kept as neutral aliases.
+    =================================================================== -#}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  /* Canvas is Agency Heights secondary-500 -- the signature pale blue. White
+     is reserved for cards, so a surface reads as a surface without a shadow. */
+  --bg:        #ecf4f9;
+  --surface:   #ffffff;
+  --surface-2: #f5f7fc;
+  --surface-3: #ecf4f9;
+  --line:      #e6e9f0;
+  --line-2:    #d1d6e5;
+  --ink:       #17253a;
+  --ink-2:     #232a40;
+  --muted:     #5a5f70;
+  --subtle:    #8990a3;
+
+  --accent:      #262758;
+  --accent-hi:   #3c498a;
+  --on-accent:   #ffffff;
+  --accent-soft: #ecf4f9;
+  --accent-line: #cad9f3;
+
+  --ok:       #265c56;  --ok-bg:    #d4fad4;  --ok-line:  #89e996;
+  --warn:     #b67a08;  --warn-bg:  #fcf2cf;  --warn-line:#fbe288;
+  --err:      #96201b;  --err-bg:   #f2d8d9;  --err-line: #fa9995;
+  --on-err:   #ffffff;
+
+  /* Direction of *merit*, not direction of the number. See .delta. */
+  --good: #3d8a68;
+  --bad:  #c8221b;
+
+  --focus: #6878c4;
+  --radius: 8px;  --radius-sm: 6px;  --radius-lg: 12px;
+  --shadow:    0 1px 2px 0 rgba(35,42,64,.08);
+  --shadow-lg: 0 8px 16px 0 rgba(35,42,64,.16);
+
+  --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ONE THEME, AND IT IS THIS ONE.
+     There was a prefers-color-scheme block here and it is gone on purpose.
+     Agency Heights is a white-and-navy system; a dashboard that repaints
+     itself dark because the operating system happens to be dark is not that
+     system, and the person reading it never asked for a second palette.
+
+     `color-scheme: light` is the load-bearing half of this. Without it the
+     browser still renders the WINDOW's furniture dark on a dark OS -- the
+     window/level <select> in the toolbar, scrollbars, the focus ring, date
+     pickers -- so the page reads white with a handful of black controls
+     punched through it, which looks like a bug rather than a choice. */
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 14px/1.5 var(--sans);
+  font-synthesis-weight: none; text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hi); text-decoration: underline;
+          text-decoration-thickness: 1px; text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px;
+                 border-radius: 3px; }
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+.ico { flex: none; vertical-align: -.15em; }
+
+/* =========================================================== the shell
+   220px rail, pale canvas, content column. The rail is text-labelled and
+   not an icon strip: this app has fifteen verbs and six screens, and an
+   icon-only rail makes the reader guess which glyph means "angle coverage". */
+.shell { display: flex; min-height: 100vh; }
+
+.rail {
+  width: 220px; flex: 0 0 220px; background: var(--surface);
+  border-right: 1px solid var(--line); display: flex; flex-direction: column;
+  padding: 18px 0 14px; position: sticky; top: 0; height: 100vh;
+  overflow-y: auto;
+}
+.rail-brand { display: flex; align-items: center; gap: 10px;
+              padding: 0 18px 18px; border-bottom: 1px solid var(--line);
+              color: var(--ink); text-decoration: none; }
+.rail-brand:hover { text-decoration: none; }
+.rail-brand .mark {
+  display: grid; place-items: center; width: 28px; height: 28px;
+  border-radius: var(--radius-sm); background: var(--accent);
+  color: var(--on-accent); font-size: 11.5px; font-weight: 700;
+  letter-spacing: .02em;
+}
+.rail-brand .name { font-weight: 700; font-size: 14.5px; letter-spacing: -.01em; }
+.rail-group { padding: 15px 18px 6px; font-size: 10.5px; font-weight: 600;
+              letter-spacing: .09em; text-transform: uppercase;
+              color: var(--subtle); }
+.rail nav { display: flex; flex-direction: column; gap: 1px; padding: 0 10px; }
+.rail-link {
+  display: flex; align-items: center; gap: 11px; padding: 8px 10px;
+  border-radius: var(--radius-sm); color: var(--ink-2);
+  font-size: 13.5px; text-decoration: none;
+}
+.rail-link .ico { color: var(--subtle); }
+.rail-link:hover { background: var(--surface-2); color: var(--ink);
+                   text-decoration: none; }
+.rail-link[aria-current="page"] {
+  background: var(--accent); color: var(--on-accent); font-weight: 600;
+}
+.rail-link[aria-current="page"] .ico { color: var(--on-accent); }
+.rail-foot { margin-top: auto; padding: 14px 18px 0; }
+
+/* The freshness block. It sits at the bottom of the rail on every screen
+   because "how old is this" is not a question about one page. */
+.freshness { border: 1px solid var(--line); border-radius: var(--radius);
+             padding: 11px 12px; background: var(--surface-2); }
+.freshness .t { font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+                text-transform: uppercase; color: var(--subtle); }
+.freshness .v { font-size: 13px; font-weight: 600; margin-top: 3px;
+                font-variant-numeric: tabular-nums; }
+.freshness .n { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+.col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 18px 26px 0;
+}
+.topbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -.015em;
+             color: var(--accent); margin: 0; }
+.topbar .spacer { flex: 1; }
+.chip { font-size: 11.5px; font-weight: 600; color: var(--accent);
+        background: var(--surface); border: 1px solid var(--line);
+        border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.topbar .sub { flex-basis: 100%; color: var(--muted); font-size: 12.5px;
+               margin-top: -4px; }
+
+main { padding: 16px 26px 28px; }
+
+/* =========================================================== buttons */
+button, .btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: 600 13px/1 var(--sans); cursor: pointer; white-space: nowrap;
+  background: var(--accent); color: var(--on-accent);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  padding: 9px 14px; text-decoration: none;
+}
+button:hover, .btn:hover { background: var(--accent-hi);
+                           color: var(--on-accent); text-decoration: none; }
+.btn.ghost { background: var(--surface); color: var(--ink-2);
+             border-color: var(--line-2); font-weight: 500; }
+.btn.ghost:hover { background: var(--surface-2); color: var(--ink); }
+
+/* =========================================================== the grid
+   Three columns. Widgets claim one or two; nothing claims three, so the
+   right-hand column is a real column on every screen rather than a gutter
+   that content occasionally spills into. */
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr));
+        align-items: start; }
+.span2 { grid-column: span 2; }
+.span3 { grid-column: span 3; }
+
+.card { background: var(--surface); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 18px 20px; }
+.card.pad0 { padding: 16px 20px 4px; }
+.card.dark { background: var(--accent); border-color: var(--accent);
+             color: var(--on-accent); }
+.card.dark .card-t, .card.dark .big { color: var(--on-accent); }
+.card.dark .k, .card.dark .n { color: var(--accent-line); }
+
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+.card-t { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
+.card-head .more { margin-left: auto; font-size: 12px; font-weight: 600;
+                   color: var(--accent-hi); }
+.card .n { font-size: 12.5px; color: var(--muted); }
+
+/* =========================================================== KPI row */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.kpi .k { font-size: 11.5px; color: var(--muted); }
+.kpi .v { font-size: 23px; font-weight: 700; letter-spacing: -.015em;
+          color: var(--accent); margin-top: 2px; line-height: 1.15;
+          font-variant-numeric: tabular-nums; }
+.big { font-size: 28px; font-weight: 700; letter-spacing: -.015em;
+       color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.15; }
+
+/* Legacy `.stats`/`.stat` from the previous skin, kept so a template that has
+   not been restyled still lands on the grid instead of on the floor. */
+.stats { display: grid; gap: 16px; margin-bottom: 20px;
+         grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.stat { background: var(--surface); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 15px 17px; }
+.stat .k { font-size: 11.5px; color: var(--muted); }
+.stat .v { font-size: 23px; font-weight: 700; letter-spacing: -.015em;
+           color: var(--accent); margin-top: 2px; line-height: 1.15;
+           font-variant-numeric: tabular-nums; }
+.stat .sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+/* ---------------------------------------------------------- deltas
+   `.good` and `.bad` mean better and worse, not up and down. The arrow is
+   set from the sign by .up/.down; the colour is set from the meaning by
+   .good/.bad; a template uses one of each. Colour is never the only signal. */
+.delta { font-size: 11.5px; font-weight: 600; margin-top: 2px;
+         font-variant-numeric: tabular-nums; color: var(--muted); }
+.delta.good { color: var(--good); }
+.delta.bad  { color: var(--bad); }
+.delta.up::before   { content: "\2191\00a0"; }
+.delta.down::before { content: "\2193\00a0"; }
+.delta.flat::before { content: "\2192\00a0"; }
+
+/* =========================================================== filter row */
+.filters {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  padding: 12px 14px; margin-bottom: 16px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.filters label { display: flex; flex-direction: column; gap: 4px;
+                 font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+                 text-transform: uppercase; color: var(--subtle); }
+.filters select, .filters input {
+  font: 400 13px var(--sans); color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm); padding: 7px 9px; min-width: 120px;
+}
+
+/* =========================================================== tables
+   Dense rows, 1px rules, sticky head. No zebra: the hairline does the job
+   and stripes fight the pale canvas. */
+.table-wrap { overflow-x: auto; }
+.card .table-wrap { margin: 0 -20px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 20px; vertical-align: top;
+         border-bottom: 1px solid var(--line); }
+th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+     color: var(--subtle); font-weight: 600; white-space: nowrap;
+     position: sticky; top: 0; background: var(--surface); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--surface-2); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.name { max-width: 340px; }
+td .why { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.thumb { display: inline-grid; place-items: center; width: 20px; height: 20px;
+         border-radius: 5px; background: var(--surface-3);
+         color: var(--accent-hi); margin-right: 7px; vertical-align: -5px; }
+
+/* =========================================================== pills */
+.pill { display: inline-flex; align-items: center; gap: 5px;
+        padding: 2px 9px 2px 7px; border-radius: 999px;
+        font-size: 11.5px; font-weight: 600; white-space: nowrap;
+        background: var(--surface-3); color: var(--ink-2);
+        border: 1px solid var(--line); }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                background: currentColor; }
+.pill.ok    { background: var(--ok-bg);   color: var(--ok);   border-color: var(--ok-line); }
+.pill.warn  { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-line); }
+.pill.stop  { background: var(--err-bg);  color: var(--err);  border-color: var(--err-line); }
+.pill.quiet { background: var(--surface-3); color: var(--muted); }
+
+/* =========================================================== notices */
+.caveat, .flash { display: flex; gap: 10px; padding: 11px 14px;
+                  margin-bottom: 16px; border-radius: var(--radius);
+                  font-size: 13px; align-items: flex-start; }
+.caveat { background: var(--warn-bg); border: 1px solid var(--warn-line);
+          color: var(--warn); }
+.caveat .ico { margin-top: 1px; }
+.flash.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-line); }
+.flash.error { background: var(--err-bg); color: var(--err);
+               border: 1px solid var(--err-line); }
+
+.empty { background: var(--surface); border: 1px dashed var(--line-2);
+         border-radius: var(--radius); padding: 24px; text-align: center;
+         color: var(--muted); font-size: 13.5px; }
+.empty code { font: 500 12.5px var(--mono); background: var(--surface-3);
+              padding: 2px 6px; border-radius: 4px; color: var(--ink-2); }
+
+.muted { color: var(--muted); }
+.subtle { color: var(--subtle); }
+.small { font-size: 12px; }
+.mono  { font-family: var(--mono); font-size: 12.5px; }
+code   { font-family: var(--mono); font-size: 12.5px; }
+hr.sep { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
+
+/* =========================================================== charts */
+.chart { display: block; width: 100%; height: auto; }
+.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+.chart .axis { fill: var(--subtle); font: 500 10.5px var(--sans);
+               font-variant-numeric: tabular-nums; }
+.chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5;
+               stroke-linejoin: round; stroke-linecap: round; }
+.chart .area { fill: var(--accent-soft); }
+.chart .dot  { fill: var(--surface); stroke: var(--accent); stroke-width: 2.5; }
+.chart .bar  { fill: var(--accent); }
+.chart .bar.dim, .chart .col.dim { fill: var(--surface-3); }
+.chart .col  { fill: var(--accent); }
+.chart .lbl  { fill: var(--ink-2); font: 500 11px var(--sans); }
+.chart .val  { fill: var(--accent); font: 600 10.5px var(--sans);
+               font-variant-numeric: tabular-nums; }
+.chart .hit  { fill: transparent; cursor: crosshair; }
+.chart .cross { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 3 3; }
+.spark { display: block; width: 104px; height: 24px; }
+.spark path { fill: none; stroke: var(--accent-hi); stroke-width: 1.5; }
+
+.chart-tip {
+  position: fixed; z-index: 40; pointer-events: none;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg); padding: 8px 11px; font-size: 12px;
+  font-variant-numeric: tabular-nums; max-width: 240px;
+}
+.chart-tip .t { font-weight: 700; color: var(--accent); }
+
+/* =========================================================== ask console */
+.ask { display: flex; flex-direction: column; gap: 12px; }
+.ask-log { display: flex; flex-direction: column; gap: 10px;
+           max-height: 300px; overflow-y: auto; }
+.ask-row { display: flex; gap: 9px; align-items: flex-start; }
+.ask-orb { flex: none; width: 26px; height: 26px; border-radius: 50%;
+           background: radial-gradient(circle at 34% 30%,
+                       var(--accent-line) 0%, var(--accent-hi) 55%, var(--accent) 100%); }
+.ask-bubble { background: var(--surface-3); border-radius: 10px;
+              padding: 9px 11px; font-size: 12.5px; line-height: 18px;
+              color: var(--ink-2); min-width: 0; }
+.ask-row.me { flex-direction: row-reverse; }
+.ask-row.me .ask-bubble { background: var(--accent); color: var(--on-accent); }
+.ask-bubble pre { margin: 6px 0 0; font: 500 11.5px/16px var(--mono);
+                  white-space: pre-wrap; word-break: break-word;
+                  max-height: 190px; overflow: auto; }
+.ask-sugg { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-sugg button { font-size: 11.5px; font-weight: 500; padding: 4px 10px;
+                   border-radius: 999px; background: var(--surface);
+                   color: var(--accent); border: 1px solid var(--line-2); }
+.ask-sugg button:hover { background: var(--surface-2); color: var(--accent-hi); }
+.ask-form { display: flex; align-items: center; gap: 8px; height: 40px;
+            border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+            padding: 0 5px 0 11px; background: var(--surface); }
+.ask-form input { flex: 1; min-width: 0; border: 0; background: none;
+                  font: 400 12.5px var(--sans); color: var(--ink); outline: none; }
+.ask-form button { width: 30px; height: 30px; padding: 0; justify-content: center;
+                   border-radius: var(--radius-sm); }
+
+/* ==================================== section and board vocabulary
+   Carried over from the previous skin. These names are structural -- a stage
+   is a section, a board is a half-width panel, a note is a subtitle -- so the
+   five templates that speak them did not have to be rewritten to change
+   palettes. Only the values moved. That is the same argument as the tokens,
+   one level up. */
+.stage { margin-bottom: 22px; }
+.stage-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.stage-head .state { margin-left: auto; font-size: 12px; color: var(--muted); }
+h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
+.note { font-size: 11.5px; color: var(--muted); }
+.sub { color: var(--muted); font-size: 12.5px; max-width: 80ch; }
+.eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .09em;
+           text-transform: uppercase; color: var(--subtle); }
+
+.boards { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr));
+          align-items: start; }
+.board { background: var(--surface); border: 1px solid var(--line);
+         border-radius: var(--radius); overflow: hidden; }
+.board > header { padding: 13px 18px; border-bottom: 1px solid var(--line); }
+.board > header h2 { font-size: 13.5px; }
+.board > header .note { margin-top: 2px; }
+.board .body { padding: 16px 18px; }
+.board .table-wrap { margin: 0; }
+.board .body table th { background: var(--surface); }
+.card.quiet { background: var(--surface-2); }
+.stage .table-wrap { background: var(--surface); border: 1px solid var(--line);
+                     border-radius: var(--radius); }
+.stage .table-wrap th { background: var(--surface); }
+
+/* A filter row hoisted into the topbar loses the card and lies down flat --
+   same markup, same class, read as a toolbar because of where it sits. */
+.topbar .filters { padding: 0; margin: 0; background: none; border: 0;
+                   gap: 8px; align-items: center; }
+.topbar .filters label { flex-direction: row; align-items: center; gap: 6px;
+                         letter-spacing: .06em; }
+.topbar .filters select, .topbar .filters input {
+  padding: 6px 9px; font-size: 12px; min-width: 0; width: auto; }
+.topbar .filters input[type="text"], .topbar .filters input:not([type]) { width: 112px; }
+
+/* =========================================================== responsive */
+@media (max-width: 1180px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .span2, .span3 { grid-column: span 2; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .shell { flex-direction: column; }
+  .rail { width: auto; flex: none; height: auto; position: static;
+          border-right: 0; border-bottom: 1px solid var(--line); }
+  .rail nav { flex-direction: row; flex-wrap: wrap; }
+  .rail-group, .rail-foot { display: none; }
+  .grid, .kpis { grid-template-columns: minmax(0, 1fr); }
+  .span2, .span3 { grid-column: span 1; }
+  .topbar, main { padding-left: 16px; padding-right: 16px; }
+  th, td { padding-left: 16px; padding-right: 16px; }
+  .card .table-wrap { margin: 0 -20px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+{% import "_icons.html" as ico %}
+
+<div class="shell">
+<aside class="rail">
+  <a class="rail-brand" href="/">
+    <span class="mark" aria-hidden="true">AI</span>
+    <span class="name">Ads Intelligence</span>
+  </a>
+
+  <div class="rail-group">Measurement</div>
+  <nav>
+    {% for key, href, label, glyph in [
+        ('overview', '/',         'Overview',    'overview'),
+        ('why',      '/why',      'Why CPA moved','why')] %}
+      <a class="rail-link" href="{{ href }}{% if brand %}?brand={{ brand }}{% endif %}"
+         {% if nav == key %}aria-current="page"{% endif %}>{{ ico.i(glyph) }}{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="rail-group">Creative</div>
+  <nav>
+    {% for key, href, label, glyph in [
+        ('creative',    '/creative',    'Fatigue',     'creative'),
+        ('angles',      '/angles',      'Angles',      'angles'),
+        ('experiments', '/experiments', 'Experiments', 'experiments')] %}
+      <a class="rail-link" href="{{ href }}{% if brand %}?brand={{ brand }}{% endif %}"
+         {% if nav == key %}aria-current="page"{% endif %}>{{ ico.i(glyph) }}{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="rail-foot">
+    <div class="freshness">
+      <div class="t">Settled through</div>
+      <div class="v">{% if settled %}{{ settled }}{% else %}&mdash;{% endif %}</div>
+      <div class="n">
+        {%- if settled -%}
+          Meta restates for ~3 days. Anything after this date can still move.
+        {%- else -%}
+          No active ad account for this brand.
+        {%- endif -%}
+      </div>
+    </div>
+  </div>
+</aside>
+
+<div class="col">
+  <header class="topbar">
+    <h1>{% block page_title %}Overview{% endblock %}</h1>
+    {% if brand %}<span class="chip">{{ brand }}</span>{% endif %}
+    <span class="spacer"></span>
+    {% block toolbar %}{% endblock %}
+    {% block page_sub %}{% endblock %}
+  </header>
+
+  <main>
+    {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+    {% if caveat %}
+      <div class="caveat">{{ ico.i('warn') }}<span><strong>Provisional.</strong>
+        {{ caveat }}</span></div>
+    {% endif %}
+    {% block body %}{% endblock %}
+  </main>
+</div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
