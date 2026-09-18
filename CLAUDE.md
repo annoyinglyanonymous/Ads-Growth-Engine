@@ -1,43 +1,70 @@
 # Ads Growth Engine
 
-This repo reads. `growth-engine` writes. Neither migrates the other's schema.
+Everything Meta is here. `growth-engine` writes the copy and approves it.
 
-That sentence is the whole boundary, and most of what follows is a consequence of it.
+That sentence is the whole boundary, and most of what follows is a consequence
+of it. It replaced an older one -- "this repo reads, growth-engine writes" --
+which stopped being true when the importer moved in. The old line described
+the credentials; this one describes the job, and a boundary people can restate
+from memory is the only kind that survives.
 
-One clarification, because it looks like an exception and is not: `intel live`
-makes live Meta API calls. It reads. It persists nothing — not to Meta, not to
-`public.*`, not to `ads.*`. The *import*, meaning anything that puts Meta data
-in a table, is still growth-engine's and only growth-engine's.
+The read-only guarantee did not go away, it got smaller and more exact. It is
+no longer "nothing in this folder can write". It is:
+
+    intel/, ui.py, ask.py   read ads.* through db.py, which has no cursor
+    intel/record.py         writes ads.* proposals, and only those
+    meta_ads/               writes public.meta_*, and nothing else
+
+Three pools, one per job, each scoped by a test rather than by a promise
+(tests/test_read_only.py). A read verb still cannot write, and now the thing
+stopping it is a named list instead of the absence of a folder.
 
 ---
 
 ## What this is
 
-The intelligence half of the ads system. `Desktop\growth-engine` imports Meta's
-data into `public.meta_*` and produces the copy; this repo derives every rate
-and comparison from that data, holds the few facts that are ours rather than
-Meta's, and answers questions about them.
+The ads system. This repo imports Meta's data into `public.meta_*`, derives
+every rate and comparison from it, holds the few facts that are ours rather
+than Meta's, and answers questions about them. `growth-engine` produces the
+copy those ads run, approves it, and holds the brand knowledge.
 
 ```
-  growth-engine                         Ads Growth Engine (here)
-  ─────────────                         ────────────────────────
-  owns public.*                         owns ads.*
-   • meta_ads/ importer      ────────▶   SELECT on a named list of public.*
-   • copy production                     INSERT on nothing in public
-   • the claim gate, approvals           • metrics: views + functions
-   • KB + brand files                    • the angle bank and creative tags
-  ledger: public.schema_migrations       • experiment memory
-  files 001…046                          • the dashboard, on 127.0.0.1:8001
-                                         • python -m intel
-            │                           ledger: ads.schema_migrations, 001…006
-            └─────────── one Supabase ───┘
+  Ads Growth Engine (here)                    growth-engine
+  ────────────────────────                    ─────────────
+  imports and owns public.meta_*              owns the rest of public.*
+  owns ads.*                                   • copy production
+   • meta_ads/ -- the Graph importer   ◀────    • the claim gate, approvals
+   • metrics: views + functions                 • KB + brand files
+   • the angle bank and creative tags           • the meta-ads SKILL, which
+   • experiment memory                            writes the copy and shares
+   • the dashboard, on 127.0.0.1:8001             a name with nothing else
+   • python -m intel, python -m meta_ads
+  ledgers: ads.schema_migrations 001…009      ledger: public.schema_migrations
+           (public.meta_* DDL still sits              files 001…046
+            in growth-engine's 042 and 046,
+            applied, and is not re-homed)
+            │                                        │
+            └──────────── one Supabase ──────────────┘
 ```
 
-One database, two schemas, two roles. A separate database would have been
-tidier and is impossible: the value here is joining ad performance to
-`campaign_assets`, `campaign_angles` and `ad_reviews`, and Postgres cannot join
-across databases without a copy — and a copy is the staleness the whole design
-avoids.
+One database, three schemas' worth of concerns, three roles. A separate
+database would have been tidier and is impossible: the value here is joining ad
+performance to `campaign_assets`, `campaign_angles` and `ad_reviews`, and
+Postgres cannot join across databases without a copy — and a copy is the
+staleness the whole design avoids.
+
+**Two things share a name and are unrelated.** `meta_ads/` is the Python
+package that imports; `meta_ads` is also a CHANNEL in growth-engine, where a
+deliverable runs on `email`, `meta_ads` or `video`. And `.claude/skills/
+meta-ads/` over there writes ad copy — it is not this importer, it was moved
+here once by mistake and moved straight back.
+
+**`tracking.py` is a deliberate copy.** growth-engine stamps utm values onto
+approved assets with it; `meta_ads.parse` reads them back off an ad here. Those
+two halves are one convention and nothing else makes them agree, so the match
+test round-trips through both real modules — and `tests/test_tracking_is_a_
+faithful_copy.py` fails when the copies drift. Never edit this copy; copy
+growth-engine's over it.
 
 ## The rules
 
@@ -109,6 +136,11 @@ python -m intel coverage --brand renegade
 
 python -m main                               # the dashboard, 127.0.0.1:8001
 python ads_migrate.py --status
+
+python -m meta_ads --list-accounts           # the import half, also here now
+python -m meta_ads --add-account act_XXXX --brand renegade
+python -m meta_ads --pull --brand renegade   # minutes, against a rate limit
+python scripts/sync.py                       # what Task Scheduler runs
 ```
 
 `127.0.0.1`, never `localhost` — on Windows `localhost` resolves `::1` first and
@@ -120,8 +152,8 @@ one write verb, `intel record`, and it takes a path rather than stdin.
 
 ## Warehoused vs live
 
-Almost everything here is **warehoused**: growth-engine imports daily rows into
-`public.meta_*` and this repo derives every rate from them. That is what makes
+Almost everything here is **warehoused**: `meta_ads/` imports daily rows into
+`public.meta_*` and the rest of this repo derives every rate from them. That is what makes
 "this week against the last six months" one query instead of a hundred API
 calls, and it is the only thing that holds up across two brands.
 
@@ -130,9 +162,10 @@ The cost is staleness. Two things manage it:
 - `ads.settled_through()` — Meta restates attributed conversions for ~3 days and
   an insights date is a day in the *account's* timezone. Every verb reports
   `unsettled_days` against this, so a partial day never reads as a decline.
-- **The scheduled pull** — `growth-engine\scripts\sync.py`, twice daily via
-  Task Scheduler. Before it existed, the staleness window was not 24 hours, it
-  was "whenever anyone remembered", which is worse because it is invisible.
+- **The scheduled pull** — `scripts\sync.py`, twice daily via Task Scheduler.
+  Before it existed, the staleness window was not 24 hours, it was "whenever
+  anyone remembered", which is worse because it is invisible. **It is not
+  registered yet**, so today that window is still "whenever anyone remembered".
 
 **`intel live` is the one live call**, and the point of it is the *diff*, not
 the list. It reports ads running now that no pull has seen, ads the warehouse
@@ -145,13 +178,14 @@ the slow, rate-limited call, and a live number beside a warehoused one in the
 same answer invites comparing two things measured differently. Structure is
 live; performance is warehoused; say which is which.
 
-Nothing here pulls history. That is `growth-engine`:
+Pulling history is now this repo's job too — it used to be growth-engine's, and
+that is the one line of this file most likely to be remembered wrong:
 
 ```
-cd ..\growth-engine
-python scripts\sync.py                     # what the scheduler runs
-python -m meta_ads --pull --brand renegade  # one brand, by hand
+python scripts\sync.py                      # what the scheduler runs
+python -m meta_ads --pull --brand renegade   # one brand, by hand
 ```
 
-A pull takes minutes against a rate limit, which is why no page in either repo
-fires one.
+A pull takes minutes against a rate limit, which is why **no page in either
+repo fires one** and why `ask.py` refuses to route to `live`. A browser that
+gave up half way through leaves a `running` row nothing ever closes.
