@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     #: not. So: empty is a refusal, and `read_url` is where that is spelled.
     ads_database_url_ro: str = ""
 
+    #: postgres. The IMPORT credential, and the third url here for a reason
+    #: worth stating: meta_ads/ writes public.meta_*, and neither role above
+    #: can. ads_owner holds SELECT in public and nothing more -- deliberately,
+    #: per 006 -- so wiring the importer through it would mean widening that
+    #: grant, which is the one thing that would let a read verb write.
+    #:
+    #: Three urls is not three credentials too many. It is one per job:
+    #:   ads_database_url_ro  read ads.*          intel/, ui.py, ask.py
+    #:   ads_database_url     write ads.*         ads_migrate.py, intel/record.py
+    #:   database_url         write public.meta_* meta_ads/ only
+    database_url: str = ""
+
     #: Supavisor session mode (port 5432), matching growth-engine. Smaller
     #: than growth-engine's 5 because this process is a dashboard and a CLI,
     #: not the write path, and pooler connections are a shared budget across
@@ -62,11 +74,9 @@ class Settings(BaseSettings):
     #: answer "right now", and `intel status` says so. Refusing to start over a
     #: token that thirteen of fourteen verbs do not touch would be theatre.
     #:
-    #: Duplicated between the two repos rather than shared: a path that reaches
-    #: into a sibling repo's .env is a coupling that breaks silently when
-    #: somebody moves a folder. It is a read-only credential, so the cost of
-    #: the duplicate is remembering to rotate both -- and `intel status`
-    #: reports which side is configured, so a half-done rotation is visible.
+    #: ONE COPY, since the importer moved here. This used to be duplicated in
+    #: growth-engine's .env because both halves called Meta; now only this one
+    #: does, and there is a single place to rotate it.
     meta_access_token: str | None = None
 
     ads_host: str = "127.0.0.1"
@@ -77,6 +87,37 @@ class Settings(BaseSettings):
     #: window reaching inside this horizon is not settled, and every read verb
     #: says so rather than letting a partial day read as a decline.
     restatement_days: int = 3
+
+    # ---- the Meta import (meta_ads/) -------------------------------------
+    # Moved here from growth-engine along with the importer. The boundary is
+    # no longer "this repo reads, that one writes" -- it is "everything Meta
+    # is here, copy production is there".
+
+    #: Which Graph API version every request is pinned to.
+    #:
+    #: Pinned rather than left unversioned because the symptom of a sunset
+    #: version is a field quietly missing from a response, not an error. Every
+    #: meta_pulls row stores the version it ran under, so when a column goes
+    #: empty across the board the first question is answerable.
+    #:
+    #: VERIFIED CURRENT ON 2026-09-15: v26.0 shipped 2026-07-29. Meta ships
+    #: roughly every five months and supports a version for about two years,
+    #: so this is a value to re-check rather than trust indefinitely.
+    meta_api_version: str = "v26.0"
+
+    #: Split from the version so a test, or a proxy, can point the client
+    #: somewhere else without rewriting paths.
+    meta_graph_base: str = "https://graph.facebook.com"
+
+    #: Seconds to wait on one Graph request. Generous, and for the opposite
+    #: reason to a web timeout: nobody is watching a pull. An insights page
+    #: covering thirty days of a large account genuinely takes tens of
+    #: seconds, and a timeout firing mid-import costs rate-limit budget.
+    meta_timeout: float = 30.0
+
+    #: Where log.get() puts its rotating handler. The importer logs; the read
+    #: verbs do not.
+    log_file: str = "logs/engine.log"
 
     @property
     def write_url(self) -> str:

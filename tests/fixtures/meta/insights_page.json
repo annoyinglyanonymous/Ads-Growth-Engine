@@ -1,0 +1,69 @@
+{
+  "data": [
+    {
+      "ad_id": "120210000000000001",
+      "ad_name": "Outreach101 | Ad A",
+      "adset_id": "23850000000000001",
+      "campaign_id": "23840000000000001",
+      "date_start": "2026-09-10",
+      "date_stop": "2026-09-10",
+      "impressions": "4821",
+      "reach": "3980",
+      "frequency": "1.2113",
+      "clicks": "132",
+      "inline_link_clicks": "104",
+      "ctr": "2.7381",
+      "inline_link_click_ctr": "2.1572",
+      "cpc": "1.4318",
+      "cpm": "39.2043",
+      "spend": "189.00",
+      "actions": [
+        {"action_type": "link_click", "value": "104"},
+        {"action_type": "landing_page_view", "value": "88"},
+        {"action_type": "lead", "value": "7"},
+        {"action_type": "onsite_conversion.lead_grouped", "value": "5"},
+        {"action_type": "post_engagement", "value": "141"}
+      ],
+      "cost_per_action_type": [
+        {"action_type": "link_click", "value": "1.8173"},
+        {"action_type": "lead", "value": "27.0"}
+      ],
+      "quality_ranking": "ABOVE_AVERAGE",
+      "engagement_rate_ranking": "AVERAGE",
+      "conversion_rate_ranking": "UNKNOWN"
+    },
+    {
+      "ad_id": "120210000000000004",
+      "ad_name": "Outreach101 | Ad B",
+      "adset_id": "23850000000000001",
+      "campaign_id": "23840000000000001",
+      "date_start": "2026-09-10",
+      "date_stop": "2026-09-10",
+      "impressions": "1204",
+      "reach": "1101",
+      "frequency": "1.0936",
+      "clicks": "19",
+      "inline_link_clicks": "12",
+      "ctr": "1.5781",
+      "inline_link_click_ctr": "0.9967",
+      "cpc": "2.2105",
+      "cpm": "34.8837",
+      "spend": "42.00",
+      "actions": [
+        {"action_type": "link_click", "value": "12"}
+      ],
+      "cost_per_action_type": [
+        {"action_type": "link_click", "value": "3.5"}
+      ],
+      "quality_ranking": "UNKNOWN",
+      "engagement_rate_ranking": "UNKNOWN",
+      "conversion_rate_ranking": "UNKNOWN"
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "MAZDZD",
+      "after": "MQZDZD"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "data": [
+    {
+      "id": "120210000000000004",
+      "name": "Outreach101 | Ad B",
+      "adset_id": "23850000000000001",
+      "campaign_id": "23840000000000001",
+      "status": "PAUSED",
+      "effective_status": "ADSET_PAUSED",
+      "created_time": "2026-08-03T09:14:02-0700",
+      "updated_time": "2026-09-09T10:31:47-0700",
+      "creative": {
+        "id": "23860000000000004",
+        "name": "Outreach101 B v2",
+        "object_story_spec": {
+          "page_id": "101000000000001",
+          "link_data": {
+            "link": "https://renegadeinsurance.com/franchise?utm_source=facebook&utm_medium=paid_social&utm_campaign=outreach101&utm_content=ad-b-v2",
+            "name": "The split is the offer",
+            "message": "No desk fees, no production quota, no surprise clawback.",
+            "call_to_action": {"type": "LEARN_MORE"}
+          }
+        }
+      }
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "QVFIUlVjQnBZAVlNvcGFnZATI",
+      "after": "QVFIUmxhc3RwYWdlY3Vyc29y"
+    }
+  }
+}

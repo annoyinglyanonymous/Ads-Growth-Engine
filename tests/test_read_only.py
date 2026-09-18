@@ -194,3 +194,68 @@ def test_nothing_on_the_read_pool_touches_public(path: Path):
             f"ads_reader holds no grant in public. Add a seam view in ads.* "
             f"and read that -- see migrations/008_ads_brand_seam.sql."
         )
+
+
+# ---------------------------------------------------------------------------
+# The third pool, added when the importer moved in from growth-engine.
+#
+# meta_ads/ writes public.meta_* and must: that is its whole job. The risk is
+# not that it writes, it is that its pool is now sitting in this repo where a
+# read verb could reach it. db.py offers no cursor precisely so that intel/
+# cannot write; importing db_meta would hand back everything that guard takes
+# away, and it would look like a one-line convenience in a diff.
+#
+# So the pool is scoped by a list, the same way db_owner is.
+# ---------------------------------------------------------------------------
+
+#: Everything allowed to open the import pool. meta_ads/ does the importing;
+#: sync.py is the scheduled wrapper around it; conftest opens it for dbtests.
+MAY_IMPORT_DB_META = {
+    "meta_ads", "scripts/sync.py", "tests/conftest.py",
+}
+
+
+def _may_import_meta(rel: str) -> bool:
+    # The importer's own dbtests open the pool to read back what a pull wrote;
+    # asserting on the rows is the point of them. Scoped to test_meta_* rather
+    # than to tests/ as a whole, so a new test elsewhere cannot quietly become
+    # the place the boundary is crossed.
+    if rel.startswith("tests/test_meta_"):
+        return True
+    return rel in MAY_IMPORT_DB_META or rel.split("/")[0] in MAY_IMPORT_DB_META
+
+
+def _all_sources() -> list[Path]:
+    return [p for p in ROOT.rglob("*.py")
+            if ".venv" not in p.parts and "__pycache__" not in p.parts]
+
+
+def test_only_the_importer_opens_the_import_pool():
+    offenders = []
+    for path in _all_sources():
+        rel = path.relative_to(ROOT).as_posix()
+        if _may_import_meta(rel):
+            continue
+        if any(m == "db_meta" or m.startswith("db_meta.") for m in _imports(path)):
+            offenders.append(rel)
+    assert not offenders, (
+        f"{offenders} import db_meta, the pool that can write public.*. "
+        f"Only meta_ads/ may. If a read verb needs something from public, it "
+        f"wants a seam view in ads.* -- see migrations/008_ads_brand_seam.sql.")
+
+
+def test_the_importer_does_not_reach_for_the_ads_pools():
+    """And the boundary holds in the other direction too.
+
+    meta_ads/ owns public.meta_*; it has no business writing ads.*, which is
+    derived from what it imports. If the importer ever wrote a fact row
+    directly, ads.fact_ad_day would stop being a view over the truth and start
+    being a second copy of it -- which is the staleness this whole design
+    avoids.
+    """
+    for path in sorted((ROOT / "meta_ads").glob("*.py")):
+        names = _imports(path)
+        assert "db_owner" not in names, path.name
+        assert "db" not in names, (
+            f"{path.name} imports db (the ads_reader pool). The importer's "
+            f"connection is db_meta.")

@@ -1,0 +1,12 @@
+{
+  "error": {
+    "message": "(#17) User request limit reached",
+    "type": "OAuthException",
+    "code": 17,
+    "error_subcode": 2446079,
+    "is_transient": true,
+    "error_user_title": "Ad Account Has Too Many API Calls",
+    "error_user_msg": "There have been too many calls from this ad account. Wait a bit and try again.",
+    "fbtrace_id": "AbCdEfGhIjKlMnOpQrStUv"
+  }
+}
