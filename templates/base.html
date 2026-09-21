@@ -452,6 +452,7 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
   <div class="rail-group">Measurement</div>
   <nav>
     {% for key, href, label, glyph in [
+        ('brief',    '/brief',    'The brief',   'overview'),
         ('overview', '/',         'Overview',    'overview'),
         ('why',      '/why',      'Why CPA moved','why')] %}
       <a class="rail-link" href="{{ href }}{% if brand %}?brand={{ brand }}{% endif %}"

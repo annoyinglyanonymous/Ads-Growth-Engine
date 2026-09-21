@@ -51,7 +51,11 @@ async def overview(slug: str, days: int = 28, until: date | None = None,
                rv.overall as review_overall, rv.angle_observed
           from ads.window_metrics(%s, %s, %s, %s) w
           left join ads.ad d          on d.ad_key   = w.entity_key
-          left join ads.ad_facet fa   on fa.ad_key  = w.entity_key
+          -- facet_effective, not ad_facet: the latter holds one row per wording
+          -- ever tagged, so joining it on ad_key alone fanned this list out --
+          -- one ad appearing N times under N angles. It also means an ad the
+          -- engine shipped carries its angle here without anyone tagging it.
+          left join ads.facet_effective fa on fa.ad_key = w.entity_key
           left join ads.angle ang     on ang.id     = fa.angle_id
           left join ads.ad_review_latest rv on rv.ad_key = w.entity_key
          order by w.spend desc nulls last
@@ -230,7 +234,19 @@ async def ad(ad_key: str, days: int = 90) -> dict:
                fa.confidence, fa.rationale, fa.tagged_by, fa.copy_hash
           from ads.ad_facet fa
           left join ads.angle ang on ang.id = fa.angle_id
+          left join ads.ad_copy c on c.ad_key = fa.ad_key
          where fa.ad_key = %s
+         -- Deliberately ads.ad_facet and not ads.facet_effective: this page is
+         -- where a stale tag has to be VISIBLE, and facet_effective drops it by
+         -- construction, which would make tag_is_stale permanently false.
+         --
+         -- The ordering is what was missing. An ad carries one facet row per
+         -- wording ever tagged, and fetch_one with no ORDER BY returned an
+         -- arbitrary one -- so tag_is_stale was a coin flip whenever more than
+         -- one existed. Current wording first, then newest.
+         order by (fa.copy_hash = c.copy_hash) desc nulls last,
+                  fa.created_at desc
+         limit 1
         """, (ad_key,))
     review = await fetch_one(
         "select overall, angle_observed, reviewed_at, reviewed_by "

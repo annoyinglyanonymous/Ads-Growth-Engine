@@ -22,7 +22,7 @@ from uuid import UUID
 import db
 from config import NotConfigured
 
-from . import angles, experiments, health, live as live_mod, metrics
+from . import angles, brief, experiments, health, live as live_mod, metrics
 from .context import UnknownBrand
 from .graph import GraphError, NotConfigured as TokenNotConfigured
 from .shapes import SHAPES, ShapeError
@@ -82,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--days", type=int, default=days)
         s.add_argument("--until", help="YYYY-MM-DD; defaults to the settled edge")
         return s
+
+    # The recurring read. Composed from the verbs below it and computing
+    # nothing itself, so anything it reports can be re-derived by running the
+    # verb named in that section's `from` key.
+    s = windowed("brief", "the recurring read: what worked, what is tiring, "
+                          "what to test next")
+    s.add_argument("--product", default=None)
 
     s = windowed("overview", "what ran, what it cost, what a reviewer thought")
     s.add_argument("--level", choices=("ad", "ad_group", "campaign"), default="ad")
@@ -157,6 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run(a: argparse.Namespace) -> dict:
     v = a.verb
+    if v == "brief":
+        return await brief.brief(a.brand, a.days, _day(a.until), a.product)
     if v == "overview":
         return await metrics.overview(a.brand, a.days, _day(a.until), a.level, a.limit)
     if v == "compare":

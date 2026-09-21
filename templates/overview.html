@@ -52,23 +52,26 @@
         {#- Spend has no merit direction. More spend is not better and not
             worse, so this delta gets an arrow and the muted colour -- the
             same reason a weather report does not colour rainfall red. -#}
-        <div class="delta {{ 'up' if deltas.spend > 0 else 'down' if deltas.spend < 0 else 'flat' }}">
+        <div class="delta {{ 'up' if (deltas.spend or 0) > 0 else 'down' if (deltas.spend or 0) < 0 else 'flat' }}">
           {{ money(deltas.spend) }} vs prior {{ d.days }}d</div>
       </div>
       <div class="kpi">
         <div class="k">Conversions</div>
         <div class="v">{{ num(agg.conversions) }}</div>
-        <div class="delta {{ 'up good' if deltas.conversions > 0 else 'down bad' if deltas.conversions < 0 else 'flat' }}">
+        <div class="delta {{ 'up good' if (deltas.conversions or 0) > 0 else 'down bad' if (deltas.conversions or 0) < 0 else 'flat' }}">
           {{ num(deltas.conversions) }} vs prior {{ d.days }}d</div>
       </div>
       <div class="kpi">
         <div class="k">Link CTR</div>
-        <div class="v">{{ pct(agg.link_ctr) }}</div>
+        {#- agg.rates, not agg.link_ctr: the rate is read out of the jsonb
+            ads.rate() returned, so this tile and `intel overview` cannot
+            disagree. This page used to divide here. -#}
+        <div class="v">{{ pct(agg.rates.link_ctr) }}</div>
         <div class="delta flat">link clicks, not all clicks</div>
       </div>
       <div class="kpi">
         <div class="k">CPM</div>
-        <div class="v">{{ money(agg.cpm) }}</div>
+        <div class="v">{{ money(agg.rates.cpm) }}</div>
         <div class="delta flat">{{ num(agg.impressions) }} impressions</div>
       </div>
     </div>
@@ -76,14 +79,21 @@
 
   <section class="card dark" aria-label="Cost per acquisition">
     <div class="k" style="font-size:11.5px">CPA</div>
-    <div class="big" style="margin-top:2px">{{ money(agg.cpa) }}</div>
-    {#- No delta on this tile, and that is the point. A per-ad CPA delta is
-        not additive, so summing one produces a confident wrong number. The
-        honest brand-level movement is a decomposition and it has its own
-        page. -#}
-    <div class="n" style="margin-top:6px">
-      A brand CPA delta is not the sum of its ads&rsquo; deltas &mdash; it is a
-      decomposition.</div>
+    <div class="big" style="margin-top:2px">{{ money(agg.rates.cpa) }}</div>
+    {#- This tile carried no movement until 011 gave window_metrics a brand
+        level, because a per-ad CPA delta is not additive and summing one
+        produces a confident wrong number. The figure below is ads.compare's
+        own brand-level delta, not a sum -- but knowing CPA moved still does
+        not say why, so the decomposition keeps its link. -#}
+    {% if deltas.cpa is not none %}
+      <div class="delta {{ 'down good' if deltas.cpa < 0 else 'up bad' if deltas.cpa > 0 else 'flat' }}"
+           style="margin-top:6px">
+        {{ money(deltas.cpa) }} vs prior {{ d.days }}d</div>
+    {% else %}
+      <div class="n" style="margin-top:6px">
+        No prior CPA to compare against &mdash; nothing converted in one of the
+        two windows.</div>
+    {% endif %}
     <a class="btn ghost" style="margin-top:12px"
        href="/why?brand={{ d.brand }}">What moved it{{ ico.i('arrow-right') }}</a>
     <div class="n" style="margin-top:10px">

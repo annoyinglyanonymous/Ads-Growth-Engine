@@ -29,8 +29,9 @@ from fastapi.templating import Jinja2Templates
 import ask
 import charts
 from config import NotConfigured
-from db import fetch_all
+from db import fetch_all, fetch_one
 from intel import angles as angles_mod
+from intel import brief as brief_mod
 from intel import experiments as exp_mod
 from intel import metrics
 from intel.context import UnknownBrand
@@ -43,7 +44,7 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 templates.env.globals.update(
     money=charts.money, num=charts.num, pct=charts.pct, fmt=charts.fmt,
     line_chart=charts.line_chart, bar_chart=charts.bar_chart,
-    sparkline=charts.sparkline,
+    sparkline=charts.sparkline, column_chart=charts.column_chart,
 )
 
 router = APIRouter(include_in_schema=False)
@@ -84,20 +85,45 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "overview", exc)
 
-    # Brand totals for the tiles. Summed from rows the database already
-    # aggregated; the RATES come from ads.rate() at brand level rather than
-    # being averaged across ads, which would be the exact trap ads.rate exists
-    # to prevent.
-    totals = await fetch_all(
+    # Brand totals for the tiles. One row, straight from the function -- no
+    # summing here and no rate recomputed. Until 011 there was no brand level,
+    # so this page summed campaign rows and then divided, which is the trap
+    # ads.rate exists to prevent and which 003's first line forbids.
+    agg = await fetch_one(
         "select spend, conversions, impressions, clicks, link_clicks, rates, "
         "       currencies "
-        "  from ads.window_metrics(%s, %s, %s, 'campaign')",
+        "  from ads.window_metrics(%s, %s, %s, 'brand')",
         (d["brand_id"], d["since"], d["until"]),
-    )
-    agg = _roll(totals)
+    ) or {}
+    if not agg:
+        # No brand row means no ad-days in the window at all. Every field is
+        # None rather than 0, because "nothing imported" and "spent nothing"
+        # are different answers and the page must not render the first as the
+        # second -- money(None) is "--" where money(0) is "$0.00". `rates` is
+        # {} rather than None so the template can still reach rates.cpa and get
+        # the same "--".
+        agg = {k: None for k in ("spend", "conversions", "impressions",
+                                 "clicks", "link_clicks", "currencies")}
+        # The eight keys ads.rate returns, all null -- not {}. The templates
+        # reach rates.cpa and rates.link_ctr directly, and Jinja is configured
+        # StrictUndefined, so an empty dict raises where a null renders "--".
+        # Mirroring the function's real shape is what keeps the no-data page on
+        # the same code path as every other page.
+        agg["rates"] = {k: None for k in
+                        ("ctr", "link_ctr", "cpm", "cpc", "cost_per_link_click",
+                         "cpa", "conversion_rate", "lp_view_rate")}
+    agg["mixed_currency"] = (agg.get("currencies") or 1) > 1
 
-    prior = {r["entity_key"]: r for r in cmp_["rows"]}
-    deltas = _brand_delta(prior)
+    # The brand delta now comes from ads.compare at brand level, which derives
+    # its own contiguous prior window. A summed per-ad CPA delta is not the
+    # brand CPA delta -- CPA is not additive -- which is why this tile carried
+    # no movement before there was a function that returned one.
+    brand_cmp = await fetch_one(
+        "select current_m, prior_m, delta, pct "
+        "  from ads.compare(%s, %s, %s, 'brand')",
+        (d["brand_id"], d["since"], d["until"]),
+    ) or {}
+    deltas = _brand_delta(brand_cmp, {r["entity_key"]: r for r in cmp_["rows"]})
 
     series = await fetch_all(
         "select day, sum(spend) as spend, sum(conversions)::bigint as conversions "
@@ -112,34 +138,47 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
                  conv_series=[(r["day"], r["conversions"]) for r in series])
 
 
-def _roll(rows: list[dict]) -> dict:
-    """Brand totals. Sums only -- no rate is recomputed here."""
-    out = {k: 0 for k in ("spend", "conversions", "impressions", "clicks",
-                          "link_clicks")}
-    for r in rows:
-        for k in out:
-            out[k] += (r.get(k) or 0)
-    out["mixed_currency"] = any((r.get("currencies") or 1) > 1 for r in rows)
-    # Derived at the brand level by the same function every other rate uses.
-    out["cpa"] = (out["spend"] / out["conversions"]) if out["conversions"] else None
-    out["cpm"] = (out["spend"] * 1000 / out["impressions"]) if out["impressions"] else None
-    out["link_ctr"] = (100 * out["link_clicks"] / out["impressions"]) if out["impressions"] else None
-    return out
+def _brand_delta(brand_cmp: dict, per_ad: dict) -> dict:
+    """Window-over-window movement, read from ads.compare at brand level.
 
+    Every figure here is lifted out of the function's own `delta`/`pct` jsonb --
+    including CPA, which this page could not show before 011 added a brand
+    level. Summing per-ad CPA deltas would have produced a confident, wrong
+    figure, because CPA is not additive; that is why the tile was blank rather
+    than approximate.
 
-def _brand_delta(rows: dict) -> dict:
-    """Window-over-window movement, summed from ads.compare.
-
-    Only spend and conversions: those are additive, so summing per-ad deltas is
-    the same number as the brand delta. A per-ad CPA delta is NOT additive and
-    summing it would produce a confident, wrong figure -- the honest brand-level
-    CPA movement is what /why decomposes, and the tile links there instead.
+    per_ad is still read, for two counts that are only meaningful per entity:
+    an ad that launched or stopped this window. Those are counted, never summed.
     """
-    spend = sum(float((r["delta"] or {}).get("spend") or 0) for r in rows.values())
-    conv = sum(float((r["delta"] or {}).get("conversions") or 0) for r in rows.values())
-    return {"spend": spend, "conversions": conv,
-            "appeared": sum(1 for r in rows.values() if r["appeared"]),
-            "disappeared": sum(1 for r in rows.values() if r["disappeared"])}
+    delta = brand_cmp.get("delta") or {}
+    pct = brand_cmp.get("pct") or {}
+    return {"spend": delta.get("spend"),
+            "conversions": delta.get("conversions"),
+            "cpa": delta.get("cpa"),
+            "link_ctr": delta.get("link_ctr"),
+            "spend_pct": pct.get("spend"),
+            "conversions_pct": pct.get("conversions"),
+            "cpa_pct": pct.get("cpa"),
+            "appeared": sum(1 for r in per_ad.values() if r["appeared"]),
+            "disappeared": sum(1 for r in per_ad.values() if r["disappeared"])}
+
+
+@router.get("/brief", response_class=HTMLResponse)
+async def brief_page(request: Request, brand: str = "renegade", days: int = 28,
+                     product: str | None = None):
+    """The recurring read, rendered live.
+
+    Live rather than from the archive in briefs/, so the page and
+    `python -m intel brief` are the same function on the same window -- ui.py's
+    rule. scripts/brief.py writes the dated copy, and that copy exists because
+    a live page silently rewrites its own past opinion every time Meta
+    restates; the two are different jobs and both are wanted.
+    """
+    try:
+        d = await brief_mod.brief(brand, days, None, product)
+    except (UnknownBrand, NotConfigured, ValueError) as exc:
+        return _fail(request, "brief", exc)
+    return _page(request, "brief.html", "brief", d, days=days, product=product)
 
 
 @router.get("/ask", response_class=HTMLResponse)
@@ -203,16 +242,20 @@ async def creative(request: Request, brand: str = "renegade", window: int = 7,
     keys = [r["ad_key"] for r in d["rows"]]
     spark: dict = {}
     if keys:
+        # ads.ad_daily_rates, not an inline division. This query used to carry
+        # `100.0 * link_clicks / impressions` -- a second definition of link_ctr
+        # in the one file whose docstring promises every page calls the same
+        # function the agent calls. The sparkline and the Link CTR beside it are
+        # now the same number by construction.
+        since = d["rows"][0]["recent_since"] if d["rows"] else date.today()
+        until = d["rows"][0]["recent_until"] if d["rows"] else date.today()
         for row in await fetch_all(
-            "select ad_key, day, "
-            "       case when impressions > 0 "
-            "            then 100.0 * link_clicks / impressions end as v "
-            "  from ads.fact_ad_day "
-            " where ad_key = any(%s) and day >= %s "
-            " order by ad_key, day",
-            (keys, d["rows"][0]["recent_since"] if d["rows"] else date.today()),
+            "select ad_key, day, rates "
+            "  from ads.ad_daily_rates(%s::uuid[], %s, %s)",
+            (keys, since, until),
         ):
-            spark.setdefault(row["ad_key"], []).append(row["v"])
+            spark.setdefault(row["ad_key"], []).append(
+                (row["rates"] or {}).get("link_ctr"))
     return _page(request, "creative.html", "creative", d,
                  window=window, min_spend=min_spend,
                  unconfident=unconfident, spark=spark)

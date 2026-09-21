@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 
 from intel import angles as angles_mod
+from intel import brief as brief_mod
 from intel import experiments as exp_mod
 from intel import health, metrics
 
@@ -50,6 +51,7 @@ VERBS = {
     "candidates":  "reviewer handles not yet mapped to the bank",
     "experiments": "what has been tested before",
     "status":      "whether any of this is worth reading",
+    "brief":       "the recurring read, assembled from all of the above",
 }
 
 #: Matched in order, so the specific patterns sit above the general ones.
@@ -114,7 +116,9 @@ async def answer(question: str, brand: str) -> dict:
     verb, args = route(question)
     days = args.get("days")
 
-    if verb == "overview":
+    if verb == "brief":
+        d = await brief_mod.brief(brand, days or 28, None)
+    elif verb == "overview":
         d = await metrics.overview(brand, days or 28, None, "campaign", limit=12)
     elif verb == "compare":
         d = await metrics.compare(brand, days or 14, None, "ad", limit=20)

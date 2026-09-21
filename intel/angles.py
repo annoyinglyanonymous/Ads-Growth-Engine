@@ -20,7 +20,8 @@ async def angles(slug: str, days: int = 90, until: date | None = None,
     f = await _frame(slug, days, until)
     rows = await fetch_all(
         """
-        select angle_id, family, angle_slug, angle_name, ads_run, spend,
+        select angle_id, family, angle_slug, angle_name, definition, ads_run,
+               tagged_ads, inherited_ads, stale_tag_ads, spend,
                conversions, cpa, first_run, last_run, state
           from ads.angle_coverage(%s::uuid, %s, %s, %s::text, %s::numeric)
         """,
@@ -42,8 +43,19 @@ async def angles(slug: str, days: int = 90, until: date | None = None,
         # angle is something the agent suggested and nobody has signed. Listing
         # it beside tested angles would read as part of the vocabulary.
         "awaiting_approval": proposed,
+        "stale_tag_ads": sum((r["stale_tag_ads"] or 0) for r in rows),
         "note": "cpa is only comparable between angles whose ads ran under the "
                 "same optimization_goal. Check before ranking on it.",
+        # Two things a reader cannot see in a spend column and should not have
+        # to ask for. inherited_ads is how much of an angle's number nobody
+        # judged; stale_tag_ads is spend MISSING from it because the only tag
+        # those ads carry describes wording they no longer run.
+        "attribution_note": "inherited_ads were read off the campaign_asset "
+                            "chain, not judged by anyone. stale_tag_ads are "
+                            "absent from spend entirely: ads.ad_copy holds "
+                            "only the current wording (002:249), so copy that "
+                            "was rewritten cannot be attributed to what it "
+                            "said at the time.",
     }
 
 
@@ -118,7 +130,8 @@ async def coverage(slug: str, product: str | None = None, days: int = 365,
     """What we have never run. The set difference the bank exists for."""
     f = await _frame(slug, days, until)
     rows = await fetch_all(
-        "select angle_id, family, angle_slug, angle_name, ads_run, spend, "
+        "select angle_id, family, angle_slug, angle_name, definition, ads_run, "
+        "       tagged_ads, inherited_ads, stale_tag_ads, spend, "
         "       conversions, cpa, first_run, last_run, state "
         # Cast for the same reason as ads.fatigue: a bare NULL product arrives
         # as `unknown` and a float min_spend as double precision, and neither
@@ -184,7 +197,7 @@ async def versus(slug: str, a: str, b: str, days: int = 30,
                             sum(f.conversions)::bigint,
                             sum(f.landing_page_views)::bigint) as rates
               from ads.fact_ad_day f
-              join ads.ad_facet fa on fa.ad_key = f.ad_key
+              join ads.facet_effective fa on fa.ad_key = f.ad_key
              where f.brand_id = %s and fa.angle_id = %s
                and f.day between %s and %s
             """,
@@ -194,7 +207,7 @@ async def versus(slug: str, a: str, b: str, days: int = 30,
             """
             select g.optimization_goal, sum(f.spend) as spend
               from ads.fact_ad_day f
-              join ads.ad_facet fa on fa.ad_key = f.ad_key
+              join ads.facet_effective fa on fa.ad_key = f.ad_key
               join ads.ad d on d.ad_key = f.ad_key
               left join ads.ad_group g on g.ad_group_key = d.ad_group_key
              where f.brand_id = %s and fa.angle_id = %s

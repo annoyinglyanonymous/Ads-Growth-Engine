@@ -48,9 +48,24 @@ from html import escape
 
 Number = float | int | Decimal | None
 
+# Jinja is configured StrictUndefined, so a key a template asks for and the
+# data does not have arrives here as an Undefined rather than as None -- and
+# float(Undefined) raises UndefinedError, which is a TemplateError and neither
+# a TypeError nor a ValueError. It therefore walked straight through the guard
+# in _f and became a 500 on a page whose only problem was a missing number.
+#
+# That is the wrong failure by a wide margin. Every other absent value in this
+# module renders "--"; a page should not die because one field was not in the
+# result. Imported defensively so charts.py stays usable without jinja2 --
+# isinstance against an empty tuple is simply always False.
+try:
+    from jinja2 import Undefined as _Undefined
+except ImportError:  # pragma: no cover - only when rendering outside a template
+    _Undefined = ()  # type: ignore[assignment,misc]
+
 
 def _f(v: Number) -> float | None:
-    if v is None:
+    if v is None or isinstance(v, _Undefined):
         return None
     try:
         return float(v)
