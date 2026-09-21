@@ -32,6 +32,43 @@ from meta_ads.client import GraphClient, MetaError, TokenInvalid
 INSIGHTS_LOOKBACK_DAYS = 30
 INSIGHTS_RESTATEMENT_DAYS = 3
 
+#: Days of insights per request.
+#:
+#: The window is chunked because `level=ad` with `time_increment=1` makes Meta
+#: compute one row per ad per day for the WHOLE time_range before it returns
+#: the first page. On an account with four hundred ads a thirty-day range is
+#: twelve thousand rows of server-side work, and that is the shape of request
+#: that times out -- "Please reduce the amount of data you're asking for" is
+#: what act_153704749222533 said to a much cheaper /ads call.
+#:
+#: The page-size halving in client.py does NOT help here, and that distinction
+#: is the reason this constant exists rather than a bigger limit. `limit`
+#: governs how many rows come back per page; it does nothing about how many
+#: Meta had to compute to answer at all. A too-expensive query needs a smaller
+#: WINDOW, not a smaller page.
+#:
+#: Seven rather than one: a day per request turns a month into thirty round
+#: trips against a rate limiter this module is careful about, and a week is
+#: comfortably inside what Meta serves for accounts this size.
+INSIGHTS_CHUNK_DAYS = 7
+
+
+def _chunks(since: date, until: date, size: int) -> list[tuple[date, date]]:
+    """[since, until] split into contiguous spans of at most `size` days.
+
+    Inclusive at both ends, like Meta's time_range, so a 7-day chunk really is
+    seven days and consecutive chunks do not overlap -- an overlap would be
+    harmless (the upsert is keyed on (ad_id, date)) but it would pay for the
+    same day twice against the rate limit.
+    """
+    out: list[tuple[date, date]] = []
+    start = since
+    while start <= until:
+        end = min(start + timedelta(days=size - 1), until)
+        out.append((start, end))
+        start = end + timedelta(days=1)
+    return out
+
 
 class BrandNotFound(ValueError):
     """A brand slug that is not in `public.brands`."""
@@ -110,19 +147,31 @@ async def _pull_insights(graph: GraphClient, account: dict, *,
         since=window_since, until=window_until, started_by=started_by,
         api_version=api_version)
     try:
-        rows = []
-        async for raw in graph.insights(act_id, since=window_since,
-                                        until=window_until):
-            rows.append(parse.insight_row(raw, currency=account.get(
-                "currency")))
-        # A dict since 046, not a bare count: an orphaned insights row -- an ad
-        # that spent in the window and has since been deleted, so /ads no longer
-        # returns it -- is skipped rather than aborting the account's whole
-        # batch on the foreign key. The skip lands in meta_pulls.counts where
-        # somebody can see it; a silently smaller number would read as a quiet
-        # week.
-        counts.update(await store.upsert_insights(
-            rows, brand_id=brand_id, account_id=act_id, pull_id=run_id))
+        spans = _chunks(window_since, window_until, INSIGHTS_CHUNK_DAYS)
+        for span_since, span_until in spans:
+            rows = []
+            async for raw in graph.insights(act_id, since=span_since,
+                                            until=span_until):
+                rows.append(parse.insight_row(raw, currency=account.get(
+                    "currency")))
+            # Written per chunk, not once at the end. Accumulating the whole
+            # window in memory and upserting it in one go means a failure on
+            # the last day discards the first twenty-nine -- which is what a
+            # partial import should never cost, because meta_ad_insights
+            # upserts on (ad_id, date) and a re-run would have resumed.
+            #
+            # A dict since 046, not a bare count: an orphaned insights row --
+            # an ad that spent in the window and has since been deleted, so
+            # /ads no longer returns it -- is skipped rather than aborting the
+            # account's whole batch on the foreign key. The skip lands in
+            # meta_pulls.counts where somebody can see it; a silently smaller
+            # number would read as a quiet week.
+            written = await store.upsert_insights(
+                rows, brand_id=brand_id, account_id=act_id, pull_id=run_id)
+            for key, value in written.items():
+                if isinstance(value, int):
+                    counts[key] = counts.get(key, 0) + value
+        counts["chunks"] = len(spans)
         await store.finish_pull(run_id, status="ok", counts=counts)
         return counts
     except Exception as exc:

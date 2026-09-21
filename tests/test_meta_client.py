@@ -33,8 +33,9 @@ import pytest
 import log as logmod
 from config import settings
 from meta_ads import client as graph_client
-from meta_ads.client import (AccountUnavailable, GraphClient, GraphError,
-                             NotConfigured, RateLimited, TokenInvalid)
+from meta_ads.client import (MAX_REDUCTIONS, TRIES, AccountUnavailable,
+                             GraphClient, GraphError, NotConfigured,
+                             RateLimited, TokenInvalid)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "meta"
 
@@ -501,3 +502,153 @@ def test_the_scrubber_catches_a_token_shape_on_its_own():
     `paging.next` and inside some error messages."""
     assert TOKEN not in graph_client._scrub(f"paging.next={TOKEN}&x=1")
     assert graph_client._scrub("nothing here") == "nothing here"
+
+
+# ---------------------------------------------------------------------------
+# Transient errors. Meta says "retry later"; the client used not to.
+# ---------------------------------------------------------------------------
+
+def _transient(code: int = 2) -> dict:
+    return {"error": {"message": "An unexpected error has occurred. "
+                                 "Please retry your request later.",
+                      "type": "OAuthException", "code": code}}
+
+
+def test_a_transient_error_is_retried_rather_than_losing_the_pull():
+    """Code 2 used to raise on the spot, and on a large account that threw
+    away everything paginated so far.
+
+    Observed on act_153704749222533: a structure pull ran for eight minutes
+    through two hundred campaigns, hit one code 2 near the end, and imported
+    nothing at all. Meta's own message for this code asks you to retry.
+    """
+    recorder = Recorder(
+        httpx.Response(500, json=_transient(2)),
+        httpx.Response(200, json=_fixture("ads_page_2.json")),
+    )
+    sleeps = Sleeps()
+    ads = _run(recorder, sleeps, _collect("ads", ACCOUNT))
+
+    assert [ad["id"] for ad in ads] == ["120210000000000004"]
+    assert sleeps.waits == [5.0], (
+        "a transient blip should wait seconds, not the rate limiter's minute")
+
+
+def test_a_transient_error_backs_off_but_stays_bounded():
+    """Three attempts and a clear message, not an unbounded loop -- if Meta is
+    genuinely down, a job that never returns is worse than one that fails."""
+    recorder = Recorder(*[httpx.Response(500, json=_transient(2))
+                          for _ in range(3)])
+    sleeps = Sleeps()
+    with pytest.raises(GraphError) as exc:
+        _run(recorder, sleeps, _collect("ads", ACCOUNT))
+
+    assert sleeps.waits == [5.0, 10.0]
+    assert "after 3 attempts" in str(exc.value), (
+        "the message must distinguish one blip from sustained downtime")
+
+
+def test_a_permission_refusal_is_still_never_retried():
+    """The new retry path must not swallow the errors that are answers.
+
+    A 200 is a fact about the account, not weather: retrying it three times
+    delays a message somebody needs to act on.
+    """
+    recorder = Recorder(
+        httpx.Response(400, json={"error": {"message": "not granted",
+                                            "type": "OAuthException",
+                                            "code": 200}}),
+    )
+    sleeps = Sleeps()
+    with pytest.raises(AccountUnavailable):
+        _run(recorder, sleeps, _collect("ads", ACCOUNT))
+
+    assert sleeps.waits == []
+
+
+def test_code_1_is_still_not_retried():
+    """Guards the boundary of TRANSIENT_CODES from the obvious "well, 1 looks
+    transient too" edit.
+
+    Meta documents code 1 as "API Unknown", which is a permanently malformed
+    request about as often as it is weather. Retrying it turns one fast, clear
+    failure into three slow ones. The evidence for retrying was specific to
+    code 2 and so is the set.
+    """
+    recorder = Recorder(httpx.Response(500, json=_transient(1)))
+    sleeps = Sleeps()
+    with pytest.raises(GraphError):
+        _run(recorder, sleeps, _collect("ads", ACCOUNT))
+
+    assert sleeps.waits == []
+    assert len(recorder.requests) == 1
+
+
+# ---------------------------------------------------------------------------
+# "Please reduce the amount of data." A size to discover, not weather.
+# ---------------------------------------------------------------------------
+
+def _too_much() -> dict:
+    return {"error": {"message": "Please reduce the amount of data you're "
+                                 "asking for, then retry your request",
+                      "type": "OAuthException", "code": 1}}
+
+
+def test_too_much_data_halves_the_page_and_retries():
+    """Observed on act_153704749222533: page one serves at 100 and something
+    deeper in two hundred campaigns does not. The weight of an ads page is a
+    property of the creatives on it, so the size cannot be chosen in advance --
+    only discovered."""
+    recorder = Recorder(
+        httpx.Response(400, json=_too_much()),
+        httpx.Response(200, json=_fixture("ads_page_2.json")),
+    )
+    sleeps = Sleeps()
+    ads = _run(recorder, sleeps, _collect("ads", ACCOUNT))
+
+    assert [ad["id"] for ad in ads] == ["120210000000000004"]
+    assert recorder.param(0, "limit") == "100"
+    assert recorder.param(1, "limit") == "50", "the retry must be smaller"
+    assert sleeps.waits == [], "nothing is throttled; sleeping here is dead time"
+
+
+def test_the_smaller_page_size_is_kept_for_the_rest_of_the_pull():
+    """Re-learning the size on every page would pay the refusal once per page
+    for the whole account."""
+    recorder = Recorder(
+        httpx.Response(400, json=_too_much()),
+        httpx.Response(200, json=_fixture("ads_page_1.json")),
+        httpx.Response(200, json=_fixture("ads_page_2.json")),
+    )
+    _run(recorder, Sleeps(), _collect("ads", ACCOUNT))
+
+    assert recorder.param(1, "limit") == "50"
+    assert recorder.param(2, "limit") == "50", (
+        "page two went back to the size that had already been refused")
+
+
+def test_reductions_do_not_spend_the_retry_budget():
+    """A reduction is a different request, not a failed attempt. Charging it
+    against TRIES would leave nothing for the rate limit that follows it."""
+    recorder = Recorder(
+        httpx.Response(400, json=_too_much()),
+        httpx.Response(400, json=_too_much()),
+        httpx.Response(400, json=_too_much()),
+        httpx.Response(200, json=_fixture("ads_page_2.json")),
+    )
+    ads = _run(recorder, Sleeps(), _collect("ads", ACCOUNT))
+
+    assert [ad["id"] for ad in ads] == ["120210000000000004"]
+    assert [recorder.param(i, "limit") for i in range(4)] == \
+        ["100", "50", "25", "12"]
+
+
+def test_halving_stops_rather_than_shrinking_for_ever():
+    """Below MIN_PAGE_SIZE the page is not the problem, and more halving turns
+    one clear failure into a slower one."""
+    recorder = Recorder(*[httpx.Response(400, json=_too_much())
+                          for _ in range(8)])
+    with pytest.raises(GraphError):
+        _run(recorder, Sleeps(), _collect("ads", ACCOUNT))
+
+    assert len(recorder.requests) <= 1 + MAX_REDUCTIONS + TRIES

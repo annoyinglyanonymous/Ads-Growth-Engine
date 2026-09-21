@@ -19,7 +19,7 @@ gets its own throwaway brand, created and dropped per test.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -267,3 +267,50 @@ def test_an_invalid_token_stops_the_whole_run_not_just_one_account(
     run_db(scenario())
     assert attempted == [first], (
         "a second account must not be tried once the token itself failed")
+
+
+# ---------------------------------------------------------------------------
+# The insights window is chunked, and each chunk is written as it arrives.
+# ---------------------------------------------------------------------------
+
+def test_chunks_cover_the_window_exactly():
+    """Contiguous, inclusive at both ends, no gaps and no overlaps.
+
+    A gap loses a day silently -- it reads as a day nothing ran. An overlap is
+    harmless to correctness (meta_ad_insights upserts on (ad_id, date)) but
+    pays for the same day twice against a rate limiter this module is careful
+    about.
+    """
+    from meta_ads.pull import _chunks
+
+    spans = _chunks(date(2026, 8, 22), date(2026, 9, 20), 7)
+    assert spans[0][0] == date(2026, 8, 22)
+    assert spans[-1][1] == date(2026, 9, 20)
+    for earlier, later in zip(spans, spans[1:]):
+        assert (later[0] - earlier[1]).days == 1, "gap or overlap between chunks"
+    # Every day in the window appears exactly once.
+    days = [d for s, u in spans
+            for d in [s + timedelta(days=i) for i in range((u - s).days + 1)]]
+    assert len(days) == len(set(days)) == 30
+
+
+def test_a_window_shorter_than_a_chunk_is_one_request():
+    from meta_ads.pull import _chunks
+
+    assert _chunks(date(2026, 9, 1), date(2026, 9, 1), 7) == [
+        (date(2026, 9, 1), date(2026, 9, 1))]
+    assert len(_chunks(date(2026, 9, 1), date(2026, 9, 3), 7)) == 1
+
+
+def test_chunking_is_why_a_big_window_does_not_go_in_one_request():
+    """`level=ad` with `time_increment=1` makes Meta compute one row per ad per
+    day for the whole time_range before returning page one. The page-size
+    halving in client.py does not help: `limit` governs rows returned, not rows
+    computed. A too-expensive query needs a smaller window.
+    """
+    from meta_ads.pull import _chunks
+
+    # A 13-month backfill is the case that would certainly time out whole.
+    spans = _chunks(date(2025, 8, 1), date(2026, 9, 1), 7)
+    assert len(spans) > 50
+    assert all((u - s).days + 1 <= 7 for s, u in spans)

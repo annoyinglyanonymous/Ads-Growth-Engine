@@ -45,6 +45,10 @@ WHAT EACH FAILURE MEANS, BECAUSE THEY ARE NOT THE SAME FAILURE
                 theirs. Raised as its own type so a run over several accounts
                 carries on with the next one. One brand's revoked assignment
                 must not cost the other brand its import.
+  2             Meta's own "please retry later". Five seconds, doubling, three
+                attempts. Retried where no other GraphError is, because a
+                structure pull paginates for minutes and one blip near the end
+                used to throw away the entire account's import.
   anything else GraphError, unretried, with the code in the message.
 
 THE USAGE HEADER IS A WARNING SHOT AND IT IS WORTH TAKING
@@ -131,6 +135,58 @@ THROTTLE_CODES = frozenset({4, 17, 32, 613, 80000, 80004})
 #: which is what an unassigned act_id returns, 200 is a permissions refusal and
 #: 272 is the ads-specific one.
 ACCOUNT_CODES = frozenset({100, 200, 272})
+
+#: Meta having a moment. Code 2 is "API Service", and its own message is
+#: literally "An unexpected error has occurred. Please retry your request
+#: later."
+#:
+#: CODE 1 IS DELIBERATELY NOT IN HERE. Meta documents it as "API Unknown" and
+#: it is retryable about as often as it is a permanently malformed request.
+#: test_an_unknown_code_is_a_graph_error_carrying_the_code asserts it reaches
+#: the caller on the first attempt, which was a decision somebody made before
+#: this set existed. The evidence for retrying is specific to code 2 (run 218,
+#: below), so the set is too -- widening it to "errors that felt transient"
+#: would turn a fast, clear failure into three slow ones.
+#:
+#: Retried, where every other GraphError is not, because of what one of these
+#: costs on a large account. A structure pull of act_153704749222533 paginates
+#: for EIGHT MINUTES through two hundred campaigns; run 218 spent all of it and
+#: then hit a code 2 near the end, and the whole account's import was thrown
+#: away -- not a page, all of it. Unretried, this is a scheduled job that
+#: imports nothing on a random subset of nights and says only "unexpected
+#: error", which is the invisible failure scripts/sync.py exists to prevent.
+#:
+#: Still bounded by TRIES. If Meta is genuinely down, three attempts and a
+#: clear message beats a job that never returns.
+TRANSIENT_CODES = frozenset({2})
+
+#: Transient errors clear in seconds. A rate limit needs BACKOFF_SECONDS
+#: because the usage budget has to refill, but waiting a minute on a blip
+#: would turn every one of them into a minute of dead time mid-pagination.
+TRANSIENT_BACKOFF_SECONDS = 5.0
+
+#: "Please reduce the amount of data you're asking for, then retry your
+#: request." Code 1 again -- but this one is an instruction, not weather, and
+#: the difference is why TRANSIENT_CODES does not contain 1: retrying THIS
+#: unchanged fails identically for ever, and run 220 is what that looks like.
+#:
+#: An ads page carries a full nested creative per row, so its weight depends on
+#: the ads rather than on the count, and PAGE_SIZE cannot be chosen correctly in
+#: advance. act_153704749222533 serves page one at 100 happily and then refuses
+#: somewhere deeper in two hundred campaigns' worth. So the size is not
+#: configured, it is discovered: halve on refusal, keep the smaller size for the
+#: rest of the pull, and never sleep -- nothing here is throttled and the next
+#: request is genuinely different from the last.
+REDUCE_MARKER = "reduce the amount of data"
+
+#: Four halvings from 100 reaches 6. Below that the page is not the problem and
+#: more halving only turns one clear failure into a slower one.
+MAX_REDUCTIONS = 4
+
+#: A page of one still has to work. If Meta refuses this, the account has a
+#: single ad whose creative it cannot serve, which is a fact to report rather
+#: than a size to keep shrinking.
+MIN_PAGE_SIZE = 5
 
 #: Per-account budget spent this hour, as percentages, in a JSON header.
 USAGE_HEADER = "x-business-use-case-usage"
@@ -489,8 +545,16 @@ class GraphClient:
     async def _get(self, path: str, params: dict) -> dict:
         """One GET, with the back-off and the error vocabulary applied."""
         wait = BACKOFF_SECONDS
+        transient_wait = TRANSIENT_BACKOFF_SECONDS
         last = ""
-        for attempt in range(1, TRIES + 1):
+        # A page-size reduction is not a failed attempt: the request that comes
+        # next is a different, smaller one, and charging it against TRIES would
+        # spend the budget for the rate limit and the blip on discovering a
+        # size. Counted separately and bounded by MAX_REDUCTIONS.
+        reductions = 0
+        attempt = 0
+        while True:
+            attempt += 1
             response = await self._http.get(path, params=params)
             usage = _usage(response.headers)
 
@@ -547,6 +611,38 @@ class GraphClient:
                     wait *= 2
                     continue
                 break
+
+            # Checked before TRANSIENT_CODES and before the generic raise,
+            # because it is the only branch that can make the SAME request
+            # succeed by changing it. params is mutated rather than copied, so
+            # _paged's remaining pages inherit the size that worked.
+            limit = _int(params.get("limit")) or PAGE_SIZE
+            if (REDUCE_MARKER in message.lower()
+                    and reductions < MAX_REDUCTIONS
+                    and limit > MIN_PAGE_SIZE):
+                reductions += 1
+                attempt -= 1
+                params["limit"] = max(MIN_PAGE_SIZE, limit // 2)
+                log.info("meta %s: too much data at limit %s, retrying at %s "
+                         "(reduction %s of %s)", path, limit, params["limit"],
+                         reductions, MAX_REDUCTIONS)
+                continue
+
+            if code in TRANSIENT_CODES:
+                if attempt < TRIES:
+                    log.info("meta %s: transient (code %s), attempt %s of %s, "
+                             "waiting %.0fs", path, code, attempt, TRIES,
+                             transient_wait)
+                    await self._sleep(transient_wait)
+                    transient_wait *= 2
+                    continue
+                # Says how many attempts it took, so a reader can tell "Meta
+                # blipped once" from "Meta has been down for a minute".
+                raise GraphError(
+                    f"Meta kept failing {path} (code {code}"
+                    f"{f'/{subcode}' if subcode else ''}) after {TRIES} "
+                    f"attempts: {message}",
+                    code=code, subcode=subcode)
 
             raise GraphError(
                 f"Meta refused {path} (code {code}"
