@@ -72,4 +72,79 @@
   </table>
 </div>
 {% endif %}
+
+
+{#- =============================================== IDEAS, FILED BY NOBODY
+    Below the log, never above it. What has been decided outranks what has
+    been suggested, and a page that opens with suggestions reads as though
+    the machine is running the account.
+
+    Every card here is unfiled and says so. Filing is `intel record`, which
+    takes a path and is run by a person -- there is no button, for the reason
+    ui.py's header gives about every other button on this site.
+    -#}
+<div class="stage-head" style="margin-top:28px">
+  <h2>Ideas</h2>
+  <span class="state">{{ ideas.proposal_count }} &middot; none filed</span>
+</div>
+<p class="sub">
+  Questions about things that have <strong>not run</strong>. Both thresholds
+  are deliberately blank: deciding what would convince you after reading the
+  window is not deciding it in advance, so that part is yours.
+</p>
+
+{% if not ideas.proposals %}
+  <div class="empty">Nothing to propose from this window. That is a real
+    answer, not an empty state &mdash; it means no ad cleared the fatigue
+    confidence bar and no style is notably under-funded.</div>
+{% endif %}
+
+{% for p in ideas.proposals %}
+  <div role="note" style="margin:12px 0; padding:10px 14px;
+       border:1px solid var(--line); border-left:3px dashed var(--line-2);
+       border-radius:var(--radius-sm); background:var(--surface)">
+    <div class="eyebrow">{{ p.source | replace('_', ' ') }}
+      &middot; not filed</div>
+    <p style="margin:4px 0 0; max-width:86ch"><strong>{{ p.title }}</strong></p>
+    <p style="margin:4px 0 0; max-width:86ch">{{ p.question }}</p>
+    <div class="small muted" style="margin-top:4px; max-width:86ch">
+      {{ p.why }}</div>
+
+    <div class="small" style="margin-top:6px">
+      {% for a in p.arms %}
+        <span class="pill quiet">{{ a.label }}</span>
+      {% endfor %}
+      <span class="pill">{{ p.would_register.primary_metric }}</span>
+      {% if p.already_tested %}
+        <span class="pill warn">tested before</span>
+      {% endif %}
+    </div>
+
+    {% if p.fileable %}
+      <div class="small" style="margin-top:6px">
+        <code>{{ p.how_to_file }}</code></div>
+    {% else %}
+      <div class="small muted" style="margin-top:6px">
+        Cannot be filed yet &mdash; {{ p.blocked_on }}.</div>
+    {% endif %}
+  </div>
+{% endfor %}
+
+{#- Observations. Separated, and labelled on every row, because the whole
+    point of the split is that these CANNOT be pre-registered. -#}
+{% if ideas.observations %}
+  <div class="stage-head" style="margin-top:24px">
+    <h2>Worth looking at</h2>
+    <span class="state">not experiments</span>
+  </div>
+  <p class="sub">These describe what already ran. Their thresholds would be
+    chosen with the numbers in view, so none of them can be registered as a
+    test. They say where to look.</p>
+  {% for o in ideas.observations %}
+    <div role="note" style="margin:10px 0 10px 2px; padding:2px 0 2px 16px;
+         border-left:3px solid var(--line-2)">
+      <p style="margin:0; max-width:86ch">{{ o.says }}</p>
+    </div>
+  {% endfor %}
+{% endif %}
 {% endblock %}
