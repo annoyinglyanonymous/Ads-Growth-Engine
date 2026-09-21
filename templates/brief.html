@@ -45,12 +45,9 @@
 
 {% block page_sub %}
 <div class="sub">
-  Generated {{ d.generated_at }}{% if d.provisional %} &middot;
-  <strong>provisional</strong>{% endif %} &middot;
-  ten sections in a fixed order &mdash; trust, then evidence, then what is
-  waiting on you, then what this could not tell you. Nothing here concludes
-  anything: an angle goes active and an experiment gets a conclusion in
-  growth-engine, where a person is signed in and attributable.
+  Generated {{ d.generated_at }} &mdash; nothing here concludes anything: an
+  angle goes active and an experiment gets a conclusion in growth-engine,
+  where a person is signed in and attributable.
 </div>
 {% endblock %}
 
@@ -61,33 +58,25 @@
 {#- A READING. Block-level, indented, ruled, labelled, cited. The rule name is
     printed because "the agent thinks CPA rose" and "rule cpa_rise_flat_ctr
     fired" are different claims, and only the second one can be argued with. -#}
+{#- A READING. The sentence a rule concluded, and nothing else.
+
+    The rule name and the /facts pointers it fired on USED TO PRINT HERE and
+    deliberately do not any more. They are not gone: every reading still
+    carries `rule`, `author` and `cites`, readings.py still refuses to let a
+    rule state a figure it cannot cite, and briefs/<date>-<brand>.json still
+    holds the whole chain. What changed is who it is shown to -- the audit
+    trail is for the person checking the brief, not the person reading it,
+    and printing both to the same page made the second job harder.
+
+    tests/test_brief_and_readings.py tests the pack, not this macro, so the
+    guarantee is unaffected by what this template chooses to display.
+
+    The left rule stays. A reading is still an opinion and a table is still a
+    fact, and the reader has to be able to tell them apart at a glance. -#}
 {% macro reading(r) -%}
-{% set sub = r.subject or {} %}
 <div role="note" style="margin:12px 0 12px 2px; padding:2px 0 2px 16px;
      border-left:3px solid var(--line-2)">
-  <div class="eyebrow">Reading{% if r.provisional %} &middot; provisional{% endif %}</div>
-  <p style="margin:3px 0 0; max-width:80ch">{{ r.says }}</p>
-  <div class="small muted" style="margin-top:4px">
-    rule <span class="mono">{{ r.rule }}</span>
-    {%- if sub.kind %} &middot; about {{ sub.kind }}
-      <strong>{{ sub.name or sub.key }}</strong>{% endif -%}
-  </div>
-  {% if r.cites %}
-    <ul class="small" style="list-style:none; margin:6px 0 0; padding:0">
-      {% for c in r.cites %}
-        <li style="margin-top:2px">
-          <code>{{ c.pointer }}</code>
-          <span class="muted">{{ c.verb }}{% if c.field %} &middot; {{ c.field }}{% endif %}</span>
-          &rarr;
-          <strong>{% if c.value is defined and c.value is not none %}{{ c.value }}{% else %}--{% endif %}</strong>
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <div class="small muted" style="margin-top:6px">
-      No citation recorded. An uncited reading is an assertion &mdash; read it
-      as one.</div>
-  {% endif %}
+  <p style="margin:0; max-width:80ch">{{ r.says }}</p>
 </div>
 {%- endmacro %}
 
@@ -161,6 +150,12 @@
     the union of the ten lists passed to readings_for() below. The overflow
     guard at the bottom renders anything that is not in here, so a rule shipped
     with a new section name becomes visible instead of vanishing. -#}
+{#- 'gaps', 'gap' and 'degraded' belonged to section 10, which was removed.
+    They are kept in this list DELIBERATELY: dropping them would send their
+    readings to the overflow guard at the bottom, which would rebuild the
+    section under a different heading. Those readings are still in the pack
+    and still in briefs/<date>-<brand>.json -- they are simply not printed.
+    Put the section back and they render again. -#}
 {% set claimed = ['trust', 'credential', 'match', 'coverage', 'account', 'pull',
                   'conversion_definition',
                   'spend', 'window', 'brand',
@@ -175,33 +170,18 @@
 
 
 {#- ============================================================= 1. TRUST
-    Never collapsed, never moved. If this section is unhealthy, the rest of
-    the page is evidence about evidence, and the reader needs to know that
-    before the first number rather than after the last one. -#}
+    Never collapsed, never moved. The banner that used to sit here -- red when
+    the checks failed, a caveat when the window was unsettled -- was removed on
+    request. The FACTS it summarised are still in this section: settled_through
+    and the unsettled-day count are the first two tiles, and the account and
+    pull rows below say what has and has not imported.
+
+    What is gone is the page telling the reader what to make of that. `intel
+    status --brand <slug>` still names every problem in one sentence each. -#}
 <section class="stage" aria-label="Trust">
   <div class="stage-head">
     <h2>1 &middot; Trust</h2>
-    <span class="state">what this brief is allowed to claim</span>
   </div>
-
-  {% if not t.healthy %}
-    <div class="flash error"><span>
-      <strong>The data behind this brief does not pass its own checks.</strong>
-      Everything below is stamped provisional &mdash; not because the arithmetic
-      is wrong, but because the rows it ran over are known to be incomplete.
-      {% if t.problems %}
-        <ul style="margin:6px 0 0; padding-left:18px">
-          {% for p in t.problems %}
-            <li>{{ p.message or p.problem or p }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </span></div>
-  {% elif d.provisional %}
-    <div class="caveat"><span><strong>Provisional.</strong>
-      The checks pass, but this window reaches into days Meta has not settled.
-      Every figure below can still move.</span></div>
-  {% endif %}
 
   {% set cred  = t.credential or {} %}
   {% set cov   = t.coverage or {} %}
@@ -241,7 +221,6 @@
     <section class="board" aria-label="Conversion definitions">
       <header>
         <h2>What counts as a conversion</h2>
-        <div class="note">source: <code>ads.conversion_definition</code></div>
       </header>
       <div class="body">
         {% set cd = t.conversion_definitions %}
@@ -270,8 +249,6 @@
     <section class="board" aria-label="Copy to ad match">
       <header>
         <h2>Copy-to-ad match</h2>
-        <div class="note">source: <code>tracking.utm_content</code> stamped in
-          growth-engine, read back off <code>ads.ad.utm_content</code></div>
       </header>
       <div class="body">
         <p class="small" style="margin:0">
@@ -293,11 +270,6 @@
     <div class="stage-head" style="margin-top:16px">
       <h2>Approved copy with no ad behind it</h2>
       <span class="state">{{ match.unmatched | length }} asset(s)</span>
-    </div>
-    <div class="n" style="margin-bottom:6px">
-      source: <code>tracking.utm_content</code> recomputed for each approved
-      asset, compared against every <code>ads.ad.utm_content</code> in the
-      window.
     </div>
     <div class="table-wrap">
       <table>
@@ -417,12 +389,6 @@
       <div class="v">{{ num(s.get('appeared')) }} / {{ num(s.get('disappeared')) }}</div>
       <div class="sub">started / stopped in this window</div></div>
   </div>
-  <div class="n" style="margin-top:6px">
-    source: <code>ads.window_metrics</code> at brand level; every rate read out
-    of its <code>rates</code> jsonb (<code>ads.rate</code>), never divided here.
-    Deltas from <code>ads.compare</code>, which derives its own contiguous prior
-    window rather than summing per-ad deltas &mdash; CPA is not additive.
-  </div>
 
   {{ readings_for(d.readings, ['spend', 'window', 'brand']) }}
 </section>
@@ -460,11 +426,6 @@
       window, and the change log was readable, so this one is a finding rather
       than a blind spot.</div>
   {% else %}
-    <div class="n" style="margin-bottom:6px">
-      source: <code>ads.structure_change</code> &mdash;
-      <code>changed_at</code>, <code>field</code>, <code>old_value</code>,
-      <code>new_value</code>.
-    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -524,12 +485,6 @@
     <div class="empty">Nothing spent in either window, so there is no movement
       to decompose.</div>
   {% else %}
-    <div class="n" style="margin-bottom:6px">
-      source: <code>ads.cpa_bridge</code> &mdash;
-      <code>total_effect</code>, <code>rate_effect</code>,
-      <code>mix_effect</code>, <code>reason</code>. rate and mix are NULL where
-      the split is undefined; a fabricated zero would break the sum.
-    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -594,12 +549,6 @@
       it, so there is nothing to compare. That is the usual answer on a new
       account.</div>
   {% else %}
-    <div class="n" style="margin-bottom:6px">
-      source: <code>ads.fatigue</code> &mdash; <code>ads.fatigue.score</code> is
-      a count of the five booleans beside it, not a weighting; which symptom
-      fired matters more than the total. Rates read out of
-      <code>ads.fatigue.recent</code> and <code>ads.fatigue.prior</code>.
-    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -680,8 +629,6 @@
       <section class="board" aria-label="Copy dimension: {{ label }}">
         <header>
           <h2>{{ label }}</h2>
-          <div class="note">source: <code>{{ src }}</code>, rates from
-            <code>ads.window_metrics.rates</code></div>
         </header>
         <div class="body">
           {% if not rows %}
@@ -813,14 +760,6 @@
   {% if not arows %}
     <div class="empty">No angle carried spend in this window.</div>
   {% else %}
-    <div class="n" style="margin-bottom:6px">
-      source: <code>ads.angle_coverage</code> &mdash;
-      <code>spend</code>, <code>conversions</code>, <code>state</code>; shares
-      and <code>rank_within_goal</code> from the same call; CPA out of
-      <code>ads.window_metrics.rates</code>. <code>inherited_ads</code> counts
-      ads whose angle came from the approved campaign angle rather than from
-      anyone reading the creative.
-    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -899,12 +838,6 @@
       <div class="sub">{{ num(ut.get('stale_tag_ads')) }} ad(s) &mdash; the copy was
         rewritten, so the tag describes an ad that no longer exists</div></div>
   </div>
-  <div class="n" style="margin-top:6px">
-    source: <code>ads.ad_facet_current</code>, <code>ads.inherited_facet</code>
-    and <code>ads.ad_facet_stale</code> against
-    <code>ads.fact_ad_day.spend</code>. A tag is keyed on
-    <code>(ad_key, copy_hash)</code>; a rewrite drops it deliberately.
-  </div>
 
   {{ readings_for(d.readings, ['angles', 'angle', 'untagged', 'tag', 'facet']) }}
 </section>
@@ -924,9 +857,6 @@
     <section class="board" aria-label="Never run">
       <header>
         <h2>Never run</h2>
-        <div class="note">source: <code>ads.angle_coverage</code> where
-          <code>state = 'never_run'</code>, with
-          <code>ads.experiment</code> beside each</div>
       </header>
       <div class="body">
         {% if not an.never_run %}
@@ -960,8 +890,6 @@
     <section class="board" aria-label="Under spent">
       <header>
         <h2>Ran, but not enough to read</h2>
-        <div class="note">source: <code>ads.angle_coverage</code> where
-          <code>state = 'under_spent'</code></div>
       </header>
       <div class="body">
         {% if not an.under_spent %}
@@ -1039,13 +967,6 @@
       and launched by a person in Ads Manager.
     </div>
   {% else %}
-    <div class="n" style="margin-bottom:6px">
-      source: <code>ads.experiment</code> &mdash; <code>state</code>,
-      <code>hypothesis</code>, <code>primary_metric</code>,
-      <code>conclusion</code>. There is no winner column: a conclusion is
-      written by a person and attributed to them
-      (<code>experiment_conclusion_attributed</code>).
-    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -1194,8 +1115,6 @@
     <section class="board" aria-label="Unmapped handles">
       <header>
         <h2>Unmapped handles</h2>
-        <div class="note">source: <code>ads.angle_candidate</code> &mdash; what
-          reviewers called things, with no angle behind it yet</div>
       </header>
       <div class="body">
         {% if not w.unmapped_handles %}
@@ -1233,84 +1152,6 @@
 </section>
 
 
-{#- ================================ 10. WHAT THIS BRIEF COULD NOT TELL YOU
-    A first-class section, not a footnote. The questions this brief cannot
-    answer are the ones most likely to be answered by guessing, and a reader
-    who never sees the list will assume the silence was an all-clear. -#}
-<section class="stage" aria-label="What this brief could not tell you">
-  <div class="stage-head">
-    <h2>10 &middot; What this brief could not tell you</h2>
-    <span class="state">the questions, and the guards that fired</span>
-  </div>
-
-  <div class="boards">
-    <section class="board" aria-label="Open questions">
-      <header>
-        <h2>Questions this data cannot answer</h2>
-        <div class="note">what would answer each one, named</div>
-      </header>
-      <div class="body">
-        {% if not d.gaps %}
-          <p class="muted small" style="margin:0">No gap was recorded. That is a
-            claim about the checks that ran, not a guarantee that nothing is
-            missing.</p>
-        {% else %}
-          {% for g in d.gaps %}
-            <div style="margin-bottom:14px">
-              <strong>{{ g.question }}</strong>
-              {% if g.why %}
-                <div class="small muted" style="margin-top:3px; max-width:80ch">{{ g.why }}</div>
-              {% endif %}
-              {% if g.what_would_answer_it %}
-                <div class="small" style="margin-top:4px">
-                  <span class="eyebrow">Would answer it</span>
-                  <div style="margin-top:2px">{{ g.what_would_answer_it }}</div>
-                </div>
-              {% endif %}
-            </div>
-          {% endfor %}
-        {% endif %}
-      </div>
-    </section>
-
-    <section class="board" aria-label="Degraded sections">
-      <header>
-        <h2>Sections that ran degraded</h2>
-        <div class="note">the guard that refused, named per section</div>
-      </header>
-      <div class="body">
-        {% if not d.degraded %}
-          <p class="muted small" style="margin:0">Every section ran on complete
-            input.</p>
-        {% else %}
-          <div class="table-wrap">
-            <table>
-              <thead><tr>
-                <th scope="col">Section</th>
-                <th scope="col">Guard that fired</th>
-              </tr></thead>
-              <tbody>
-              {% for g in d.degraded %}
-                <tr>
-                  <td class="name">{{ g.section }}</td>
-                  <td class="small"><code>{{ g.guard }}</code></td>
-                </tr>
-              {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          <p class="small muted" style="margin:10px 0 0">
-            A guard that fired is the reason a section is thin. It is printed
-            rather than swallowed, because a thin section with no explanation
-            reads as a quiet account.
-          </p>
-        {% endif %}
-      </div>
-    </section>
-  </div>
-
-  {{ readings_for(d.readings, ['gaps', 'gap', 'degraded']) }}
-</section>
 
 
 {#- ------------------------------------------------------- overflow guard

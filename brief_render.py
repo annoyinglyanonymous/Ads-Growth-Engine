@@ -53,21 +53,32 @@ def _readings_for(doc: dict, section: str) -> str:
             continue
         subj = (r.get("subject") or {}).get("name")
         head = f"**{subj}** " if subj else ""
-        flag = " _(provisional)_" if r.get("provisional") else ""
-        cites = ", ".join(f"`{c['verb']}.{c['field']}`" for c in r.get("cites") or [])
-        out.append(f"> **Reading** · `{r['rule']}`{flag}\n>\n> {head}{r['says']}"
-                   + (f"\n>\n> _cites {cites}_" if cites else ""))
+        # The rule name, the provisional flag and the pointers a rule fired on
+        # are no longer printed -- see templates/brief.html's reading() macro
+        # for the reasoning. They are still on every reading and still in
+        # briefs/<date>-<brand>.json, and readings.py still refuses to let a
+        # rule state a figure it cannot cite. Only the display changed.
+        out.append(f"> {head}{r['says']}")
     return "\n\n".join(out)
 
 
 def _table(headers: list[str], rows: list[list[Any]], source: str) -> str:
+    """`source` is still required, and is now deliberately unused.
+
+    Every caller names the SQL function its rows came from. That argument is
+    kept after the attribution stopped printing because it is the only place a
+    reader of THIS file can see which function feeds which table -- deleting
+    the parameter would remove that from the source as well as from the page,
+    and the next person would have to read three modules to find out where a
+    column comes from. Restore the <sub> line and it prints again.
+    """
     if not rows:
-        return f"_No rows._  \n<sub>from `{source}`</sub>"
+        return "_No rows._"
     head = "| " + " | ".join(headers) + " |"
     rule = "|" + "|".join("---" for _ in headers) + "|"
     body = "\n".join("| " + " | ".join("" if c is None else str(c) for c in r) + " |"
                      for r in rows)
-    return f"{head}\n{rule}\n{body}\n\n<sub>from `{source}`</sub>"
+    return f"{head}\n{rule}\n{body}"
 
 
 def markdown(doc: dict) -> str:
@@ -88,10 +99,6 @@ def markdown(doc: dict) -> str:
     a(f"# Ads brief — {doc.get('brand')}")
     a(f"**{doc.get('since')} to {doc.get('until')}** · generated "
       f"{doc.get('generated_at')}")
-    if doc.get("provisional"):
-        a("> ⚠ **Provisional.** Either this window touches days Meta has not "
-          "finished restating, or the import is not healthy. Read every "
-          "decline here as unconfirmed.")
     if doc.get("caveat"):
         a(f"_{doc['caveat']}_")
 
@@ -262,17 +269,12 @@ def markdown(doc: dict) -> str:
     ], "intel angles + intel experiments + intel candidates"))
     a(f"\nSigning happens in growth-engine: {wait.get('where')}")
 
-    # -- 10. What it could not say ----------------------------------------
-    a("\n## What this brief could not tell you")
-    degraded = doc.get("degraded") or []
-    if degraded:
-        a("**Sections that failed to load** — these are absent, not empty:")
-        for g in degraded:
-            lb = " **(load-bearing)**" if g.get("load_bearing") else ""
-            a(f"- `{g.get('section')}`{lb} — {g.get('guard')}")
-    a("\n**Questions this system cannot answer**, and what would change that:")
-    for g in doc.get("gaps") or []:
-        a(f"- **{g.get('question')}**  \n  {g.get('why')}  \n  "
-          f"_Would need:_ {g.get('what_would_answer_it')}")
+    # -- 10. What it could not say -----------------------------------------
+    # Removed on request, in both renderers. `doc["degraded"]` and
+    # `doc["gaps"]` are still built by intel/brief.py and still written to the
+    # json, so nothing stopped being COMPUTED -- a section that failed to load
+    # is still recorded as absent rather than as empty. It is simply no longer
+    # printed. Re-add nine lines here and in templates/brief.html to bring it
+    # back; the data has been waiting the whole time.
 
     return "\n\n".join(x for x in p if x and x.strip())
