@@ -136,7 +136,7 @@ async def status(slug: str, stale_after_days: int = 2) -> dict:
     problems = []
     if not accounts:
         problems.append(
-            f"No ad account is registered for {slug}. Run, in growth-engine: "
+            f"No ad account is registered for {slug}. Run, here: "
             f"python -m meta_ads --add-account act_XXXX --brand {slug}")
     for a in accounts:
         if not a["active"]:
@@ -144,7 +144,7 @@ async def status(slug: str, stale_after_days: int = 2) -> dict:
         if a["last_insights_ok"] is None:
             problems.append(
                 f"{a['platform_account_id']} has never completed an insights "
-                f"pull. Run, in growth-engine: python -m meta_ads --pull "
+                f"pull. Run, here: python -m meta_ads --pull "
                 f"--brand {slug}")
         elif (today - a["last_insights_ok"].date()).days > stale_after_days:
             problems.append(

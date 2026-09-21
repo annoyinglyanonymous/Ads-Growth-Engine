@@ -65,14 +65,26 @@ class Settings(BaseSettings):
     #: surfaces on whatever query happened to run first.
     pool_max_idle: float = 240.0
 
-    #: The Meta System User token, ads_read only -- the SAME token
-    #: growth-engine imports with. Used by exactly one verb, `intel live`,
-    #: which asks what is running right now and writes nothing down.
+    #: The Meta System User token, ads_read only. A System User token and not a
+    #: personal one: a personal token expires at 60 days and the failure is
+    #: SILENT -- the pull simply stops working and nothing says why.
     #:
-    #: OPTIONAL, unlike the read-only database url. Every other verb reads
-    #: Postgres, so an install without this is not broken -- it simply cannot
-    #: answer "right now", and `intel status` says so. Refusing to start over a
-    #: token that thirteen of fourteen verbs do not touch would be theatre.
+    #: TWO THINGS NEED IT, and this comment used to say one.
+    #:
+    #:     python -m meta_ads --pull    the importer. Without a token there is
+    #:                                  no data in public.meta_* at all.
+    #:     python -m intel live         what is running right now.
+    #:
+    #: The second was the only caller while the importer lived in
+    #: growth-engine. It moved here in 404a045 and this comment did not, so it
+    #: read "used by exactly one verb" and called the token OPTIONAL -- which
+    #: was true of the install and is not true of the data. Nothing imports
+    #: without it.
+    #:
+    #: Still optional in the narrow sense that the app starts and thirteen read
+    #: verbs work, because they read Postgres. `intel status` reports the
+    #: absence rather than refusing to run. But an install without this token
+    #: is an install that will never have a number in it.
     #:
     #: ONE COPY, since the importer moved here. This used to be duplicated in
     #: growth-engine's .env because both halves called Meta; now only this one
