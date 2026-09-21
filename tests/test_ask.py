@@ -139,3 +139,27 @@ def test_link_ctr_is_not_swallowed_by_ctr():
     this repo warns about everywhere else; the router must not make it."""
     assert ask.route("link ctr trend")[1]["metric"] == "link_ctr"
     assert ask.route("ctr trend")[1]["metric"] == "ctr"
+
+
+def test_the_docstring_names_every_absent_verb():
+    """The list of what the box cannot reach is a governance statement, and an
+    incomplete one reads as complete.
+
+    It said "TWO VERBS ARE DELIBERATELY ABSENT" and named record and live
+    while ad, experiment and versus were also unreachable with no explanation
+    anywhere. Adding a verb without listing it here puts it back.
+    """
+    import re as _re
+
+    src = (ROOT / "ask.py").read_text(encoding="utf-8")
+    doc = src.split('"""', 2)[1]
+
+    parser_verbs = {"overview", "compare", "why", "fatigue", "ad", "trend",
+                    "angles", "candidates", "queue", "coverage", "versus",
+                    "experiments", "experiment", "live", "status", "record",
+                    "brief"}
+    absent = sorted(parser_verbs - set(ask.VERBS))
+    for verb in absent:
+        assert _re.search(rf"^\s+{verb}\b", doc, _re.M), (
+            f"{verb!r} is unreachable from the ask box and the docstring "
+            f"never says so")

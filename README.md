@@ -1,40 +1,58 @@
 # Ads Growth Engine
 
-The intelligence half of the ads system. `growth-engine` imports Meta's data and
-produces the copy; this reads that data, derives every rate from it, holds the
-angle bank and the experiment record, and answers questions about all of it —
-through a dashboard and through a CLI the agent uses.
+Everything Meta is here. This repo imports Meta's data into `public.meta_*`,
+derives every rate from it, holds the angle bank and the experiment record, and
+answers questions about all of it — through a dashboard and through a CLI the
+agent uses. `growth-engine` produces the copy those ads run and approves it.
 
-**Status: built, not yet running.** Every migration is written and nothing has
-been applied. Nothing can be verified until the Meta importer has run for the
-first time, which needs a token that does not exist yet. Start at step 1.
+That boundary is `CLAUDE.md`'s opening sentence, and it replaced an older one —
+"this repo reads, growth-engine writes" — when the importer moved here in
+`404a045`. Most of the rest of this file is a consequence of it.
+
+**Status: importing.** Migrations 001–013 are applied. The first structure pull
+has run and `public.meta_ads` holds real rows. Two things are still missing
+before a number appears on the dashboard, and both are step 2 and step 3 below:
+the insights phase has not completed, and `ads.conversion_definition` is empty,
+which makes every conversion count and every CPA null by construction.
 
 ---
 
 ## What has to happen, in order
 
-### 1. Get real data into `growth-engine` — nothing below works without it
+### 1. Get real data in — nothing below works without it
 
-This runs in `..\growth-engine`, not here.
+**This runs here.** It used to run in `..\growth-engine`, and that is the line
+of this file most likely to be remembered wrong.
 
 **a. Make the token.** Business Manager → System User → assign both ad accounts
 → generate a token with **`ads_read` and nothing else**. Not `ads_management`;
 this system never writes to an ad account and the token should not be able to.
 A System User token and not a personal one — a personal token expires at 60 days
-and the failure is silent (`config.py:263`).
+and the failure is silent, which means the scheduled pull stops importing and
+nothing says why (`config.py`, on `meta_access_token`).
 
-Put it in `growth-engine\.env` as `META_ACCESS_TOKEN=`. The key is already in
-`.env.example` and absent from the live `.env`.
+Put it in **this repo's** `.env` as `META_ACCESS_TOKEN=`. The key is in
+`.env.example` and absent from the live `.env`. There is one copy since the
+importer moved; there is no longer a second one in `growth-engine\.env`.
 
-**b. Apply migration 046 BEFORE the first pull.** `046_meta_change_log.sql`
-captures budget, status and optimisation-goal edits by trigger.
+**A note on scale, learned the hard way.** A large account will refuse the
+first `/ads` request with "Please reduce the amount of data you're asking for".
+That is handled — `client.py` halves the page size and keeps the smaller one —
+but the pull takes minutes and the insights window is chunked into 7-day spans
+for the same reason. Do not shorten either without reading why they are there.
 
-This is urgent rather than tidy. `store.upsert_campaigns` / `upsert_adsets` /
-`upsert_ad` are `on conflict do update`, so the old value is overwritten with no
-trace — and **Meta will not tell you what an ad set's budget was last Tuesday.**
-Every pull that runs before 046 exists destroys a day of explanation that
-nothing recovers. Most of the time "why did CPA go up" is answered by a budget
-change, not by creative fatigue.
+**b. Migration 046 must exist BEFORE the first pull. It already does** —
+`046_meta_change_log.sql` is applied in growth-engine's ledger. Left here
+because it is the one step whose cost is unrecoverable if it is ever skipped on
+a fresh install.
+
+`046` captures budget, status and optimisation-goal edits by trigger.
+`store.upsert_campaigns` / `upsert_adsets` / `upsert_ad` are `on conflict do
+update`, so without it the old value is overwritten with no trace — and **Meta
+will not tell you what an ad set's budget was last Tuesday.** Every pull that
+runs before 046 exists destroys a day of explanation that nothing recovers.
+Most of the time "why did CPA go up" is answered by a budget change, not by
+creative fatigue.
 
 **c. Register the accounts.**
 ```

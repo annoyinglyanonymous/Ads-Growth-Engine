@@ -39,7 +39,7 @@ copy those ads run, approves it, and holds the brand knowledge.
    • experiment memory                            writes the copy and shares
    • the dashboard, on 127.0.0.1:8001             a name with nothing else
    • python -m intel, python -m meta_ads
-  ledgers: ads.schema_migrations 001…009      ledger: public.schema_migrations
+  ledgers: ads.schema_migrations 001…013      ledger: public.schema_migrations
            (public.meta_* DDL still sits              files 001…046
             in growth-engine's 042 and 046,
             applied, and is not re-homed)

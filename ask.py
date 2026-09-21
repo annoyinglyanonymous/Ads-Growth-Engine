@@ -14,7 +14,9 @@ This mirrors CLAUDE.md's stance on the agent -- "Don't give it unrestricted
 SQL initially" -- for the same reason: a named verb can be audited, and a
 string that reaches a cursor cannot.
 
-TWO VERBS ARE DELIBERATELY ABSENT.
+FIVE VERBS ARE ABSENT, FOR TWO DIFFERENT REASONS.
+
+Two are kept out on purpose, and would be a mistake to add:
 
   record  writes. This surface is read-only, and a text box that can write is
           a text box that eventually writes something nobody signed.
@@ -25,6 +27,20 @@ TWO VERBS ARE DELIBERATELY ABSENT.
           and the failure lands on the scheduled sync rather than here. Ask
           `python -m intel live --brand X` in a terminal, where the cost of
           the call is visible to the person paying it.
+
+Three are absent because a sentence cannot supply what they need, which is a
+weaker reason and one worth revisiting if somebody keeps asking for them:
+
+  ad         needs an ad_key -- a uuid, which nobody types into a box. Reached
+             by clicking through from a table instead.
+  experiment needs the exact name of one experiment.
+  versus     needs TWO angle slugs, and picking them out of a sentence
+             reliably is the whole problem. It is also shadowed: any question
+             naming an angle hits the `angles` rule first, because that rule
+             sits above the `versus|vs` token in the compare rule.
+
+This docstring said "TWO VERBS ARE DELIBERATELY ABSENT" while five were,
+which read as a complete list and was not one.
 """
 
 from __future__ import annotations
