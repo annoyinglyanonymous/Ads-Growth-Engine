@@ -182,7 +182,9 @@ async def _pull_insights(graph: GraphClient, account: dict, *,
 
 async def run_pull(*, brand_slug: str, started_by: str,
                    since: date | None = None,
-                   until: date | None = None) -> list[dict]:
+                   until: date | None = None,
+                   phases: tuple[str, ...] = ("structure", "insights"),
+                   ) -> list[dict]:
     """Pull every active account under a brand. Returns one summary per
     account: `{"act_id", "ok", "structure", "insights", "error"}`.
 
@@ -205,19 +207,52 @@ async def run_pull(*, brand_slug: str, started_by: str,
         accounts = await store.accounts_for(brand_id, active_only=True)
         for account in accounts:
             summary = {"act_id": account["act_id"], "ok": True,
-                      "structure": None, "insights": None, "error": None}
-            try:
-                summary["structure"] = await _pull_structure(
+                       "structure": None, "insights": None, "error": None}
+            errors: list[str] = []
+
+            # The two phases are caught SEPARATELY, and that is not tidiness.
+            # They use different edges and write different tables, and this
+            # file's own header says each "fails for a different reason and
+            # for a different audience to read" -- and then, until now, one
+            # try block threw away the second whenever the first failed.
+            #
+            # act_153704749222533 is what that costs. Its /ads edge dies about
+            # eight minutes into pagination, reproducibly, so the structure
+            # phase never finished and the insights phase -- a different edge,
+            # never once attempted -- was skipped four times running. The
+            # account had seven hundred ads in the warehouse and not one number
+            # against them.
+            #
+            # Insights after a failed structure is safe by construction:
+            # store.upsert_insights skips rows for ads meta_ads does not know
+            # about and reports the count, so the worst case is a smaller
+            # import that says how much it left out. A stale ad list is a
+            # reason to read the numbers carefully, not a reason to have none.
+            for phase, run in (
+                ("structure", lambda: _pull_structure(
                     graph, account, brand_id=brand_id,
-                    started_by=started_by, api_version=graph.version)
-                summary["insights"] = await _pull_insights(
+                    started_by=started_by, api_version=graph.version)),
+                ("insights", lambda: _pull_insights(
                     graph, account, brand_id=brand_id,
                     started_by=started_by, api_version=graph.version,
-                    since=since, until=until)
-            except TokenInvalid:
-                raise
-            except MetaError as exc:
-                summary["ok"] = False
-                summary["error"] = f"{type(exc).__name__}: {exc}"
+                    since=since, until=until)),
+            ):
+                if phase not in phases:
+                    continue
+                try:
+                    summary[phase] = await run()
+                except TokenInvalid:
+                    # Still raised, still for client.py's reason: every account
+                    # and every phase fails a dead token identically, so
+                    # carrying on only spends time learning that again.
+                    raise
+                except MetaError as exc:
+                    summary["ok"] = False
+                    errors.append(f"{phase}: {type(exc).__name__}: {exc}")
+
+            # Kept as one string so existing readers -- scripts/sync.py's log
+            # line, __main__'s JSON -- still show something, but named by phase
+            # so "which half failed" does not need the log to answer.
+            summary["error"] = "; ".join(errors) or None
             results.append(summary)
     return results

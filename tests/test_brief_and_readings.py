@@ -329,22 +329,40 @@ def test_every_page_renders_with_no_data(pages):
         assert "Traceback" not in body, f"{path} rendered a traceback"
 
 
-def test_no_page_renders_absent_data_as_zero(pages):
+def test_the_overview_tiles_never_render_an_absent_figure_as_zero():
     """A missing number is `--`, never `$0.00`.
 
     003 argues this for cost_per_lead -- "NULL, never 0, when leads = 0" --
     because a zero sorts to the top of a cheapest-CPA column and a null does
     not. The same is true of a reader's eye: $0.00 spend reads as a quiet week,
-    and no import at all reads as the same quiet week unless the page says
-    otherwise.
+    and no import at all reads as the same quiet week unless the page says so.
 
     This is a regression test. The overview page broke exactly here when the
     brand tiles moved from a Python roll-up to a single SQL row: a roll-up of
-    nothing is a dict of zeroes, and a single row that does not exist is None.
+    nothing is a dict of zeroes, and a row that does not exist is None.
+
+    Asserted against the RENDERER rather than against the whole page. The first
+    version of this test searched the document for "$0.00" and passed only
+    because the warehouse was empty; the first real import broke it, because a
+    spend chart with real data draws a $0.00 gridline label and that is
+    correct. A test that only holds while there is no data is not a test of
+    this property -- it is a test of there being no data.
     """
-    assert "$0.00" not in pages["/"], (
-        "the overview rendered an absent figure as $0.00, which reads as "
-        "'spent nothing' rather than 'nothing imported'")
+    import charts
+
+    # The exact shape ui.py builds when window_metrics returns no brand row.
+    empty = {k: None for k in ("spend", "conversions", "impressions",
+                               "clicks", "link_clicks", "currencies")}
+    empty["rates"] = {k: None for k in ("cpa", "cpm", "link_ctr")}
+
+    assert charts.money(empty["spend"]) == "--"
+    assert charts.num(empty["conversions"]) == "--"
+    for rate in empty["rates"].values():
+        assert charts.money(rate) == "--"
+        assert charts.pct(rate) == "--"
+    # And a real zero still renders as a zero -- the guard must not swallow a
+    # genuine "nothing was spent".
+    assert charts.money(0) == "$0.00"
 
 
 def test_a_missing_value_renders_as_a_dash_not_a_traceback():

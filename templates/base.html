@@ -501,6 +501,20 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
       <div class="caveat">{{ ico.i('warn') }}<span><strong>Provisional.</strong>
         {{ caveat }}</span></div>
     {% endif %}
+    {#- The window stops at the settled edge by default, which is right for
+        conversions and over-cautious for spend: spend is final within hours,
+        conversions restate for about three days. So rather than move the
+        default and make every CPA optimistic, the freshest days are one click
+        away and labelled. Only offered where there is something to see --
+        `settled` is null until an account has imported. -#}
+    {% if nav == 'overview' and settled and not until %}
+      <div class="caveat" style="background:var(--surface-2);border-color:var(--line)">
+        {{ ico.i('info') }}<span>Showing up to <strong>{{ settled }}</strong>,
+        the settled edge. The last few days are imported but excluded, because
+        a day still in progress reads as a collapse in spend.
+        <a href="/?brand={{ brand }}&amp;days={{ days }}&amp;until={{ today }}">Include
+        them anyway</a> &mdash; the numbers arrive marked provisional.</span></div>
+    {% endif %}
     {% block body %}{% endblock %}
   </main>
 </div>

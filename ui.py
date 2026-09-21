@@ -28,11 +28,13 @@ from fastapi.templating import Jinja2Templates
 
 import ask
 import charts
+import chat
 from config import NotConfigured
 from db import fetch_all, fetch_one
 from intel import angles as angles_mod
 from intel import brief as brief_mod
 from intel import experiments as exp_mod
+from intel import propose as propose_mod
 from intel import metrics
 from intel.context import UnknownBrand
 
@@ -57,8 +59,24 @@ def _page(request: Request, template: str, nav: str, data: dict, **extra):
         "settled": data.get("settled_through"),
         "caveat": data.get("caveat"),
         "d": data,
+        # Defaults for every page, because base.html reads both and Jinja is
+        # StrictUndefined -- a page that does not take `until` would otherwise
+        # 500 on the banner rather than simply not showing it. `extra` wins.
+        "until": None,
+        "today": date.today().isoformat(),
         **extra,
     })
+
+
+def _day(value: str | None) -> date | None:
+    """A query-string date, or None. A bad one is ignored rather than fatal:
+    a mistyped URL should fall back to the honest default, not 500."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _fail(request: Request, nav: str, exc: Exception):
@@ -78,10 +96,19 @@ def _fail(request: Request, nav: str, exc: Exception):
 
 @router.get("/", response_class=HTMLResponse)
 async def overview(request: Request, brand: str = "renegade", days: int = 28,
-                   level: str = "ad"):
+                   level: str = "ad", until: str | None = None):
+    """The window ends at the settled edge unless `until` says otherwise.
+
+    `?until=YYYY-MM-DD` is how you see today. It is not the default, and the
+    difference matters most for the metric people most want fresh: today's
+    spend row is a few hours old, so it reads as a collapse rather than as a
+    day in progress. context.window honours an explicit until and returns
+    unsettled_days with it, so the page can show the number AND say what it is.
+    """
     try:
-        d = await metrics.overview(brand, days, None, level, limit=200)
-        cmp_ = await metrics.compare(brand, days, None, level, limit=500)
+        end = _day(until)
+        d = await metrics.overview(brand, days, end, level, limit=200)
+        cmp_ = await metrics.compare(brand, days, end, level, limit=500)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "overview", exc)
 
@@ -134,6 +161,7 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
     )
     return _page(request, "overview.html", "overview", d,
                  agg=agg, deltas=deltas, level=level, days=days,
+                 until=until,
                  spend_series=[(r["day"], r["spend"]) for r in series],
                  conv_series=[(r["day"], r["conversions"]) for r in series])
 
@@ -183,8 +211,36 @@ async def brief_page(request: Request, brand: str = "renegade", days: int = 28,
 
 @router.get("/ask", response_class=HTMLResponse)
 async def ask_page(request: Request, q: str = "", brand: str = "renegade"):
-    """The no-JavaScript path. Same routing, rendered as a page."""
+    """A question, answered twice: in prose, and in the verb's own JSON.
+
+    The prose comes from a Claude Code session (chat.py) that runs the read
+    verbs itself. The JSON below it is the router's answer to the same
+    question, and it is not redundant -- it is how a figure in the prose gets
+    checked against the verb that produced it. Two accounts of the same
+    numbers would normally be the thing to avoid; here one of them is the
+    receipt for the other.
+
+    The prose half is slow (tens of seconds) and costs real money per
+    question, so it is attempted only when a question was asked, and its
+    failure never costs the routed JSON.
+    """
     answer, failed = None, None
+    reply, reply_error = None, None
+
+    if q.strip():
+        try:
+            out = await chat.answer(q, brand)
+            if out.get("ok"):
+                reply = out
+            else:
+                reply_error = out.get("error")
+        except chat.ChatUnavailable as exc:
+            reply_error = str(exc)
+        except Exception as exc:  # pragma: no cover - defensive
+            # A failure in the prose half must not take the routed answer down
+            # with it: the JSON is the part that is always correct.
+            reply_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+
     if q.strip():
         try:
             # jsonable_encoder before the template, not tojson inside it: every
@@ -199,7 +255,9 @@ async def ask_page(request: Request, q: str = "", brand: str = "renegade"):
     return templates.TemplateResponse(request, "ask.html", {
         "nav": "overview", "brand": brand, "settled": None, "caveat": None,
         "d": {"brand": brand}, "q": q, "answer": answer, "failed": failed,
+        "reply": reply, "reply_error": reply_error,
         "verbs": ask.VERBS,
+        "until": None, "today": date.today().isoformat(),
     })
 
 
@@ -277,12 +335,22 @@ async def angles(request: Request, brand: str = "renegade", days: int = 90,
 
 
 @router.get("/experiments", response_class=HTMLResponse)
-async def experiments(request: Request, brand: str = "renegade"):
+async def experiments(request: Request, brand: str = "renegade",
+                      days: int = 14):
+    """The log, and underneath it the ideas nobody has filed yet.
+
+    Proposals share this page rather than getting their own because they are
+    the same subject at two stages, and because an empty log with no next
+    step reads as a dead feature. They are clearly below the log and clearly
+    unfiled: filing one is `intel record`, run by a person.
+    """
     try:
         d = await exp_mod.experiments(brand)
+        ideas = await propose_mod.propose(brand, days)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "experiments", exc)
-    return _page(request, "experiments.html", "experiments", d)
+    return _page(request, "experiments.html", "experiments", d,
+                 ideas=ideas, days=days)
 
 
 @router.get("/ad/{ad_key}", response_class=HTMLResponse)

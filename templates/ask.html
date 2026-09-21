@@ -24,7 +24,30 @@
 
     {% if failed %}
       <div class="flash error">{{ failed }}</div>
-    {% elif answer %}
+    {% endif %}
+
+    {#- The prose answer, from a Claude Code session that ran the verbs itself.
+        Above the JSON, because it is what the question asked for; the JSON
+        stays below it so any figure in the prose can be checked against the
+        verb that produced it rather than taken on trust. -#}
+    {% if reply %}
+      <div class="card-head">
+        <h2 class="card-t">Answer</h2>
+        {% if reply.turns %}<span class="more">{{ reply.turns }} step(s)</span>{% endif %}
+      </div>
+      <div style="white-space:pre-wrap;line-height:1.55;margin-bottom:6px">{{ reply.answer }}</div>
+      <div class="n" style="margin-bottom:14px">
+        Written by a Claude Code session that ran the read verbs and may quote
+        only what they printed. It cannot approve, activate or conclude
+        anything.
+        {%- if reply.cost_usd %} This answer cost
+        ${{ '%.2f'|format(reply.cost_usd) }}.{% endif %}
+      </div>
+    {% elif reply_error %}
+      <div class="caveat">{{ ico.i('warn') }}<span>{{ reply_error }}</span></div>
+    {% endif %}
+
+    {% if answer %}
       <div class="card-head">
         <h2 class="card-t">{{ answer.verb }}</h2>
         <span class="more">{{ answer.says }}</span>

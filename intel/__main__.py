@@ -4,7 +4,7 @@ Every verb prints a JSON object and exits 0, or prints one sentence to stderr
 and exits 2. That is growth-engine's shape (review/__main__.py, meta_ads/
 __main__.py) and it is what lets a SKILL.md call these without a parser.
 
-Fifteen read verbs and one write verb. There is no --approve, no --conclude and
+Sixteen read verbs and one write verb. There is no --approve, no --conclude and
 no --activate, here or anywhere: see intel/shapes.py.
 """
 
@@ -22,7 +22,8 @@ from uuid import UUID
 import db
 from config import NotConfigured
 
-from . import angles, brief, experiments, health, live as live_mod, metrics
+from . import (angles, brief, experiments, health, live as live_mod,
+               metrics, propose as propose_mod)
 from .context import UnknownBrand
 from .graph import GraphError, NotConfigured as TokenNotConfigured
 from .shapes import SHAPES, ShapeError
@@ -66,6 +67,36 @@ def _day(value: str | None) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         raise SystemExit(f"not a date: {value!r}. Use YYYY-MM-DD.") from None
+
+
+def _utf8_stdout() -> None:
+    """Make stdout carry what the ads actually say.
+
+    Every verb prints `json.dumps(..., ensure_ascii=False)`, which is right --
+    escaping an emoji to \ud83d\udc4e makes the copy unreadable for the person
+    checking whether the import is correct. But Windows hands a console
+    `cp1252` by default, and cp1252 cannot encode most of what ends up in ad
+    copy.
+
+    The failure is the worst shape available: the verb runs, the database is
+    fine, every number is computed, and the process dies with
+    UnicodeEncodeError at the final print. Nothing indicates the problem is a
+    thumbs-down emoji in one headline rather than the query above it.
+
+    Found on the first real import: renegade's copy contains U+1F44E and
+    `intel overview` crashed on it after the data had already landed.
+
+    `errors="replace"` rather than a raise: a glyph that a redirected file
+    cannot hold should cost that character, never the whole answer.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            # Not a reconfigurable text stream -- a pipe some callers replace
+            # with StringIO, or a Python without it. Printing ASCII-safe output
+            # is better than refusing to start.
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,6 +166,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--a", required=True)
     s.add_argument("--b", required=True)
 
+    s = windowed("propose", "experiment ideas, and what would settle each", 14)
+    s.add_argument("--min-spend", type=float, default=200.0,
+                   help="fatigue confidence floor for the refresh proposals")
+
     s = brandish("experiments", "what we decided to test, and where each stands")
     s.add_argument("--open", action="store_true", dest="open_only")
     s.add_argument("--angle")
@@ -192,6 +227,9 @@ async def run(a: argparse.Namespace) -> dict:
                                      a.min_spend)
     if v == "versus":
         return await angles.versus(a.brand, a.a, a.b, a.days, _day(a.until))
+    if v == "propose":
+        return await propose_mod.propose(a.brand, a.days, _day(a.until),
+                                         a.min_spend)
     if v == "experiments":
         return await experiments.experiments(a.brand, a.open_only, a.angle)
     if v == "experiment":
@@ -228,6 +266,7 @@ async def _main(a: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    _utf8_stdout()
     a = build_parser().parse_args()
     return asyncio.run(_main(a))
 

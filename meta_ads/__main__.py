@@ -65,6 +65,13 @@ async def amain() -> int:
     group.add_argument("--pull", action="store_true",
                        help="pull structure and insights for every active "
                             "account under --brand")
+    ap.add_argument("--phase", choices=("structure", "insights"),
+                    default=None,
+                    help="run only this half of the pull. structure is the ad "
+                         "list and its copy; insights is the daily numbers. "
+                         "They use different Graph edges and different tables, "
+                         "so one being broken is not a reason to skip the "
+                         "other -- which is exactly why this flag exists.")
     ap.add_argument("--label", default=None,
                     help="what to call the account on screen, for "
                          "--add-account")
@@ -93,7 +100,9 @@ async def amain() -> int:
         else:
             out = await meta_pull.run_pull(
                 brand_slug=args.brand, started_by=identity.cli_operator(),
-                since=args.since, until=args.until)
+                since=args.since, until=args.until,
+                phases=(args.phase,) if args.phase
+                       else ("structure", "insights"))
             if not out:
                 # Not a crash and not a success: the token was fine (or
                 # run_pull would have raised) and there is simply nothing
@@ -117,7 +126,38 @@ async def amain() -> int:
         await pool.close()
 
 
+def _utf8_stdout() -> None:
+    """Make stdout carry what the ads actually say.
+
+    Every verb prints `json.dumps(..., ensure_ascii=False)`, which is right --
+    escaping an emoji to \ud83d\udc4e makes the copy unreadable for the person
+    checking whether the import is correct. But Windows hands a console
+    `cp1252` by default, and cp1252 cannot encode most of what ends up in ad
+    copy.
+
+    The failure is the worst shape available: the verb runs, the database is
+    fine, every number is computed, and the process dies with
+    UnicodeEncodeError at the final print. Nothing indicates the problem is a
+    thumbs-down emoji in one headline rather than the query above it.
+
+    Found on the first real import: renegade's copy contains U+1F44E and
+    `intel overview` crashed on it after the data had already landed.
+
+    `errors="replace"` rather than a raise: a glyph that a redirected file
+    cannot hold should cost that character, never the whole answer.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            # Not a reconfigurable text stream -- a pipe some callers replace
+            # with StringIO, or a Python without it. Printing ASCII-safe output
+            # is better than refusing to start.
+            pass
+
+
 def main() -> int:
+    _utf8_stdout()
     _safe_console()
     return asyncio.run(amain())
 
