@@ -62,6 +62,10 @@ async def amain() -> int:
                        help="register act_<digits> under --brand")
     group.add_argument("--list-accounts", action="store_true",
                        help="every account, active and inactive")
+    group.add_argument("--deactivate-account", metavar="ACT_ID",
+                       help="stop pulling act_<digits>. Reversible with "
+                            "--add-account, and it keeps the account's "
+                            "imported rows and its pull history")
     group.add_argument("--pull", action="store_true",
                        help="pull structure and insights for every active "
                             "account under --brand")
@@ -94,6 +98,21 @@ async def amain() -> int:
             out = await store.add_account(
                 brand_id=brand["id"], act_id=args.add_account,
                 label=args.label, added_by=identity.cli_operator())
+        elif args.deactivate_account:
+            if not _ACCOUNT_ID.match(args.deactivate_account):
+                raise ValueError(
+                    f"not a Meta ad account id: "
+                    f"{args.deactivate_account!r} (expected 'act_<digits>')")
+            out = await store.deactivate_account(
+                act_id=args.deactivate_account)
+            if out is None:
+                # Not silently fine. "Nothing to deactivate" and "deactivated"
+                # print the same way if this returns None, and the caller acts
+                # on the first as though it were the second.
+                raise ValueError(
+                    f"{args.deactivate_account} is not registered, so there "
+                    f"was nothing to deactivate. List them: "
+                    f"python -m meta_ads --list-accounts")
         elif args.list_accounts:
             brand = await _brand(args.brand)
             out = await store.accounts_for(brand["id"], active_only=False)

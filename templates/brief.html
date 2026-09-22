@@ -43,11 +43,24 @@
     template; using it here would render an exception, not a chart.
     ===================================================================== -#}
 
+{#- A real button, top right, same shape as the one on /ad/<key>. It asks a
+    Claude Code session to explain the brief underneath in plain sentences. A
+    button rather than something that runs on load: this costs a model call and
+    the better part of a minute, and a brief that is opened to check one number
+    should not spend that. -#}
+{% block toolbar %}
+<button type="button" class="btn"
+        data-ask-url="/brief/summary.json?brand={{ d.brand }}&amp;days={{ days }}{% if product %}&amp;product={{ product | urlencode }}{% endif %}"
+        data-ask-target="brief-summary">
+  Explain this brief
+</button>
+{% endblock %}
+
 {% block page_sub %}
 <div class="sub">
   Generated {{ d.generated_at }} &mdash; nothing here concludes anything: an
-  angle goes active and an experiment gets a conclusion in growth-engine,
-  where a person is signed in and attributable.
+  angle goes active and an experiment gets a conclusion only when a person
+  signs it, under their own name.
 </div>
 {% endblock %}
 
@@ -168,6 +181,30 @@
                   'waiting', 'action', 'owner',
                   'gaps', 'gap', 'degraded'] %}
 
+
+{#- ========================================================= IN PLAIN LANGUAGE
+    Where the summary lands, ABOVE the numbers. Hidden until the button in the
+    topbar is pressed; filled by app.js from /brief/summary.json.
+
+    It sits above Trust rather than replacing anything: the sections below are
+    the evidence and stay exactly as they are, so a reader who wants to check a
+    sentence can. What was missing was not a number, it was somebody saying
+    what the numbers add up to -- the sentences here are that, and they are
+    written from the same fact pack the sections render, with the rules'
+    readings handed over so the session builds on them rather than
+    rediscovering them. -#}
+<section class="stage" id="brief-summary" hidden aria-label="In plain language">
+  <div class="stage-head">
+    <h2>In plain language</h2>
+    <span class="state" data-analysis-state></span>
+  </div>
+  <div data-analysis-body></div>
+  <p class="small muted" style="margin-top:12px; max-width:80ch"
+     data-analysis-foot hidden>
+    Written by a Claude Code session from the same numbers the sections below
+    show, plus what the rules already found. It reports; it decides nothing.
+  </p>
+</section>
 
 {#- ============================================================= 1. TRUST
     Never collapsed, never moved. The banner that used to sit here -- red when

@@ -652,3 +652,73 @@ def test_halving_stops_rather_than_shrinking_for_ever():
         _run(recorder, Sleeps(), _collect("ads", ACCOUNT))
 
     assert len(recorder.requests) <= 1 + MAX_REDUCTIONS + TRIES
+
+
+# ---------------------------------------------------------------------------
+# Two passes over /ads: the cheap one for status, the heavy one for creatives.
+#
+# The structure phase has never once completed on act_153704749222533, and the
+# reason is the shape of the request rather than the network: 207 of its 711
+# ads are ACTIVE and 465 have never spent a cent, so an unrestricted crawl
+# expands creatives for hundreds of ads nobody will read. These assert that the
+# two calls really are different requests, because a "cheap" pass that quietly
+# carries AD_FIELDS is just the expensive one again.
+# ---------------------------------------------------------------------------
+
+def test_the_cheap_pass_asks_for_no_creative():
+    from meta_ads.client import AD_FIELDS, AD_STATUS_FIELDS
+
+    assert "creative" in AD_FIELDS, "the heavy pass must still fetch creatives"
+    assert "creative" not in AD_STATUS_FIELDS, (
+        "AD_STATUS_FIELDS carries a creative expansion, which is the entire "
+        "cost the cheap pass exists to avoid")
+    assert "effective_status" in AD_STATUS_FIELDS, (
+        "the cheap pass exists to correct effective_status; it has to ask "
+        "for it")
+
+
+def test_the_cheap_pass_sends_the_light_field_set():
+    from meta_ads.client import AD_STATUS_FIELDS
+
+    recorder = Recorder(httpx.Response(200, json={"data": [], "paging": {}}))
+    _run(recorder, Sleeps(),
+         _collect("ads", ACCOUNT, fields=AD_STATUS_FIELDS))
+
+    assert recorder.param(0, "fields") == AD_STATUS_FIELDS
+    assert recorder.param(0, "effective_status") is None
+
+
+def test_the_heavy_pass_restricts_to_the_statuses_it_was_given():
+    """Meta wants a JSON array here. A bare repeated parameter is accepted and
+    ignored, which would silently crawl the whole account again."""
+    recorder = Recorder(httpx.Response(200, json={"data": [], "paging": {}}))
+    _run(recorder, Sleeps(),
+         _collect("ads", ACCOUNT, effective_status=("ACTIVE", "WITH_ISSUES")))
+
+    sent = recorder.param(0, "effective_status")
+    assert sent == '["ACTIVE", "WITH_ISSUES"]', sent
+    assert "creative" in (recorder.param(0, "fields") or "")
+
+
+def test_an_unfiltered_call_still_sends_no_status_filter():
+    """The default has to stay "everything", so a caller that does not know
+    about the filter cannot accidentally import only the live ads."""
+    recorder = Recorder(httpx.Response(200, json={"data": [], "paging": {}}))
+    _run(recorder, Sleeps(), _collect("ads", ACCOUNT))
+
+    assert recorder.param(0, "effective_status") is None
+
+
+def test_the_active_set_keeps_the_ads_worth_reading():
+    """WITH_ISSUES and DISAPPROVED are ads somebody intended to run and whose
+    copy is current -- a disapproved ad is one you are MORE likely to go and
+    read. ARCHIVED and the paused states are not in the set: their copy cannot
+    change, and whatever is in the warehouse for them is already correct."""
+    from meta_ads.pull import ACTIVE_ENOUGH
+
+    assert "ACTIVE" in ACTIVE_ENOUGH
+    assert "WITH_ISSUES" in ACTIVE_ENOUGH
+    assert "DISAPPROVED" in ACTIVE_ENOUGH
+    for dead in ("ARCHIVED", "PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"):
+        assert dead not in ACTIVE_ENOUGH, (
+            f"{dead} ads are re-fetched with full creatives for no gain")

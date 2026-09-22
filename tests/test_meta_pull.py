@@ -69,7 +69,17 @@ class FakeGraph:
         return
         yield  # pragma: no cover
 
-    async def ads(self, act_id, *, updated_since=None):
+    async def ads(self, act_id, *, updated_since=None, fields=None,
+                  effective_status=None):
+        """Mirrors the real signature, including the two arguments the
+        structure pull now passes.
+
+        `_pull_structure` calls this edge TWICE -- once cheaply for status and
+        once for creatives -- so a fake that accepts only the old keywords
+        fails with a TypeError inside the phase, which every isolation test
+        here then reads as the account having failed. Keeping the signature
+        honest is what stops a fake from proving the wrong thing.
+        """
         return
         yield  # pragma: no cover
 
@@ -314,3 +324,75 @@ def test_chunking_is_why_a_big_window_does_not_go_in_one_request():
     spans = _chunks(date(2025, 8, 1), date(2026, 9, 1), 7)
     assert len(spans) > 50
     assert all((u - s).days + 1 <= 7 for s, u in spans)
+
+
+# ---------------------------------------------------------------------------
+# The window ends on the ACCOUNT's day, not on UTC's.
+# ---------------------------------------------------------------------------
+
+def test_the_window_ends_on_the_accounts_own_day():
+    """An insights date is a day in the ad account's timezone, not in UTC.
+
+    Observed on 2026-09-22 at 05:35 UTC against act_153704749222533
+    (America/Los_Angeles, where it was still 2026-09-21): the window ran to
+    2026-09-22, Meta returned nothing for a day that had not started, and the
+    watermark advanced past the data -- so the dashboard read "insights
+    through 2026-09-22" over an empty day.
+
+    Frozen rather than computed from `now()`: a test that recomputes both
+    sides passes at every hour including the ones where the bug lives.
+    """
+    from unittest.mock import patch
+
+    from meta_ads.pull import _account_today
+
+    # 05:35 UTC on the 22nd is 22:35 on the 21st in Los Angeles.
+    frozen = datetime(2026, 9, 22, 5, 35, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen.astimezone(tz) if tz else frozen
+
+    with patch("meta_ads.pull.datetime", _FrozenDatetime):
+        assert _account_today(
+            {"timezone_name": "America/Los_Angeles"}) == date(2026, 9, 21)
+        assert _account_today(
+            {"timezone_name": "Asia/Tokyo"}) == date(2026, 9, 22)
+        # No timezone means no structure pull has ever completed for the
+        # account. UTC is the honest fallback, and it is what settled_through
+        # does with the same missing value.
+        assert _account_today({"timezone_name": None}) == date(2026, 9, 22)
+        assert _account_today({}) == date(2026, 9, 22)
+        # A name tzdata does not know is a packaging problem, not a reason to
+        # import nothing.
+        assert _account_today({"timezone_name": "Not/AZone"}) == date(2026, 9, 22)
+
+
+def test_the_importer_and_settled_through_agree_on_the_restatement_horizon():
+    """Two copies of the number 3, and nothing else makes them agree.
+
+    `ads.settled_through()` subtracts 3 to declare which days can still move;
+    `meta_ads/pull.py` re-reads that many days so the days declared unsettled
+    are the days that actually get restated. Raise one without the other and
+    the mismatch is silent: days stay flagged provisional that nothing ever
+    revisits, or Meta is paid to recompute days that stopped moving.
+
+    Same device as tests/test_tracking_is_a_faithful_copy.py -- the
+    duplication is deliberate and this is what keeps it honest.
+    """
+    import re
+    from pathlib import Path
+
+    from meta_ads.pull import INSIGHTS_RESTATEMENT_DAYS
+
+    sql = (Path(__file__).resolve().parent.parent
+           / "migrations" / "003_ads_metrics.sql").read_text(encoding="utf-8")
+    m = re.search(r"::date\)\s*-\s*(\d+)\)\s*\n\s*from public\.meta_ad_accounts",
+                  sql)
+    assert m, "could not find the subtraction in ads.settled_through()"
+    assert int(m.group(1)) == INSIGHTS_RESTATEMENT_DAYS, (
+        f"ads.settled_through() subtracts {m.group(1)} days but "
+        f"INSIGHTS_RESTATEMENT_DAYS is {INSIGHTS_RESTATEMENT_DAYS}. The "
+        f"importer must re-read at least what the metrics layer calls "
+        f"unsettled.")

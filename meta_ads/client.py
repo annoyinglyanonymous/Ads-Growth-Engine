@@ -251,6 +251,21 @@ AD_FIELDS = (
     "effective_object_story_id,object_story_spec,asset_feed_spec,url_tags,"
     "object_url,image_url,thumbnail_url,video_id,call_to_action_type}")
 
+#: Enough to know an ad EXISTS and whether it is running -- and nothing else.
+#:
+#: This is the cheap half of the structure pull, and the cheapness is the whole
+#: point. AD_FIELDS carries `creative{...}` with fourteen subfields, two of them
+#: big nested objects, so the weight of an /ads response is set by the creatives
+#: rather than by the row count. Drop the creative and a page of a thousand ads
+#: is small.
+#:
+#: It exists because the heavy call is now restricted to ACTIVE ads. Without a
+#: second pass, an ad that we last saw ACTIVE and which has since been paused
+#: would never be returned again, and the warehouse would keep reporting it as
+#: running -- wrong, and silently so, which is the failure `intel live` exists
+#: to catch rather than to cause.
+AD_STATUS_FIELDS = "id,effective_status,status,updated_time"
+
 #: The three ranking fields are the reason this list is not shorter: they are
 #: Meta's own grading of the ad against its competition, they exist nowhere
 #: else, and they are what the review stage reads as evidence rather than
@@ -465,9 +480,23 @@ class GraphClient:
             yield node
 
     async def ads(self, act_id: str, *,
-                  updated_since: datetime | date | int | None = None
+                  updated_since: datetime | date | int | None = None,
+                  fields: str = AD_FIELDS,
+                  effective_status: tuple[str, ...] | None = None,
                   ) -> AsyncIterator[dict]:
         """Ads with their creatives, optionally only those edited since.
+
+        `effective_status` restricts the set Meta computes at all, which is a
+        different lever from `limit` and from `updated_since`. On
+        act_153704749222533, 207 of 711 ads are ACTIVE and 465 have never spent
+        a cent -- so an unrestricted crawl spends most of its effort expanding
+        creatives for ads that are paused, archived, or were never delivered.
+        The copy of a paused ad does not change, and once it is in the warehouse
+        it does not need reading again.
+
+        `fields` is here so the same edge can be asked the cheap question --
+        AD_STATUS_FIELDS, no creative -- without a second method that would
+        drift from this one's paging and retry behaviour.
 
         `updated_since` is what makes a daily pull cheap: an account with two
         thousand ads has a handful that changed yesterday, and asking for all
@@ -478,9 +507,12 @@ class GraphClient:
         the chain for whatever it imports, which is the same reasoning 042
         gives for that chain carrying no foreign keys.
         """
-        params: dict = {"fields": AD_FIELDS}
+        params: dict = {"fields": fields}
         if updated_since is not None:
             params["updated_since"] = _unix(updated_since)
+        if effective_status:
+            # Meta wants this as a JSON array, not a repeated parameter.
+            params["effective_status"] = json.dumps(list(effective_status))
         async for node in self._paged(_account_path(act_id, "ads"), params):
             yield node
 

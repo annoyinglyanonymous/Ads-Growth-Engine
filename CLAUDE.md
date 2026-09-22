@@ -1,70 +1,106 @@
 # Ads Growth Engine
 
-Everything Meta is here. `growth-engine` writes the copy and approves it.
+This repo is the whole ads system. It imports Meta's data into `public.meta_*`,
+derives every rate and comparison from it, holds the few facts that are ours
+rather than Meta's, and answers questions about them.
 
-That sentence is the whole boundary, and most of what follows is a consequence
-of it. It replaced an older one -- "this repo reads, growth-engine writes" --
-which stopped being true when the importer moved in. The old line described
-the credentials; this one describes the job, and a boundary people can restate
-from memory is the only kind that survives.
-
-The read-only guarantee did not go away, it got smaller and more exact. It is
-no longer "nothing in this folder can write". It is:
-
-    intel/, ui.py, ask.py   read ads.* through db.py, which has no cursor
-    intel/record.py         writes ads.* proposals, and only those
-    meta_ads/               writes public.meta_*, and nothing else
-
-Three pools, one per job, each scoped by a test rather than by a promise
-(tests/test_read_only.py). A read verb still cannot write, and now the thing
-stopping it is a named list instead of the absence of a folder.
+**It was designed as one half of a pair, and the other half is not in use.**
+That matters more than it sounds, because the schema still carries the joins,
+the seam views and the vocabulary of a two-repo system, and several tables that
+a sibling repo would have filled are empty and will stay empty. A session that
+does not know this spends its time looking for data that was never going to be
+there. The list is in **What is structurally empty** below; read it before
+concluding that something is broken.
 
 ---
 
 ## What this is
 
-The ads system. This repo imports Meta's data into `public.meta_*`, derives
-every rate and comparison from it, holds the few facts that are ours rather
-than Meta's, and answers questions about them. `growth-engine` produces the
-copy those ads run, approves it, and holds the brand knowledge.
-
 ```
-  Ads Growth Engine (here)                    growth-engine
-  ────────────────────────                    ─────────────
-  imports and owns public.meta_*              owns the rest of public.*
-  owns ads.*                                   • copy production
-   • meta_ads/ -- the Graph importer   ◀────    • the claim gate, approvals
-   • metrics: views + functions                 • KB + brand files
-   • the angle bank and creative tags           • the meta-ads SKILL, which
-   • experiment memory                            writes the copy and shares
-   • the dashboard, on 127.0.0.1:8001             a name with nothing else
+  Ads Growth Engine
+  ─────────────────
+  imports and owns public.meta_*
+  owns ads.*
+   • meta_ads/ -- the Graph importer
+   • metrics: views + functions in migrations/
+   • the angle bank and creative tags
+   • experiment memory
+   • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
-  ledgers: ads.schema_migrations 001…013      ledger: public.schema_migrations
-           (public.meta_* DDL still sits              files 001…046
-            in growth-engine's 042 and 046,
-            applied, and is not re-homed)
-            │                                        │
-            └──────────── one Supabase ──────────────┘
+
+  ledger: ads.schema_migrations, files 001…014
 ```
 
-One database, three schemas' worth of concerns, three roles. A separate
-database would have been tidier and is impossible: the value here is joining ad
-performance to `campaign_assets`, `campaign_angles` and `ad_reviews`, and
-Postgres cannot join across databases without a copy — and a copy is the
-staleness the whole design avoids.
+**The `public.meta_*` DDL is not in this repo.** Those tables exist and are
+applied; their `create table` statements live in migration files this repo does
+not contain, and they were never re-homed. `ads_migrate.py` manages
+`ads.schema_migrations` only. So a change to `public.meta_ads` or
+`public.meta_ad_insights` has no source file here to edit — write new DDL and
+say plainly that it is new, rather than hunting for an original that is not
+present.
 
-**Two things share a name and are unrelated.** `meta_ads/` is the Python
-package that imports; `meta_ads` is also a CHANNEL in growth-engine, where a
-deliverable runs on `email`, `meta_ads` or `video`. And `.claude/skills/
-meta-ads/` over there writes ad copy — it is not this importer, it was moved
-here once by mistake and moved straight back.
+## The read-only guarantee
 
-**`tracking.py` is a deliberate copy.** growth-engine stamps utm values onto
-approved assets with it; `meta_ads.parse` reads them back off an ad here. Those
-two halves are one convention and nothing else makes them agree, so the match
-test round-trips through both real modules — and `tests/test_tracking_is_a_
-faithful_copy.py` fails when the copies drift. Never edit this copy; copy
-growth-engine's over it.
+It is not "nothing in this folder can write". It is:
+
+```
+intel/, ui.py, ask.py   read ads.* through db.py, which has no cursor
+intel/record.py         writes ads.* proposals, and only those
+meta_ads/               writes public.meta_*, and nothing else
+```
+
+Three pools, one per job, each scoped by a test rather than by a promise
+(`tests/test_read_only.py`). A read verb cannot write, and the thing stopping it
+is a named list rather than good intentions.
+
+The dashboard's Refresh button does not widen that list: it spawns
+`scripts\sync.py` as a separate process, so the credential that writes
+`public.meta_*` never enters the web process.
+
+## What is structurally empty, and why
+
+These are not bugs and there is nothing here to fix. They are the shape of a
+system whose other half is not running. Verified 2026-09-22 by reading as
+`postgres`, which sees through RLS:
+
+```
+public.campaigns          0      public.campaign_assets   0
+public.campaign_angles    0      public.ad_reviews        0
+```
+
+Consequences, in the order they will confuse you:
+
+- **`ads.angle` is empty, so no ad can be tagged.** A tag (`ads.ad_facet`) may
+  point at an `angle_id`, and there are no angles to point at. All 711 imported
+  ads read "Not tagged", and every angle number on the site is therefore empty.
+  Fill the bank with `intel record --kind angle_proposal` — see **Approving an
+  angle**. A facet can also be filed with no `angle_slug` at all, carrying only
+  hook, offer and audience.
+- **`scripts/seed_angles.py` has nothing to do.** It promotes approved rows out
+  of `public.campaign_angles`. With that table empty it prints
+  `0 angle(s) to consider` and stops, correctly.
+- **`ads.campaign_angle_approved` and `ads.inherited_facet` return nothing.**
+  They are seam views over the empty tables. Nothing breaks; the *automatic*
+  tagging path is simply unavailable, and tags have to be filed by hand.
+- **The asset match never succeeds.** `store.upsert_ad` matches each ad against
+  `candidates_for_match(brand_id)`, which reads `campaign_assets`. With zero
+  candidates, `campaign_asset_id` stays null on every ad — and that is true
+  whether or not the structure pull succeeds. Do not read a null
+  `campaign_asset_id` as evidence about the importer.
+- **`tracking.py` is inert.** It defines the utm convention `meta_ads.parse`
+  reads back off an ad. Nothing here calls it outside the tests, and nothing is
+  currently stamping those values onto ads, so the convention has no live
+  writer. Keep it: it is the definition the parser is written against, and
+  `tests/test_meta_match.py` round-trips through it.
+
+**Zero rows is the failure mode, not an error**, and this section is why that
+rule matters twice over. Every `public.meta_*` table has RLS on with no policy;
+`ads_reader` is `NOBYPASSRLS`, so without the policies in `006_ads_roles.sql`
+every query succeeds and returns nothing. `campaign_angles`, `campaigns`,
+`brands` and `ad_reviews` have RLS enabled too. So an empty result may mean
+"there are none" or "you cannot see them", and the two are indistinguishable
+from the read pool. When it matters, check as a role that can see through RLS
+before reporting an absence.
 
 ## The rules
 
@@ -73,8 +109,7 @@ experiment and file a creative tag. You may not set `ads.angle.status` to
 `active`, you may not write `ads.experiment.conclusion`, and there is no verb
 that tries. The schema enforces it (`angle_active_is_signed`,
 `experiment_conclusion_attributed`) and the write shapes do not accept those
-fields. This mirrors growth-engine's `auth.assert_can_approve`: an agent may
-tighten and may not loosen.
+fields. An agent may tighten and may not loosen.
 
 **You never compute a rate, a delta or a share yourself.** Every number comes
 out of a function in `migrations/003_ads_metrics.sql`. If a number you need is
@@ -84,26 +119,66 @@ come to disagree, and whichever one the reader is looking at is the one they
 act on.
 
 **You never apply a migration.** `ads_migrate.py --apply` is denied in
-`.claude/settings.json`. Prepare the DDL, run `--print`, hand it over. This
-database is shared and several sessions run against it.
+`.claude/settings.json`, as are direct `psql` and `python -c`. Prepare the DDL,
+run `--print`, hand it over. This database is shared and several sessions run
+against it.
 
 **Facts and opinions are labelled.** The numbers a function returns are facts.
-Your reading of them is an opinion. Performance is evidence about what happened,
-not a verdict on what to do. growth-engine's `review/context.py:121` says this
-better and the skills quote it verbatim.
+Your reading of them is an opinion. Performance is evidence about what
+happened, not a verdict on what to do. `intel/readings.py` and
+`intel/ad_readings.py` are the mechanical form of this: a rule may only state a
+figure it can cite, and the tests fail any sentence that states one it cannot.
+
+## Approving an angle
+
+The one step with no verb behind it, deliberately.
+
+`intel record --kind angle_proposal` files an angle with `status` hard-coded to
+`'proposed'` — a SQL literal no caller can supply. Every angle number filters
+on `status = 'active'`, and:
+
+```sql
+constraint angle_active_is_signed
+    check (status <> 'active' or approved_by is not null)
+```
+
+So an angle joins the working vocabulary only when a person signs it, and the
+signing is a statement run by that person, against the database, under their
+own name:
+
+```sql
+update ads.angle
+   set status      = 'active',
+       approved_by = '<your name>',
+       approved_at = now(),
+       updated_at  = now()
+ where brand_id = (select id from ads.brand where slug = 'renegade')
+   and slug     = '<angle-slug>'
+   and status   = 'proposed';
+```
+
+`and status = 'proposed'` is not decoration: without it the statement will
+happily re-activate a retired angle, and a retired angle coming back is the kind
+of change nobody goes looking for.
+
+This is a decision, not a task. Do not add a verb, a flag or an endpoint that
+performs it, and do not run it on somebody's behalf — the column is called
+`approved_by` and it has to be true.
 
 ## Things that will bite you
-
-**Zero rows is the failure mode, not an error.** Every `public.meta_*` table has
-RLS on with no policy. `ads_reader` is `NOBYPASSRLS`, so without the policies in
-`006_ads_roles.sql` every query succeeds and returns nothing, and every metric
-reads `$0.00`. If the dashboard is empty, check `006` before you check the
-importer.
 
 **The last three days are not final.** Meta restates attributed conversions.
 `ads.settled_through()` is the honest edge; every verb reports `unsettled_days`
 and you must repeat it. "CPA rose this week" measured across a partial day is
 the most common false alarm in this system.
+
+The dashboard no longer stops at that edge. Overview, Why CPA moved and Fatigue
+end their windows at the latest day that has data (`ui._latest_day`), because a
+reader who presses Refresh and sees a window three days back reads it as the
+refresh having done nothing. `python -m intel` still defaults to the settled
+edge and still reports `unsettled_days` — the agent is held to the old contract,
+the dashboard reader is not, and the rail's "Settled through" card says which
+days can still move.
 
 **Reach cannot be summed and frequency is not what you think.** Daily reach is
 deduplicated within the day, so a window sum counts the same person repeatedly —
@@ -112,9 +187,9 @@ impressions ÷ *that day's* reach, so it sits near 1.0–1.3; cumulative frequen
 is not in this database at all. Say "daily frequency", never "frequency".
 
 **CPL is not comparable across optimization goals.** An ad group optimising
-`LINK_CLICKS` and one optimising `OFFSITE_CONVERSIONS` are different animals
-(042 says so). `optimization_goal` is carried down to the fact for exactly this
-reason — segment on it or say you didn't.
+`LINK_CLICKS` and one optimising `OFFSITE_CONVERSIONS` are different animals.
+`optimization_goal` is carried down to the fact for exactly this reason —
+segment on it or say you didn't.
 
 **Meta's adset is called `ad_group` here.** The word "adset" appears nowhere in
 the `ads` schema. Neutral level vocabulary is account / campaign / ad_group / ad,
@@ -122,7 +197,20 @@ so Google slots in as a union branch rather than a migration.
 
 **A tag is keyed on `(ad_key, copy_hash)`.** Rewrite the copy and the tag is
 gone, deliberately — a tag that survives a rewrite describes an ad that no
-longer exists.
+longer exists. `/ad/<key>` reads `ads.ad_facet` rather than
+`ads.facet_effective` for this reason: the effective view drops a stale tag by
+construction, which would make the warning impossible to show.
+
+**The structure phase has never succeeded on `act_153704749222533`.** Its
+`/ads` edge dies five to nine minutes into pagination, on code 1 ("reduce the
+amount of data") and code 2 ("an unexpected error") in roughly equal measure.
+The 711 ads exist only because `_pull_structure` upserts each ad as it
+paginates, so the failed runs left their rows behind — which is also why
+`first_seen_at` on every ad is 2026-09-20 or later rather than the ad's real
+age. Because `updated_since` comes from the last *successful* structure pull,
+every attempt re-crawls the whole account. Page-size reduction has fired exactly
+once, in a run that was then interrupted, so it is untested rather than
+known-insufficient.
 
 ## Running it
 
@@ -133,13 +221,16 @@ python -m intel overview --brand renegade --days 28
 python -m intel why --brand renegade --days 7
 python -m intel fatigue --brand renegade
 python -m intel coverage --brand renegade
+python -m intel ad-readings --brand renegade --key <ad_key>
 
 python -m main                               # the dashboard, 127.0.0.1:8001
 python ads_migrate.py --status
 
-python -m meta_ads --list-accounts           # the import half, also here now
+python -m meta_ads --list-accounts
 python -m meta_ads --add-account act_XXXX --brand renegade
+python -m meta_ads --deactivate-account act_XXXX
 python -m meta_ads --pull --brand renegade   # minutes, against a rate limit
+python -m meta_ads --pull --brand renegade --phase insights   # seconds
 python scripts/sync.py                       # what Task Scheduler runs
 ```
 
@@ -148,44 +239,86 @@ uvicorn bound to `127.0.0.1` is not listening there, which presents as a refused
 connection against an app that is plainly running.
 
 Every verb prints JSON to stdout and one sentence to stderr on failure. There is
-one write verb, `intel record`, and it takes a path rather than stdin.
+one write verb, `intel record`, and it takes a path rather than stdin. Its three
+shapes are `ad_facet`, `angle_proposal` and `experiment` (`intel/shapes.py`) —
+a governance question should be answerable by reading one list.
+
+**An inactive account still fails every run.** An account the token cannot read
+fails in under a second, and the cost is not the wasted call: `run_pull`
+isolates per account so the import still succeeds, but the run exits 1, `intel
+status` reports `healthy: false`, and the dashboard's import card goes amber on
+behalf of an account nobody reads. A scheduled task that reports failure on
+every run is a task nobody checks. Deactivate it.
 
 ## Warehoused vs live
 
 Almost everything here is **warehoused**: `meta_ads/` imports daily rows into
-`public.meta_*` and the rest of this repo derives every rate from them. That is what makes
-"this week against the last six months" one query instead of a hundred API
-calls, and it is the only thing that holds up across two brands.
+`public.meta_*` and the rest of this repo derives every rate from them. That is
+what makes "this week against the last six months" one query instead of a
+hundred API calls, and it is the only thing that holds up across two brands.
 
-The cost is staleness. Two things manage it:
+The cost is staleness. Three things manage it:
 
 - `ads.settled_through()` — Meta restates attributed conversions for ~3 days and
   an insights date is a day in the *account's* timezone. Every verb reports
   `unsettled_days` against this, so a partial day never reads as a decline.
+  `meta_ads.pull._account_today()` now takes the window end from the same
+  clock, so the importer no longer asks for a day that has not started.
 - **The scheduled pull** — `scripts\sync.py`, twice daily via Task Scheduler.
   Before it existed, the staleness window was not 24 hours, it was "whenever
   anyone remembered", which is worse because it is invisible. **It is not
   registered yet**, so today that window is still "whenever anyone remembered".
+  Register it: `powershell -ExecutionPolicy Bypass -File
+  scripts\register_sync_task.ps1`.
+- **The Refresh button**, which shortens that window without closing it: a
+  button somebody has to think to press is still "whenever anyone remembered".
 
 **`intel live` is the one live call**, and the point of it is the *diff*, not
 the list. It reports ads running now that no pull has seen, ads the warehouse
 still believes are active, and budgets or optimisation goals that moved since
-the last import. That seam is where warehoused analysis quietly goes wrong and
-neither half can see it alone.
+the last import. That seam is where warehoused analysis quietly goes wrong.
 
 It deliberately returns **no spend, no CPA, no conversions**. Live insights are
 the slow, rate-limited call, and a live number beside a warehoused one in the
 same answer invites comparing two things measured differently. Structure is
 live; performance is warehoused; say which is which.
 
-Pulling history is now this repo's job too — it used to be growth-engine's, and
-that is the one line of this file most likely to be remembered wrong:
+A pull takes minutes against a rate limit, which is why **no page pulls
+in-process** and why `ask.py` refuses to route to `live`. The dashboard's
+Refresh button is the one page that starts a pull, and it starts it outside this
+process: `POST /refresh?brand=<slug>` spawns `scripts\sync.py --brand <slug>
+--phase insights` as a detached subprocess and returns 202 straight away, and
+`GET /refresh/status?brand=<slug>` reads `ads.pull` on the read pool to report
+when the last insights pull succeeded, how far it got, and whether one is in
+flight or failed. It calls `sync.py` with `sys.executable` rather than going
+through `sync.bat`: the .bat exists to find the venv for a scheduled task that
+inherits no PATH, and the dashboard is already running in that venv. It also
+keeps a `.bat` out of `Popen`, which on Windows needs `cmd.exe` in the middle
+and re-parses the arguments on the way past.
 
-```
-python scripts\sync.py                      # what the scheduler runs
-python -m meta_ads --pull --brand renegade   # one brand, by hand
-```
+Detached is the point rather than an implementation detail. A browser that gave
+up half way through leaves a `running` row nothing ever closes, so a pull must
+not live inside the request that started it — closing a tab is not allowed to
+orphan a row. Overlap is refused twice: `scripts/sync.py` takes `.sync.lock`
+before it does anything, and the endpoint checks that same lock before it
+spawns, so the button cannot race the scheduler or itself.
 
-A pull takes minutes against a rate limit, which is why **no page in either
-repo fires one** and why `ask.py` refuses to route to `live`. A browser that
-gave up half way through leaves a `running` row nothing ever closes.
+The button is scoped to `--phase insights` because insights is one Graph call
+over a ~4-day window, while the structure phase has never once succeeded. A
+button wired to the phase that always fails is a button that looks broken.
+Unscoped is still the default for the scheduled run.
+
+## The ad page asks a model
+
+`/ad/<key>` has one button, top right. `POST /ad/<key>/analyse.json` builds the
+ad's fact pack, attaches its copy, and hands both to a short-lived Claude Code
+session through `chat.answer()`. The facts go *with* the question rather than
+being left for the session to fetch: it is faster, and every figure in front of
+the model came out of `ads.fatigue`, `ads.cpa_bridge` and `ads.ad`, so what it
+quotes is sourced whether or not it goes and checks.
+
+POST rather than GET, for the reason `/refresh` is: it costs a model call and
+the better part of a minute, and a GET that spends is one browser prefetch away
+from spending on its own. `chat.py` shells out to `claude -p` and imports no
+provider library; the allowlist in `chat.READ_VERBS` is the security model, and
+`record` and `live` are deliberately absent from it.

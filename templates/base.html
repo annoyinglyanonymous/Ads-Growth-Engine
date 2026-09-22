@@ -160,6 +160,29 @@ img { max-width: 100%; }
                 font-variant-numeric: tabular-nums; }
 .freshness .n { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 
+/* The import-freshness card and the one button in this app. A SECOND card
+   rather than two more lines in the first, because the two dates answer
+   different questions: the settled edge is a fact about Meta (it restates
+   attributed conversions for about three days) and this is a fact about us
+   (when the importer last succeeded). Folded together, "four days old" reads
+   as "Meta is slow" -- which sends you to the wrong half of the system. */
+.freshness + .freshness { margin-top: 8px; }
+.freshness .refresh-btn {
+  margin-top: 9px; width: 100%; cursor: pointer; font: inherit;
+  font-size: 11.5px; font-weight: 600; padding: 6px 10px;
+  border-radius: var(--radius-sm); border: 1px solid var(--accent-line);
+  background: var(--surface); color: var(--accent);
+}
+.freshness .refresh-btn:hover:not(:disabled) { background: var(--accent-soft); }
+.freshness .refresh-btn:disabled { opacity: .55; cursor: default; }
+.freshness .refresh-btn:focus-visible { outline: 2px solid var(--focus);
+                                        outline-offset: 1px; }
+.freshness.stale  { border-color: var(--warn-line); background: var(--warn-bg); }
+.freshness.stale .v  { color: var(--warn); }
+.freshness.broken { border-color: var(--err-line); background: var(--err-bg); }
+.freshness.broken .v { color: var(--err); }
+.freshness .n.err { color: var(--err); }
+
 .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 .topbar {
@@ -362,6 +385,20 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
               color: var(--ink-2); min-width: 0; }
 .ask-row.me { flex-direction: row-reverse; }
 .ask-row.me .ask-bubble { background: var(--accent); color: var(--on-accent); }
+/* The written answer. Roomier than the JSON it replaces, and pre-wrap because
+   the session writes paragraphs and lists and the newlines are the layout. */
+.ask-prose { white-space: pre-wrap; line-height: 19px; color: var(--ink); }
+/* The wait is about a minute, which is long enough that a static word reads
+   as a hang. A slow pulse says "still going" without a spinner claiming to
+   know how far along it is -- it does not. Motion is opt-out for anyone who
+   has asked the OS for less of it. */
+.ask-thinking { animation: ask-pulse 1.6s ease-in-out infinite;
+                color: var(--subtle); }
+@keyframes ask-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+  .ask-thinking { animation: none; }
+}
+.ask-bubble details summary { cursor: pointer; }
 .ask-bubble pre { margin: 6px 0 0; font: 500 11.5px/16px var(--mono);
                   white-space: pre-wrap; word-break: break-word;
                   max-height: 190px; overflow: auto; }
@@ -483,6 +520,20 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
         {%- endif -%}
       </div>
     </div>
+
+    {#- Import freshness. Rendered empty and filled by app.js from
+        /refresh/status, rather than passed in by every route: this is the only
+        thing on the page that changes while you are looking at it, and every
+        page handler would otherwise have to carry a field it never uses.
+        `hidden` until the first reply, so a server that predates the endpoint
+        shows nothing rather than a card stuck on an em dash. -#}
+    <div class="freshness" id="import-freshness"
+         data-brand="{{ brand or '' }}" hidden>
+      <div class="t">Imported</div>
+      <div class="v" data-fresh-age>&mdash;</div>
+      <div class="n" data-fresh-note></div>
+      <button type="button" class="refresh-btn" data-refresh>Refresh now</button>
+    </div>
   </div>
 </aside>
 
@@ -497,24 +548,34 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
 
   <main>
     {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
-    {% if caveat %}
-      <div class="caveat">{{ ico.i('warn') }}<span><strong>Provisional.</strong>
-        {{ caveat }}</span></div>
-    {% endif %}
-    {#- The window stops at the settled edge by default, which is right for
-        conversions and over-cautious for spend: spend is final within hours,
-        conversions restate for about three days. So rather than move the
-        default and make every CPA optimistic, the freshest days are one click
-        away and labelled. Only offered where there is something to see --
-        `settled` is null until an account has imported. -#}
-    {% if nav == 'overview' and settled and not until %}
-      <div class="caveat" style="background:var(--surface-2);border-color:var(--line)">
-        {{ ico.i('info') }}<span>Showing up to <strong>{{ settled }}</strong>,
-        the settled edge. The last few days are imported but excluded, because
-        a day still in progress reads as a collapse in spend.
-        <a href="/?brand={{ brand }}&amp;days={{ days }}&amp;until={{ today }}">Include
-        them anyway</a> &mdash; the numbers arrive marked provisional.</span></div>
-    {% endif %}
+    {#- The "Provisional." caveat used to render here, on every page whose
+        window touched the unsettled edge -- which, now that these pages end at
+        the latest day with data, is every page every time. A banner that is
+        always up is wallpaper, and wallpaper is worse than nothing because it
+        trains the reader past the one occasion it matters.
+
+        The fact it carried is not gone. The rail's "Settled through" card is
+        on every screen and says which days can still move, and `python -m
+        intel` still defaults to the settled edge and still reports
+        unsettled_days -- the agent is held to the old contract, the dashboard
+        reader is not. intel/context.py:caveat() is still the one definition
+        of the sentence, still used by the verbs.
+
+        brief.html keeps its own settled_through and unsettled-day tiles: the
+        brief is a dated artifact somebody reads back later, where "as of when"
+        is part of the content rather than chrome. -#}
+    {#- The "Showing up to <settled edge> ... Include them anyway" banner used
+        to sit here. It existed to offer the freshest days as one click away;
+        they are now simply the default, so the offer has nothing to offer.
+
+        Its link was also wrong in a way worth remembering if anything like it
+        comes back: it built `until={{ today }}` from date.today(), the SERVER's
+        date, which on this machine (UTC+5:45) is a day ahead of an account in
+        America/Los_Angeles. Clicking it asked for a day that had not started,
+        got zero rows for it, and reported four unsettled days where there were
+        three. Any date this page offers has to come from the account's clock,
+        not the box's -- the same rule meta_ads/pull.py:_account_today() now
+        follows on the import side. -#}
     {% block body %}{% endblock %}
   </main>
 </div>

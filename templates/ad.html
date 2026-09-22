@@ -2,6 +2,19 @@
 {% block title %}{{ ad.ad.name }} — Ads Intelligence{% endblock %}
 {% block page_title %}{{ ad.ad.name }}{% endblock %}
 
+{#- A real button, in the topbar, on the right. It is a button rather than a
+    link because it is not navigation: clicking it starts a Claude Code session
+    that reads this ad's numbers and writes a few sentences about them, and
+    that takes the better part of a minute and costs a model call. A link
+    promises a page; this promises work. -#}
+{% block toolbar %}
+<button type="button" class="btn"
+        data-ask-url="/ad/{{ ad.ad.ad_key }}/analyse.json?brand={{ brand }}"
+        data-ask-target="ad-analysis">
+  Ask about this ad
+</button>
+{% endblock %}
+
 {% block page_sub %}
 {% set a = ad.ad %}
 <div class="sub">
@@ -23,6 +36,7 @@
       describes wording that is no longer running. Re-tag it before counting it
       toward an angle.</span></div>
 {% endif %}
+
 
 <div class="boards">
   <section class="board">
@@ -56,44 +70,41 @@
     </div>
   </section>
 
-  <section class="board">
-    <header><h2>What we think it is</h2></header>
-    <div class="body">
-      {% if ad.facet %}
-        <p>
-          <span class="pill quiet">{{ ad.facet.family or 'angle' }}</span>
-          <strong>{{ ad.facet.angle_name or 'no angle' }}</strong>
-        </p>
-        <p class="small">
-          <strong>Hook:</strong> {{ ad.facet.hook or '--' }} ·
-          <strong>Offer:</strong> {{ ad.facet.offer or '--' }}<br>
-          <strong>Source:</strong> {{ ad.facet.source }} ·
-          <strong>Confidence:</strong> {{ ad.facet.confidence }}<br>
-          <strong>Tagged by:</strong> {{ ad.facet.tagged_by }}
-        </p>
-        {% if ad.facet.rationale %}
-          <p class="small muted">{{ ad.facet.rationale }}</p>
-        {% endif %}
-      {% else %}
-        <p class="muted small">Not tagged. It will appear in
-          <a href="/angles?brand={{ brand }}">the untagged queue</a>.</p>
-      {% endif %}
+  {#- WHERE THE ANSWER LANDS: a board, in the grid, beside Copy -- the slot
+      "What we think it is" used to hold.
 
-      {% if ad.review %}
-        <hr class="sep">
-        <p class="small">
-          <strong>Copy review:</strong> {{ num(ad.review.overall, 1) }}/10
-          {% if ad.review.angle_observed %}
-            — reviewer called it "{{ ad.review.angle_observed }}"
-          {% endif %}
-          <div class="why">
-            An opinion about the writing, by {{ ad.review.reviewed_by }}. Not a
-            verdict about the spend.
-          </div>
-        </p>
-      {% endif %}
+      That board rendered ads.ad_facet, and on this database it said "Not
+      tagged" on every ad, because ads.angle is empty and nothing has ever
+      filed a facet. A permanently empty box in the best position on the page
+      reads as a feature that is broken rather than one nobody has started, so
+      the position goes to the thing that can answer today.
+
+      A board rather than a full-width stage below, because the answer is about
+      the copy on its left and the two belong side by side -- and because
+      dropping it underneath left the grid with a visible hole where the tag
+      board had been.
+
+      `hidden` until the button in the topbar is pressed: an analysis nobody
+      asked for is a model call nobody asked for. Rendered empty rather than
+      absent so app.js has somewhere to put the answer without building page
+      structure. -#}
+  <section class="board" id="ad-analysis" hidden>
+    <header>
+      <h2>What this ad looks like</h2>
+      <div class="note" data-analysis-state></div>
+    </header>
+    <div class="body">
+      <div data-analysis-body></div>
+      <p class="small muted" style="margin-top:12px" data-analysis-foot hidden>
+        Written by a Claude Code session from this ad's own numbers, which it
+        read with the same verbs this page calls. It reports; it decides
+        nothing.
+      </p>
     </div>
   </section>
+</div>
+
+<div class="boards">
 </div>
 
 <hr class="sep">

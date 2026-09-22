@@ -22,8 +22,8 @@ from uuid import UUID
 import db
 from config import NotConfigured
 
-from . import (angles, brief, experiments, health, live as live_mod,
-               metrics, propose as propose_mod)
+from . import (ad_readings, angles, brief, experiments, health,
+               live as live_mod, metrics, propose as propose_mod)
 from .context import UnknownBrand
 from .graph import GraphError, NotConfigured as TokenNotConfigured
 from .shapes import SHAPES, ShapeError
@@ -143,6 +143,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--key", required=True, dest="ad_key")
     s.add_argument("--days", type=int, default=90)
 
+    s = windowed("ad-readings",
+                 "everything sayable about one ad, with citations", 14)
+    s.add_argument("--key", required=True, dest="ad_key")
+
     s = windowed("trend", "one metric over consecutive buckets", 90)
     s.add_argument("--metric", default="cpa")
     s.add_argument("--level", choices=("ad", "ad_group", "campaign"),
@@ -212,6 +216,9 @@ async def run(a: argparse.Namespace) -> dict:
                                      a.min_spend, a.include_unconfident)
     if v == "ad":
         return await metrics.ad(a.ad_key, a.days)
+    if v == "ad-readings":
+        return await ad_readings.ad_reading(a.brand, a.ad_key, a.days,
+                                            _day(a.until))
     if v == "trend":
         return await metrics.trend(a.brand, a.metric, a.days, _day(a.until),
                                    a.level, a.bucket)

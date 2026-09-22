@@ -2,6 +2,7 @@
 
     python scripts/sync.py                      # every brand with an account
     python scripts/sync.py --brand renegade     # just one
+    python scripts/sync.py --phase insights     # just the numbers
     python scripts/sync.py --dry-run            # say what it would pull
 
 WHY THIS EXISTS
@@ -24,6 +25,19 @@ WHAT IT ADDS OVER THE BARE COMMAND
     the answer should not require a database query.
   * An exit code Task Scheduler can show: 0 all good, 1 something failed, 2 a
     run was already in progress.
+
+WHY --phase EXISTS HERE TOO
+
+`meta_ads/__main__.py` has carried this flag since the phases were split. The
+reason it is now on the scheduled wrapper as well is the dashboard's refresh
+button, which spawns this script rather than importing the importer: structure
+and insights use different Graph edges and fail independently, and today
+structure is the broken one. A refresh scoped to `insights` is one Graph call
+and a couple of seconds; an unscoped one is five to nine minutes of pagination
+that has never yet succeeded on act_153704749222533. A button wired to the
+second is a button that looks broken.
+
+Unscoped is still the default, and the scheduled task still runs both.
 
 WHAT IT DOES NOT DO
 
@@ -109,18 +123,20 @@ async def brands_to_pull(only: str | None) -> list[str]:
     return slugs
 
 
-async def run(only: str | None, dry_run: bool) -> int:
+async def run(only: str | None, dry_run: bool,
+              phases: tuple[str, ...] = ("structure", "insights")) -> int:
     # The pool is opened by the FastAPI lifespan, so a CLI entry point has to
     # open it itself -- meta_ads/__main__.py:79 does the same. Without it every
     # query raises PoolClosed, which reads as a database problem and is not one.
     await pool.open()
     try:
-        return await _run(only, dry_run)
+        return await _run(only, dry_run, phases)
     finally:
         await pool.close()
 
 
-async def _run(only: str | None, dry_run: bool) -> int:
+async def _run(only: str | None, dry_run: bool,
+               phases: tuple[str, ...]) -> int:
     slugs = await brands_to_pull(only)
     if not slugs:
         # Not a crash and not a success. meta_ads/__main__.py takes the same
@@ -131,14 +147,15 @@ async def _run(only: str | None, dry_run: bool) -> int:
         return 1
 
     if dry_run:
-        log(f"would pull: {', '.join(slugs)}")
+        log(f"would pull {'+'.join(phases)} for: {', '.join(slugs)}")
         return 0
 
     failed = False
     for slug in slugs:
         try:
             summaries = await meta_pull.run_pull(
-                brand_slug=slug, started_by=identity.cli_operator())
+                brand_slug=slug, started_by=identity.cli_operator(),
+                phases=phases)
         except Exception as exc:
             # Per BRAND isolation. run_pull already isolates per account, but a
             # missing token or an invalid one propagates out of it by design --
@@ -166,18 +183,25 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brand", help="one brand; default is every brand with an "
                                    "active account")
+    p.add_argument("--phase", choices=("structure", "insights"), default=None,
+                   help="run only this half of the pull. Default is both. "
+                        "structure is the ad list and its copy, insights the "
+                        "daily numbers; they use different Graph edges, so one "
+                        "being broken is not a reason to skip the other.")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
 
+    phases = (a.phase,) if a.phase else ("structure", "insights")
+
     if a.dry_run:
-        return asyncio.run(run(a.brand, True))
+        return asyncio.run(run(a.brand, True, phases))
 
     if not take_lock():
         return 2
 
-    log(f"sync starting ({a.brand or 'all brands'})")
+    log(f"sync starting ({a.brand or 'all brands'}, {'+'.join(phases)})")
     try:
-        code = asyncio.run(run(a.brand, False))
+        code = asyncio.run(run(a.brand, False, phases))
     except Exception as exc:
         log(f"sync ABORTED  {type(exc).__name__}: {exc}")
         code = 1

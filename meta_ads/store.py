@@ -58,6 +58,34 @@ async def add_account(*, brand_id: str, act_id: str, label: str | None,
         return await cur.fetchone()
 
 
+async def deactivate_account(*, act_id: str) -> dict | None:
+    """Stop pulling one account. Returns the row, or None if it is not known.
+
+    A flag rather than a delete, for the same reason `add_account` revives
+    instead of failing: the account's imported rows stay joinable and the
+    decision is reversible by re-adding it.
+
+    WHY THIS VERB EXISTS. An account the token cannot read fails every pull in
+    under a second, and the cost is not the wasted call. `run_pull` isolates
+    per account, so the import still succeeds -- but the run's exit code is 1,
+    `intel status` reports `healthy: false`, and the dashboard's import card
+    goes amber, all on behalf of an account nobody reads. A scheduled task that
+    reports failure on every single run is a task nobody checks, which is the
+    invisible staleness scripts/sync.py exists to prevent.
+
+    It does NOT touch the account's history. Deactivating act_9105140029692
+    leaves its `meta_pulls` rows where they are; `intel status` still lists the
+    failures under `recent_failures` for anybody asking why it stopped.
+    """
+    async with cursor() as cur:
+        await cur.execute(
+            "update public.meta_ad_accounts set active = false "
+            " where act_id = %s "
+            "returning id, brand_id, act_id, label, active",
+            (act_id,))
+        return await cur.fetchone()
+
+
 async def accounts_for(brand_id: str | None = None, *,
                        active_only: bool = True) -> list[dict]:
     return await fetch_all(
@@ -217,6 +245,35 @@ async def candidates_for_match(brand_id: str) -> list[dict]:
         "where c.brand_id = %s and ca.channel = 'meta_ads' "
         "  and ca.tracked_url is not null",
         (brand_id,))
+
+
+async def set_ad_statuses(rows: list[dict]) -> int:
+    """Update effective_status and status on ads we already have. Nothing else.
+
+    Deliberately an UPDATE and not an upsert. These rows come from the cheap
+    pass, which asks for no creative and no name, so inserting from them would
+    create an ad with almost every column null -- and that row would then look
+    to every reader like an ad whose copy we failed to import, rather than one
+    we have not fetched yet. An ad this pass has never seen is picked up by the
+    heavy pass when it is active, or is genuinely not worth a creative fetch.
+
+    `updated_at` is deliberately not touched: this is a correction to what we
+    already knew, not evidence that the ad changed.
+    """
+    if not rows:
+        return 0
+    n = 0
+    async with cursor() as cur:
+        for row in rows:
+            if not row.get("id"):
+                continue
+            await cur.execute(
+                "update public.meta_ads "
+                "   set effective_status = %s, status = %s, pulled_at = now() "
+                " where id = %s",
+                (row.get("effective_status"), row.get("status"), row["id"]))
+            n += cur.rowcount or 0
+    return n
 
 
 async def upsert_ad(raw: dict, *, brand_id: str, account_id: str,

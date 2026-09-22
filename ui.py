@@ -8,17 +8,22 @@ reason this app exists in the repo that owns the metrics rather than beside the
 importer: if the page had its own query, the card and the agent's sentence could
 disagree, and the reader would have no way to tell which was wrong.
 
-There are no buttons. Nothing here fires a pull -- a pull takes minutes against
-a rate limit and a browser that gave up half way through leaves a `running` row
-nothing ever closes (growth-engine's /ads page makes the same choice and says
-so). Nothing here approves anything either: an angle becomes active and an
-experiment gets a conclusion in growth-engine's UI, where a person is signed in
-and attributable.
+There is ONE button and it does not pull. /refresh SPAWNS the scheduled pull as
+a separate process and returns at once; the page then polls /refresh/status,
+which reads `ads.pull` on the read pool like every other query here. This
+process never holds the importer's credential and never runs a pull inside a
+request -- see the block above the endpoints for why both halves of that matter.
+
+Nothing here approves anything: an angle becomes active and an experiment gets
+a conclusion in growth-engine's UI, where a person is signed in and attributable.
 """
 
 from __future__ import annotations
 
-from datetime import date
+import json
+import subprocess
+import sys
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -31,8 +36,10 @@ import charts
 import chat
 from config import NotConfigured
 from db import fetch_all, fetch_one
+from intel import ad_readings as ad_readings_mod
 from intel import angles as angles_mod
 from intel import brief as brief_mod
+from intel import context
 from intel import experiments as exp_mod
 from intel import propose as propose_mod
 from intel import metrics
@@ -79,6 +86,43 @@ def _day(value: str | None) -> date | None:
         return None
 
 
+async def _latest_day(brand_slug: str) -> date | None:
+    """The most recent day this brand actually has numbers for.
+
+    THE PAGE ENDS HERE, NOT AT THE SETTLED EDGE. `context.window` defaults to
+    `settled_through` -- today in the account's timezone minus Meta's 3-day
+    restatement horizon -- and that remains the default for `python -m intel`,
+    where an agent is expected to report `unsettled_days` and a partial day
+    quietly read as a decline is the false alarm this system exists to prevent.
+
+    The dashboard is a different reader with a different question. Somebody who
+    opens it and presses Refresh is asking what happened yesterday, and being
+    shown a window that stops three days back reads as the refresh having done
+    nothing. The numbers for those days are imported and real; what moves is
+    attributed conversions, and the rail's "Settled through" card says so on
+    every screen.
+
+    The LATEST DAY WITH DATA, not today. Today is routinely a day that has not
+    started in the account's timezone -- on 2026-09-22 at 05:35 UTC the account
+    was still on the 21st -- so ending the window at the calendar date appends
+    an empty day and every chart falls off a cliff at the right-hand edge. That
+    is the same "reads as a collapse in spend" failure, arrived at from the
+    other direction.
+
+    None when the brand has no facts at all, which puts the window back on the
+    old default rather than inventing a date.
+    """
+    row = await fetch_one(
+        """
+        select max(f.day) as day
+          from ads.fact_ad_day f
+          join ads.brand b on b.id = f.brand_id
+         where b.slug = %s
+        """,
+        (brand_slug,))
+    return (row or {}).get("day")
+
+
 def _fail(request: Request, nav: str, exc: Exception):
     """One sentence on the page, never a traceback.
 
@@ -106,7 +150,7 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
     unsettled_days with it, so the page can show the number AND say what it is.
     """
     try:
-        end = _day(until)
+        end = _day(until) or await _latest_day(brand)
         d = await metrics.overview(brand, days, end, level, limit=200)
         cmp_ = await metrics.compare(brand, days, end, level, limit=500)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
@@ -249,7 +293,12 @@ async def ask_page(request: Request, q: str = "", brand: str = "renegade"):
             # render the same bytes instead of one of them 500ing.
             answer = jsonable_encoder(await ask.answer(q, brand))
         except ask.Unroutable as exc:
-            failed = str(exc)
+            # Only surfaced when the prose half did NOT answer. The router
+            # matches a regex against a fixed verb list and fails on most
+            # naturally-worded questions -- "which is the best performing ad
+            # today" matches nothing -- while the session answers them fine.
+            # Showing both put a red error directly above a correct answer.
+            failed = None if reply else str(exc)
         except (UnknownBrand, NotConfigured, ValueError) as exc:
             failed = str(exc).strip().splitlines()[0]
     return templates.TemplateResponse(request, "ask.html", {
@@ -259,6 +308,29 @@ async def ask_page(request: Request, q: str = "", brand: str = "renegade"):
         "verbs": ask.VERBS,
         "until": None, "today": date.today().isoformat(),
     })
+
+
+@router.get("/ask/prose.json")
+async def ask_prose(q: str = "", brand: str = "renegade"):
+    """The chatbot, for the widget on the overview.
+
+    Separate from /ask.json rather than folded into it, because the two have
+    opposite costs. /ask.json routes a regex and returns in about a second for
+    nothing; this spawns a Claude Code session, takes the better part of two
+    minutes and costs real money. A box that invites typing should not spend
+    that on every keystroke without the page saying so, and app.js fires this
+    one second and renders it as it arrives.
+
+    Errors come back 200 with an `error` key, like /ask.json: a failure here
+    must not blank the routed answer the widget already drew.
+    """
+    try:
+        return JSONResponse(jsonable_encoder(await chat.answer(q, brand)))
+    except chat.ChatUnavailable as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
+    except Exception as exc:  # pragma: no cover - defensive
+        return JSONResponse({"ok": False,
+                             "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
 
 
 @router.get("/ask.json")
@@ -280,7 +352,7 @@ async def ask_json(q: str = "", brand: str = "renegade"):
 @router.get("/why", response_class=HTMLResponse)
 async def why(request: Request, brand: str = "renegade", days: int = 7):
     try:
-        d = await metrics.why(brand, days, None, limit=40)
+        d = await metrics.why(brand, days, await _latest_day(brand), limit=40)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "why", exc)
     return _page(request, "why.html", "why", d, days=days)
@@ -290,7 +362,8 @@ async def why(request: Request, brand: str = "renegade", days: int = 7):
 async def creative(request: Request, brand: str = "renegade", window: int = 7,
                    min_spend: float = 100.0, unconfident: int = 0):
     try:
-        d = await metrics.fatigue(brand, window, None, min_spend, bool(unconfident))
+        d = await metrics.fatigue(brand, window, await _latest_day(brand),
+                                  min_spend, bool(unconfident))
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "creative", exc)
 
@@ -349,18 +422,479 @@ async def experiments(request: Request, brand: str = "renegade",
         ideas = await propose_mod.propose(brand, days)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "experiments", exc)
+    # The settled edge comes from `ideas`, not from `d`. experiments() is not
+    # windowed and returns no settled_through, so _page() read None and the
+    # rail rendered "No active ad account for this brand" -- which is false,
+    # contradicts every other page, and is the one sentence on this site that
+    # must never be wrong by accident.
     return _page(request, "experiments.html", "experiments", d,
-                 ideas=ideas, days=days)
+                 ideas=ideas, days=days,
+                 settled=ideas.get("settled_through"),
+                 caveat=ideas.get("caveat"))
 
 
 @router.get("/ad/{ad_key}", response_class=HTMLResponse)
-async def ad_detail(request: Request, ad_key: str, brand: str = "renegade"):
+async def ad_detail(request: Request, ad_key: str, brand: str = "renegade",
+                    days: int = 14):
     try:
         d = await metrics.ad(ad_key, days=90)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "overview", exc)
+
+    # The panel is best-effort and the page is not. Every sentence in it comes
+    # from a verb that can fail on its own -- a brand with no active account
+    # has no settled edge, and ads.fatigue returns nothing for an ad that ran
+    # in only one of the two windows. None of that is a reason to lose the copy,
+    # the chart and the daily table, which are what somebody came here for.
+    # The settled edge only, not the readings: the panel they used to feed is
+    # gone, and building a fact pack on every page load to render nothing is a
+    # round trip nobody asked for. /ad/<key>/analyse.json builds it on demand.
+    settled = None
+    try:
+        settled = await context.settled_through((await context.brand(brand))["id"])
+    except (UnknownBrand, NotConfigured, ValueError):
+        pass
+
     daily = list(reversed(d["daily"]))
     return _page(request, "ad.html", "overview", {"brand": brand},
-                 ad=d,
+                 ad=d, days=days, settled=settled,
                  spend_series=[(r["day"], r["spend"]) for r in daily],
                  conv_series=[(r["day"], r["conversions"]) for r in daily])
+
+
+#: What the session is asked. The facts come WITH the question rather than
+#: being left for it to fetch, for two reasons. It is faster -- a verb round
+#: trip per number turns a slow endpoint into a very slow one -- and it is
+#: tighter: the numbers in front of it are the ones ads.fatigue, ads.cpa_bridge
+#: and ads.ad produced, so the figures it quotes are sourced whether or not it
+#: chooses to go and check them. chat.SYSTEM still forbids it inventing one.
+ANALYSE_PROMPT = """\
+Analyse this Meta ad and say what is worth knowing about it.
+
+Ad: {name}
+Brand: {brand}
+ad_key: {ad_key}
+
+Here are its facts and its copy, already read from the verbs. Use these
+numbers. You may run a verb to check something or to answer a question these
+do not cover, but you do not need to re-read what is already here.
+
+{facts}
+
+What the deterministic rules already noticed, for your reference -- do not
+just repeat these back:
+
+{readings}
+
+Say what stands out about this ad, what it probably means, and what would be
+worth trying. Four or five sentences. Be specific to this ad and its copy
+rather than general about advertising. If the numbers do not support a
+conclusion, say that instead of reaching for one.
+"""
+
+
+#: The question reaches the session as ONE COMMAND-LINE ARGUMENT, and Windows
+#: caps a command line at 32,767 characters. chat.SYSTEM and the tool lists
+#: take a few thousand of those, so the question itself stops here. The brief's
+#: pack is ~52,000 characters as produced, almost all of it two row lists, so
+#: it cannot be sent whole and a spawn that fails on length would read as "the
+#: session returned nothing".
+PROMPT_BUDGET = 24000
+
+
+def _compact(node, keep: int = 8):
+    """Shorten every list past `keep` rows, and say how many were dropped.
+
+    Structure-agnostic on purpose: the brief's shape is intel/brief.py's to
+    change, and a compaction that named sections would break the day a section
+    was renamed. Rows are already ordered by whatever matters (spend, effect,
+    score) so the head is the part worth reading; the note at the end tells the
+    session the rest exists and which way to get it.
+    """
+    if isinstance(node, dict):
+        return {k: _compact(v, keep) for k, v in node.items()}
+    if isinstance(node, list):
+        if keep <= 0:
+            return f"[{len(node)} rows omitted; run the verb for them]"
+        head = [_compact(x, keep) for x in node[:keep]]
+        if len(node) > keep:
+            head.append(f"... {len(node) - keep} more rows not shown; run the "
+                        f"verb for all of them")
+        return head
+    return node
+
+
+BRIEF_SUMMARY_PROMPT = """\
+You are explaining this brand's Meta ads for the window below to the person who
+owns the business. They will not read the tables. They want to know what
+happened, why, and what is worth doing about it -- in their words, not the
+dashboard's.
+
+Brand: {brand}
+Window: {since} to {until} ({days} days). Settled through {settled}; the last
+{unsettled} day(s) can still move as Meta restates conversions.
+
+THE FACTS, already read from the verbs (row lists shortened -- run a verb only
+if you need something that is not here):
+
+{facts}
+
+WHAT THE RULES ALREADY FOUND -- build on these, do not repeat them back:
+
+{readings}
+
+WRITE IT LIKE THIS
+
+Eight to ten plain sentences in one or two paragraphs. No headings, no bullet
+points, no markdown, no opening line about what you are about to do and no
+closing offer.
+
+Lead with the result: what was spent, what it produced, what each result cost,
+and whether each of those is up or down against the window before -- if the
+facts carry the prior window, say the direction in words ("up from", "down
+from") and quote both figures; if they do not, say this is one window with
+nothing to compare it to.
+
+Then say why the cost per result moved, naming the one or two ads that drove
+most of it by their names as given. Put rate effect and mix effect into plain
+words every time: the rate effect is the ads themselves getting cheaper or
+dearer, the mix effect is money shifting toward cheaper or dearer ads. Do not
+use either term without its plain phrase beside it.
+
+Then what is tiring: the one or two ads worth refreshing first, and what the
+symptom is in ordinary language -- "costs more per thousand views than a
+fortnight ago", "fewer of the people who see it click" -- never the field
+name. Say whether the spend behind that reading is enough to trust.
+
+If parts of the brief are empty because nothing has been tagged or filed, say
+so once, in one sentence, and name what filing them would unlock. Then move on.
+
+Close with what is worth looking at next -- two or three concrete things,
+taken from the readings and from waiting_on_you. Offer them as things to look
+at, not as decisions: nothing here approves, pauses or concludes anything.
+
+VOCABULARY
+
+Say "cost per lead" (or "cost per conversion" if the goal is not leads) and put
+"CPA" in brackets the first time only. Say "cost per thousand views" for CPM,
+"the share of people who clicked" for link CTR, "how often the same person saw
+it in a day" for daily frequency. Refer to ads by their names. Quote figures
+exactly as they appear in the facts; do not round, total, average, or work out
+a percentage that is not already there. If conversions in the last few days
+are part of a decline, say in one clause that those days are not final.
+"""
+
+
+@router.post("/brief/summary.json")
+async def brief_summary(brand: str = "renegade", days: int = 28,
+                        product: str | None = None):
+    """The brief, explained in sentences by a Claude Code session.
+
+    Same shape and the same reasons as /ad/<key>/analyse.json: POST because it
+    spends a model call; facts handed over rather than fetched because that is
+    faster and every figure is then one a verb produced; readings included so
+    the session builds on what the rules found rather than rediscovering it.
+    """
+    try:
+        d = await brief_mod.brief(brand, days, None, product)
+    except UnknownBrand as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except (NotConfigured, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+    # gaps is the standing roadmap, not this window; waiting_on_you is small
+    # and is the answer to "so what do I do", so it rides along with facts.
+    payload = {"facts": d.get("facts"), "waiting_on_you": d.get("waiting_on_you"),
+               "degraded": d.get("degraded")}
+    readings = [r["says"] for r in d.get("readings") or []]
+
+    question = None
+    for keep in (8, 3, 0):
+        question = BRIEF_SUMMARY_PROMPT.format(
+            brand=d.get("brand") or brand, since=d.get("since"),
+            until=d.get("until"), days=d.get("days") or days,
+            settled=d.get("settled_through"), unsettled=d.get("unsettled_days"),
+            facts=json.dumps(jsonable_encoder(_compact(payload, keep)),
+                             indent=1, ensure_ascii=False),
+            readings=json.dumps(readings, indent=1, ensure_ascii=False))
+        if len(question) <= PROMPT_BUDGET:
+            break
+
+    try:
+        out = await chat.answer(question, brand)
+    except chat.ChatUnavailable as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    return JSONResponse(jsonable_encoder(out))
+
+
+@router.post("/ad/{ad_key}/analyse.json")
+async def analyse_ad(ad_key: str, brand: str = "renegade", days: int = 14):
+    """A few sentences about one ad, written by a Claude Code session.
+
+    POST rather than GET, and for the same reason /refresh is: this costs a
+    model call and the better part of a minute. A GET that spends is one
+    browser prefetch away from spending on its own.
+    """
+    try:
+        reading = await ad_readings_mod.ad_reading(
+            brand, ad_key, days, await _latest_day(brand))
+        full = await metrics.ad(ad_key, days=days)
+    except UnknownBrand as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except (NotConfigured, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+    facts = dict(reading["facts"])
+    facts["copy"] = full.get("copy")
+
+    question = ANALYSE_PROMPT.format(
+        name=(full.get("ad") or {}).get("name") or ad_key,
+        brand=brand, ad_key=ad_key,
+        facts=json.dumps(jsonable_encoder(facts), indent=2, ensure_ascii=False),
+        readings=json.dumps(
+            [r["says"] for r in reading["readings"]], indent=2,
+            ensure_ascii=False) or "[]")
+
+    try:
+        out = await chat.answer(question, brand)
+    except chat.ChatUnavailable as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    return JSONResponse(jsonable_encoder(out))
+
+
+# ---------------------------------------------------------------------------
+# Refresh.
+#
+# The only endpoint here that causes a write, and it still does not write: it
+# starts scripts/sync.py -- the same wrapper Task Scheduler runs -- as its own
+# process and returns immediately.
+#
+# SPAWNED, NOT IMPORTED, and that distinction is the whole design. Importing
+# meta_ads (or scripts.sync, which imports it at module scope) would open
+# db_meta -- the postgres pool that can write public.* -- inside the web
+# process. tests/test_read_only.py allows exactly {meta_ads, scripts/sync.py,
+# tests/conftest.py} to do that, and the page is deliberately not on the list:
+# db.py offering no cursor is what makes "this app cannot mutate" a fact a test
+# can check rather than a habit somebody keeps. A subprocess keeps that
+# credential in a process that exits when the pull is done.
+#
+# DETACHED, so the run outlives the tab. A pull awaited inside the request is
+# cancelled when the client disconnects -- and start_pull has already written a
+# `running` row by then, so finish_pull never runs and nothing ever closes it.
+# ads.pull holds two such rows already (222 and 250) from interrupted CLI runs.
+# A button that minted one per closed tab would make them the normal case, and
+# every one of them reads as a pull that is still going.
+#
+# INSIGHTS ONLY. The two phases use different Graph edges and fail separately.
+# Structure has never once completed on act_153704749222533 -- its /ads edge
+# dies five to nine minutes into pagination -- while insights over the default
+# ~4-day window is a single call. The button is wired to the half that works.
+# The scheduled task still runs both, because structure is not meant to stay
+# broken.
+# ---------------------------------------------------------------------------
+
+SYNC_SCRIPT = ROOT / "scripts" / "sync.py"
+
+#: scripts/sync.bat exists for Task Scheduler, which has no PATH and no venv to
+#: inherit. This process has both -- sys.executable IS the venv interpreter --
+#: so it calls sync.py directly. That also sidesteps running a .bat through
+#: Popen on Windows, which needs cmd.exe in the middle and re-parses arguments
+#: on the way past.
+SYNC_PYTHON = sys.executable
+
+#: Duplicated from scripts/sync.py rather than imported, because importing that
+#: module is exactly the thing the block above refuses to do. Two copies of a
+#: filename and a timedelta is much the cheaper of the two mistakes -- and
+#: tests/test_refresh.py asserts the copies agree.
+SYNC_LOCK = ROOT / ".sync.lock"
+SYNC_LOCK_STALE_AFTER = timedelta(hours=2)
+
+
+def _lock_age() -> timedelta | None:
+    """How long the sync lock has been held, or None if it is not held."""
+    try:
+        held = datetime.fromtimestamp(SYNC_LOCK.stat().st_mtime, timezone.utc)
+    except OSError:
+        return None
+    return datetime.now(timezone.utc) - held
+
+
+def _spawn_detached(cmd: list[str]) -> None:
+    """Start `cmd` in its own process group and stop caring about it.
+
+    stdout and stderr go to the void on purpose: sync.py writes logs/sync.log
+    itself, and a pipe nobody reads fills its buffer and blocks the child
+    somewhere in the middle of a pull.
+    """
+    extra: dict = {}
+    if sys.platform == "win32":
+        extra["creationflags"] = (subprocess.DETACHED_PROCESS
+                                  | subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        extra["start_new_session"] = True
+    subprocess.Popen(
+        cmd, cwd=str(ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        **extra,
+    )
+
+
+@router.post("/refresh")
+async def refresh(brand: str = "renegade"):
+    """Start an insights pull. 202 if it started, 409 if one is already going."""
+    try:
+        b = await context.brand(brand)
+    except UnknownBrand as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except NotConfigured as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+    age = _lock_age()
+    if age is not None and age < SYNC_LOCK_STALE_AFTER:
+        # sync.py refuses the overlap too, and exits 2. Checked here as well so
+        # the page can say so at once, rather than reporting a start for a run
+        # that is about to decline to begin. Belt and braces, deliberately: the
+        # thing being protected is a shared rate limit.
+        minutes = int(age.total_seconds() // 60)
+        return JSONResponse({
+            "ok": False, "running": True,
+            "error": f"A sync has been running for {minutes} minute(s). "
+                     f"Nothing started.",
+        }, status_code=409)
+
+    if not SYNC_SCRIPT.is_file():
+        return JSONResponse({
+            "ok": False,
+            "error": f"Cannot find the sync script at {SYNC_SCRIPT}.",
+        }, status_code=500)
+
+    try:
+        _spawn_detached([SYNC_PYTHON, str(SYNC_SCRIPT),
+                         "--brand", b["slug"], "--phase", "insights"])
+    except OSError as exc:
+        return JSONResponse({
+            "ok": False,
+            "error": f"Could not start the pull: {type(exc).__name__}: {exc}",
+        }, status_code=500)
+
+    return JSONResponse({
+        "ok": True, "started": True, "brand": b["slug"], "phase": "insights",
+    }, status_code=202)
+
+
+@router.get("/refresh/status")
+async def refresh_status(brand: str = "renegade"):
+    """Import freshness, read from ads.pull. Cheap enough to poll.
+
+    Note what this reports and `settled` does not. The settled edge is a fact
+    about META -- it restates attributed conversions for about three days. This
+    is a fact about US: when the importer last succeeded and how far it got.
+    The page has always shown the first and never the second, which is why
+    "is this current?" had no answer short of a terminal.
+    """
+    try:
+        b = await context.brand(brand)
+        settled = await context.settled_through(b["id"])
+    except UnknownBrand as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except NotConfigured as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+    # PER ACCOUNT, because that is how the import already succeeds and fails.
+    #
+    # The first version of this read took the single most recent ads.pull row
+    # for the brand and let it colour the card. That is wrong in the exact way
+    # meta_ads/pull.py exists to prevent: run_pull catches per account so that
+    # "a revoked assignment on Agency Height cannot cost Renegade its import",
+    # and then the page threw that isolation away. act_153704749222533 imported
+    # cleanly, act_9105140029692 failed a permission check a second later, and
+    # the card reported the import as failed -- naming an account whose numbers
+    # nobody is looking at, about a pull that worked.
+    #
+    # A brand is behind when EVERY account is behind. One account failing is a
+    # different sentence, and it needs the account's name in it.
+    rows = await fetch_all(
+        """
+        select a.platform_account_id, a.label,
+               p.run_id, p.status, p.error, p.started_at, p.finished_at
+          from ads.ad_account a
+          left join lateral (
+              select run_id, status, error, started_at, finished_at
+                from ads.pull
+               where platform_account_id = a.platform_account_id
+                 and kind = 'insights'
+               order by started_at desc
+               limit 1
+          ) p on true
+         where a.brand_id = %s and a.active
+         order by a.platform_account_id
+        """,
+        (b["id"],))
+
+    watermark = await fetch_one(
+        """
+        select max(finished_at) as last_insights_ok,
+               max(until)       as insights_through
+          from ads.pull
+         where brand_id = %s and kind = 'insights' and status = 'ok'
+        """,
+        (b["id"],))
+
+    now = datetime.now(timezone.utc)
+    last_ok = (watermark or {}).get("last_insights_ok")
+    age_hours = round((now - last_ok).total_seconds() / 3600, 1) if last_ok else None
+
+    # 'running' and 'stalled' are the same row and a different fact, and the
+    # button depends on telling them apart. Rows 222 and 250 have said
+    # `running` since the interrupted pulls that opened them, and a page that
+    # read status alone would disable its own refresh button forever on the
+    # strength of a run that ended days ago. Past the stale-lock window it is
+    # not a pull in progress, it is a row nobody closed.
+    accounts = []
+    any_running = any_stalled = False
+    n_ok = n_failed = 0
+    for r in rows:
+        status = r["status"]
+        if status == "running":
+            started = r["started_at"]
+            if started and (now - started) < SYNC_LOCK_STALE_AFTER:
+                any_running = True
+            else:
+                any_stalled = True
+                status = "stalled"
+        elif status == "ok":
+            n_ok += 1
+        elif status == "failed":
+            n_failed += 1
+        accounts.append({
+            "platform_account_id": r["platform_account_id"],
+            "label": r["label"],
+            "status": status,
+            "error": r["error"],
+            "run_id": r["run_id"],
+            "started_at": r["started_at"],
+            "finished_at": r["finished_at"],
+        })
+
+    held = _lock_age()
+    return JSONResponse(jsonable_encoder({
+        "ok": True,
+        "brand": b["slug"],
+        "running": any_running or (held is not None
+                                   and held < SYNC_LOCK_STALE_AFTER),
+        "stalled": any_stalled,
+        "last_insights_ok": last_ok,
+        "insights_through": (watermark or {}).get("insights_through"),
+        "age_hours": age_hours,
+        "settled_through": settled,
+        "accounts": accounts,
+        "accounts_ok": n_ok,
+        "accounts_failed": n_failed,
+    }))
