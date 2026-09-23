@@ -74,10 +74,20 @@ def _f(v: Number) -> float | None:
 
 
 def money(v: Number, currency: str = "$") -> str:
+    """$41.44, $15,748, and −$0.15 -- the sign goes in front of the currency.
+
+    It used to print $-0.15, which reads as a typo, and every negative CPA
+    delta on the site is one of these. The minus is U+2212 rather than a
+    hyphen so it sets at the width of a figure in a tabular column.
+    """
     n = _f(v)
     if n is None:
         return "--"
-    return f"{currency}{n:,.2f}" if abs(n) < 1000 else f"{currency}{n:,.0f}"
+    a = abs(n)
+    shown = f"{a:,.2f}" if a < 1000 else f"{a:,.0f}"
+    # A sign on a figure that rounds to nothing is noise: -0.004 is $0.00.
+    sign = "−" if n < 0 and shown.strip("0.,") else ""
+    return f"{sign}{currency}{shown}"
 
 
 def num(v: Number, places: int = 0) -> str:
@@ -88,6 +98,21 @@ def num(v: Number, places: int = 0) -> str:
 def pct(v: Number, places: int = 2) -> str:
     n = _f(v)
     return "--" if n is None else f"{n:,.{places}f}%"
+
+
+def words(v: object) -> str:
+    """An enum as a reader says it: QUALITY_LEAD -> "Quality lead".
+
+    Optimization goals, formats and a bridge's reasons arrive as the API's
+    constants, and a page that prints LEAD_GENERATION in a pill is a database
+    talking. One place turns them into words, so every page says the same
+    thing for the same goal.
+    """
+    s = "" if v is None else str(v).strip()
+    if not s:
+        return "--"
+    s = s.replace("_", " ").lower()
+    return s[:1].upper() + s[1:]
 
 
 def fmt(v: Number, kind: str) -> str:
@@ -373,12 +398,14 @@ def effect_bars(rows: list[tuple[str, Number, int]], *, kind: str = "cpa",
     faster than a sentence can, which is the entire reason this exists -- it is
     what lets the finding beside it run to two lines instead of four.
 
-    `merit` is +1 when a positive value is GOOD, -1 when a positive value is
-    BAD, 0 when the number carries no direction of merit at all. That is
-    base.html's rule and it is NOT the sign: a rate effect of +$38 pushes CPA
-    up, so it is bad, and it still points right. Colour follows merit,
-    direction follows sign, and neither is ever allowed to stand in for the
-    other -- which is also why the value prints beside every bar.
+    BLUE ONLY. Every bar is a step of navy -- the parts in --focus, the LAST
+    row (the net, the answer) in --accent -- and merit is carried by where a
+    bar sits, not by its hue. An axis under the bars names the two sides
+    ("lowers CPA", "raises CPA"), so a rate effect of +$38 reads as raising
+    CPA because it sits on the side that says so. `merit` is kept in the
+    signature so callers do not change: +1 when a positive value is good,
+    -1 when it is bad, 0 when it has no direction of merit, and it now picks
+    which way round the axis labels read rather than which colour a bar is.
 
     One scale across all rows, taken from the largest magnitude present. Per-row
     scaling would make three unrelated pictures stacked up and the comparison
@@ -393,34 +420,48 @@ def effect_bars(rows: list[tuple[str, Number, int]], *, kind: str = "cpa",
     track = width - label_w - value_w - 12
     half = track / 2.0
     mid = label_w + 6 + half
-    height = len(vals) * row_h + 4
+    axis_h = 13
+    height = len(vals) * row_h + 4 + axis_h
+    last = len(vals) - 1
 
     out = []
     for i, (name, v, merit) in enumerate(vals):
         y = i * row_h + 2
         cy = y + row_h * 0.62
+        # The label gets as many characters as its column can hold -- nine
+        # beside a finding, a dozen inside a card.
         out.append(f'<text class="axis" x="{label_w}" y="{cy:.1f}" '
-                   f'text-anchor="end">{escape(name[:9])}</text>')
+                   f'text-anchor="end">{escape(name[:max(9, label_w // 6)])}</text>')
         out.append(f'<rect class="track" x="{label_w + 6}" y="{y + 3}" '
                    f'width="{track:.1f}" height="{row_h - 8}" rx="2"/>')
         if v is None:
             out.append(f'<text class="axis" x="{width}" y="{cy:.1f}" '
                        f'text-anchor="end">--</text>')
             continue
-        tone = "--accent" if merit == 0 else (
-            "--good" if (v > 0) == (merit > 0) else "--bad")
+        tone = "--accent" if i == last else "--focus"
         w = max(1.0, half * (abs(v) / top))
         x = mid if v > 0 else mid - w
+        shown = ("+" if v > 0 else "") + fmt(v, kind)
         out.append(
             f'<rect x="{x:.1f}" y="{y + 3}" width="{w:.1f}" '
             f'height="{row_h - 8}" rx="2" fill="var({tone})">'
-            f'<title>{escape(name)}: {escape(fmt(v, kind))}</title></rect>')
+            f'<title>{escape(name)}: {escape(shown)}</title></rect>')
         out.append(
             f'<text class="val" x="{width}" y="{cy:.1f}" text-anchor="end" '
-            f'fill="var({tone})">{escape(fmt(v, kind))}</text>')
+            f'fill="var(--accent)">{escape(shown)}</text>')
 
+    bars_h = len(vals) * row_h + 2
     out.append(f'<line class="zero" x1="{mid:.1f}" y1="2" x2="{mid:.1f}" '
-               f'y2="{height - 2}"/>')
+               f'y2="{bars_h}"/>')
+    # Which side is which, in words. For a cost (merit -1 on the first row)
+    # the left side lowers it; the labels name the metric so a reader never
+    # has to remember which way round a bridge is drawn.
+    what = kind.upper() if kind in ("cpa", "cpm", "cpc") else kind.replace("_", " ")
+    ay = bars_h + axis_h - 2
+    out.append(f'<text class="axis" x="{label_w + 6}" y="{ay}">'
+               f'← lowers {escape(what)}</text>')
+    out.append(f'<text class="axis" x="{label_w + 6 + track:.1f}" y="{ay}" '
+               f'text-anchor="end">raises {escape(what)} →</text>')
     # Width inline, and capped, for the reason split_bar states: the caller
     # asks for 200 beside a finding and 560 inside a card, and a width pinned
     # in the stylesheet would make one of those a lie. max-width keeps the
@@ -430,3 +471,36 @@ def effect_bars(rows: list[tuple[str, Number, int]], *, kind: str = "cpa",
             f'style="width:{width}px; max-width:100%" role="img" '
             f'aria-label="{escape(aria)}" data-chart="effect">'
             f'{"".join(out)}</svg>')
+
+
+def meter(v: Number, top: Number, *, width: int = 110) -> str:
+    """A bar inside a table row, scaled against the largest value in its column.
+
+    The number beside it is the fact; this only lets an eye run down a column
+    and find the outlier without reading every figure. `top` is the caller's
+    column maximum, passed in rather than found here, so a table cut to five
+    rows is scaled against what it shows. A value with nothing to scale against
+    draws an empty track rather than a zero-length bar that reads as zero.
+    """
+    n, t = _f(v), _f(top)
+    track = f'<span class="meter" style="width:{width}px" aria-hidden="true">'
+    if n is None or not t:
+        return track + "</span>"
+    w = max(2.0, width * min(1.0, abs(n) / abs(t)))
+    return track + f'<span style="width:{w:.1f}px"></span></span>'
+
+
+def ago(hours: Number) -> str:
+    """How long ago something was written, the way a person says it.
+
+    "0.1h ago" reads as a bug. Minutes under an hour, hours under two days,
+    days after that.
+    """
+    h = _f(hours)
+    if h is None:
+        return "--"
+    if h < 1:
+        return f"{max(1, round(h * 60))} min ago"
+    if h < 48:
+        return f"{round(h)}h ago"
+    return f"{int(h // 24)} days ago"

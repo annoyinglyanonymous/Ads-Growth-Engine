@@ -56,6 +56,7 @@ templates.env.globals.update(
     line_chart=charts.line_chart, bar_chart=charts.bar_chart,
     sparkline=charts.sparkline, column_chart=charts.column_chart,
     split_bar=charts.split_bar, effect_bars=charts.effect_bars,
+    words=charts.words, meter=charts.meter, ago=charts.ago,
 )
 
 router = APIRouter(include_in_schema=False)
@@ -179,9 +180,18 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
         " group by day order by day",
         (d["brand_id"], d["since"], d["until"]),
     )
+    # The first day this brand has any data, so the page can withhold a spend
+    # or conversions delta measured against a prior window the import had
+    # barely reached -- the proxy the brief uses, and for the same reason: a
+    # "+3,191%" that is a fact about the importer is worse than no figure.
+    first = await fetch_one(
+        "select min(day) as first_day from ads.fact_ad_day where brand_id = %s",
+        (d["brand_id"],),
+    ) or {}
     return _page(request, "overview.html", "overview", d,
                  agg=agg, deltas=deltas, level=level, days=days,
-                 until=until,
+                 until=until, first_day=first.get("first_day"),
+                 prior_since=d["since"] - timedelta(days=days),
                  spend_series=[(r["day"], r["spend"]) for r in series],
                  conv_series=[(r["day"], r["conversions"]) for r in series])
 
@@ -212,22 +222,36 @@ def _brand_delta(brand_cmp: dict, per_ad: dict) -> dict:
 
 
 @router.get("/brief", response_class=HTMLResponse)
-async def brief_page(request: Request, brand: str = "renegade", days: int = 28,
-                     product: str | None = None):
-    """The recurring read, rendered live.
+async def brief_page(request: Request, brand: str = "renegade",
+                     days: int | None = None, product: str | None = None):
+    """The PUBLISHED weekly brief, rendered whole. Live only when asked.
 
-    Live rather than from the archive in briefs/, so the page and
-    `python -m intel brief` are the same function on the same window -- ui.py's
-    rule. scripts/brief.py writes the dated copy, and that copy exists because
-    a live page silently rewrites its own past opinion every time Meta
-    restates; the two are different jobs and both are wanted.
+    This page used to build the brief live, on a 28-day window, and that was
+    right while the brief was only numbers. It stopped being right when the
+    brief started writing its own prose: scripts/brief.py publishes a 7-day
+    brief with a model's summary after every import, and a live 28-day pack
+    with that summary on top would print a paragraph about one window above
+    tiles about another. The user chose the published brief, whole, so the
+    facts, the findings and the summary share one window and one date -- and
+    the page shows the same document the archive holds.
+
+    `?days=` (or `?product=`) still builds one live, which is the only way to
+    see a window the pipeline did not publish. Overview remains the live view;
+    this one is the dated read. With nothing published yet, the page falls
+    back to a live 7-day brief and says so.
     """
+    live = days is not None or product is not None
     try:
-        d = await brief_mod.brief(brand, days, None, product)
+        d = None if live else brief_mod.latest(brand)
+        if d is None:
+            live = True
+            d = await brief_mod.brief(brand, days or 7, None, product)
+            d.setdefault("summary", None)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "brief", exc)
-    return _page(request, "brief.html", "brief", d, days=days, product=product,
-                 prior_since=d["since"] - timedelta(days=days))
+    return _page(request, "brief.html", "brief", d, days=d["days"],
+                 product=product, live=live,
+                 prior_since=d["since"] - timedelta(days=d["days"]))
 
 
 #: WHERE THE PRIOR WINDOW STARTS, AND WHY THIS IS A PROXY
@@ -398,11 +422,14 @@ async def angles(request: Request, brand: str = "renegade", days: int = 90,
         d = await angles_mod.coverage(brand, product, days, None)
         cand = await angles_mod.candidates(brand)
         q = await angles_mod.queue(brand, days, None, limit=25)
+        # Both coverages, so the page can say the copy IS labelled while the
+        # angle is not -- the two numbers mean different things.
+        labels = await angles_mod.label_coverage(brand, days, None)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "angles", exc)
     tested = d["tested"] + d["under_spent"]
     return _page(request, "angles.html", "angles", d, days=days,
-                 candidates=cand["rows"], queue=q,
+                 candidates=cand["rows"], queue=q, labels=labels,
                  bars=[(r["angle_name"], r["cpa"]) for r in tested])
 
 
@@ -454,9 +481,28 @@ async def ad_detail(request: Request, ad_key: str, brand: str = "renegade",
     except (UnknownBrand, NotConfigured, ValueError):
         pass
 
+    # THE RULES' READINGS COME BACK, and they lead the page. They are free --
+    # rules over a fact pack, no model -- so this is the "analysis first" the
+    # dashboard now opens every page with; the model's longer read stays behind
+    # the one button left on the site. Best-effort like the settled edge above:
+    # a fatigue or bridge verb failing is no reason to lose the copy, the
+    # charts and the daily table. `totals` is the ad's own window, from the
+    # same function every other tile reads.
+    reading, totals = None, None
+    try:
+        reading = await ad_readings_mod.ad_reading(brand, ad_key, days)
+        f = await metrics._frame(brand, days, None)
+        totals = await fetch_one(
+            "select spend, conversions, impressions, rates "
+            "  from ads.window_metrics(%s::uuid, %s, %s, 'ad') "
+            " where entity_key = %s::uuid",
+            (f["brand_id"], f["since"], f["until"], ad_key))
+    except Exception:  # noqa: BLE001 -- the page must render without the panel
+        pass
+
     daily = list(reversed(d["daily"]))
     return _page(request, "ad.html", "overview", {"brand": brand},
-                 ad=d, days=days, settled=settled,
+                 ad=d, days=days, settled=settled, reading=reading, totals=totals,
                  spend_series=[(r["day"], r["spend"]) for r in daily],
                  conv_series=[(r["day"], r["conversions"]) for r in daily])
 

@@ -74,6 +74,25 @@ def _at(facts: dict, pointer: str) -> Any:
     return node
 
 
+def _usd(v: Any) -> str:
+    """A cited dollar figure, written the way every tile on the page writes it.
+
+    The rules used to interpolate the raw value -- "Brand CPA moved -6.3285",
+    "spent 60802.76 of 60802.76" -- which is a database talking, and it sat
+    one line above a tile reading $36.30. charts.money is the one formatter
+    the page uses, so the sentence and the tile cannot disagree about a cent.
+    Formatting is not computing: the figure is still the cited one, and
+    tests/test_brief_and_readings.py checks exactly that.
+    """
+    from charts import money
+    return money(v)
+
+
+def _moved(v: Any) -> str:
+    """"rose $5.08" / "fell $6.33". The sign picks the verb; nothing is derived."""
+    return ("rose " if v > 0 else "fell ") + _usd(abs(v))
+
+
 def _cite(facts: dict, pointer: str, verb: str, field: str) -> dict:
     """One citation: where the number came from, and what was there."""
     return {"pointer": pointer, "verb": verb, "field": field,
@@ -181,7 +200,7 @@ def _untagged_spend(f: dict) -> list[Reading]:
         return []
     return [_reading(
         "untagged_spend",
-        f"{ads_n} ad(s) carrying no angle spent {spend} of {total} in this "
+        f"{ads_n} ad(s) carrying no angle spent {_usd(spend)} of {_usd(total)} in this "
         f"window, and {inheritable} of them can be tagged with no judgement at "
         f"all by following the campaign_asset they were approved from. Every "
         f"angle share below is a share of what is left.",
@@ -202,7 +221,7 @@ def _stale_tags(f: dict) -> list[Reading]:
     return [_reading(
         "stale_tags",
         f"{n} ad(s) carry only a tag describing wording they no longer run, so "
-        f"{spend} is absent from the angle numbers entirely. ads.ad_copy holds "
+        f"{_usd(spend)} is absent from the angle numbers entirely. ads.ad_copy holds "
         f"one wording per ad -- the current one -- so what the copy said at the "
         f"time that spend happened is not recoverable.",
         [_cite(f, "/facts/untagged/stale_tag_ads", "untagged_spend",
@@ -249,7 +268,7 @@ def _cpa_moved(f: dict) -> list[Reading]:
         return []
     out = [_reading(
         "cpa_moved",
-        f"Brand CPA moved {change} across this window.",
+        f"Brand CPA {_moved(change)} across this window.",
         [_cite(f, "/facts/movement/cpa_change", "cpa_bridge_totals",
                "cpa_change")],
         provisional=bool(_at(f, "/provisional")),
@@ -261,7 +280,7 @@ def _cpa_moved(f: dict) -> list[Reading]:
                  else "budget moving between ads")
         out.append(_reading(
             dominant,
-            f"Of that, {rate} is rate effect and {mix} is mix effect, so the "
+            f"Of that, {_usd(rate)} is rate effect and {_usd(mix)} is mix effect, so the "
             f"larger share is {which}.",
             [_cite(f, "/facts/movement/rate_effect", "cpa_bridge_totals",
                    "rate_effect"),
@@ -347,7 +366,7 @@ def _angle_leads_within_goal(f: dict) -> list[Reading]:
         out.append(_reading(
             "angle_leads_within_goal",
             f"has the lowest CPA among angles that ran under {goal}, on "
-            f"{r.get('spend')} of spend.",
+            f"{_usd(r.get('spend'))} of spend.",
             [_cite(f, f"/facts/angles/rows/{i}/rank_within_goal",
                    "angle_performance", "rank_within_goal"),
              _cite(f, f"/facts/angles/rows/{i}/spend", "angle_performance",

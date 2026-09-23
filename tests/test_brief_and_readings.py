@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+import charts
 from intel import readings
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -148,6 +149,9 @@ STRUCTURAL = {
     "5",    # ads.fatigue returns exactly five named symptoms
 }
 
+#: A number as it appears in prose: 15,748 is one literal, not "15" and "748".
+NUMBER = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+
 
 def test_every_number_in_a_reading_is_sourced():
     """Each numeric literal in `says` must be a cited value, the length of one,
@@ -174,7 +178,14 @@ def test_every_number_in_a_reading_is_sourced():
             if isinstance(v, float):
                 allowed.add(str(v).rstrip("0").rstrip("."))
                 allowed.add(str(int(v)) if v == int(v) else str(v))
-        for literal in re.findall(r"\d+(?:\.\d+)?", r["says"]):
+            # The cited value AS THE PAGE WRITES IT. A rule may print $6.33 for
+            # a cited -6.3285: that is the same figure, rounded the way every
+            # tile rounds it. What stays forbidden is a figure no citation
+            # produces -- dividing two cited values still fails here.
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                for shown in (charts.money(v), charts.money(abs(v))):
+                    allowed.update(re.findall(NUMBER, shown))
+        for literal in re.findall(NUMBER, r["says"]):
             assert literal in allowed, (
                 f"{r['rule']} states {literal!r} which is not a cited value, "
                 f"the length of one, or structural. says={r['says']!r} "
@@ -384,3 +395,41 @@ def test_a_missing_value_renders_as_a_dash_not_a_traceback():
     assert charts.num(missing) == "--"
     assert charts.pct(missing) == "--"
     assert charts.fmt(missing, "cpa") == "--"
+
+
+# ---------------------------------------------------------- the published brief
+
+def test_a_published_brief_comes_back_with_its_types(tmp_path, monkeypatch):
+    """json.dumps(default=str) flattens Decimal and date to strings, and the page
+    compares both. Read back, they must be numbers and dates again -- a string
+    compared with 0 raises, and a date compared as text only looks right."""
+    import json as _json
+    from datetime import date as _date
+    from decimal import Decimal as _Decimal
+
+    from intel import brief as brief_mod
+
+    doc = _facts()
+    doc.update(brand="acme", since=_date(2026, 9, 14), until=_date(2026, 9, 20),
+               days=7, generated_at="2026-09-23T12:04:07+00:00",
+               summary={"text": "Prose.", "written_at": "2026-09-23T12:04:46+00:00"})
+    doc["facts"]["spend"]["spend"] = _Decimal("15747.79")
+    (tmp_path / "2026-09-20-acme.json").write_text(
+        _json.dumps(doc, default=str), encoding="utf-8")
+    (tmp_path / "2026-09-13-acme.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(brief_mod, "BRIEF_DIR", tmp_path)
+
+    got = brief_mod.latest("acme")
+    assert got["file"] == "2026-09-20-acme.json", "the newest file wins"
+    assert got["since"] == _date(2026, 9, 14)
+    assert got["facts"]["spend"]["spend"] == _Decimal("15747.79")
+    assert got["summary"]["text"] == "Prose."
+    assert got["readings"], "the rules were re-read against the stored facts"
+    assert brief_mod.latest("nobody") is None
+
+
+def test_enums_read_as_words():
+    import charts
+    assert charts.words("QUALITY_LEAD") == "Quality lead"
+    assert charts.words("OFFSITE_CONVERSIONS") == "Offsite conversions"
+    assert charts.words(None) == "--"

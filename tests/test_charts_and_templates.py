@@ -113,6 +113,33 @@ def test_formatters_never_render_none_as_zero():
     assert charts.fmt(None, "cpa") == "--"
 
 
+def test_money_puts_the_sign_before_the_currency():
+    """$-0.15 reads as a typo, and every negative CPA delta is one of these."""
+    assert charts.money(-0.15) == "−$0.15"
+    assert charts.money(Decimal("-1234.6")) == "−$1,235"
+    assert charts.money(0.15) == "$0.15"
+    # A sign on a figure that rounds to nothing is noise.
+    assert charts.money(-0.004) == "$0.00"
+
+
+def test_the_miniatures_are_blue_and_white():
+    """The dashboard is blue and white; merit is a word or a side, not a hue.
+
+    effect_bars used to colour a bar by merit with --good/--bad. It now draws
+    every bar in navy and names the two sides of zero instead, so the chart
+    stays in the palette and still says which way is better.
+    """
+    eb = charts.effect_bars([("Rate", 17.74, -1), ("Mix", -25.03, -1),
+                             ("Net", -6.33, -1)], kind="cpa")
+    sb = charts.split_bar([("a", 2, "--accent"), ("b", 6, "--accent-hi")])
+    for svg in (eb, sb):
+        assert not re.search(r"#[0-9a-fA-F]{3,6}\b", svg), svg[:200]
+        for hue in ("--good", "--bad", "--ok", "--warn", "--err"):
+            assert hue not in svg, hue
+    assert "lowers CPA" in eb and "raises CPA" in eb
+    assert "+$17.74" in eb and "−$25.03" in eb
+
+
 def test_formatters_accept_decimal():
     # psycopg returns numeric as Decimal, and float() on it is the only place
     # money would silently lose precision.
@@ -183,6 +210,26 @@ def test_the_dashboard_does_not_follow_the_operating_system_theme():
     assert re.search(r"color-scheme:[ ]*light", live), (
         "color-scheme: light is missing, so form controls and scrollbars "
         "render dark on a dark OS whatever the palette above says.")
+
+
+def test_the_dashboard_is_blue_and_white():
+    """No rule and no template fills anything red, green or amber.
+
+    The success, warning and error families are still DECLARED in :root --
+    the palette does not change, and the test below still wants every token
+    defined once -- but nothing may use them. Severity is intensity of navy
+    and merit is a word; a page that turns amber is not this system.
+    """
+    banned = re.compile(r"var\(--(ok|ok-bg|ok-line|warn|warn-bg|warn-line|"
+                        r"err|err-bg|err-line|on-err|good|bad)\)")
+    css = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
+    live = re.sub(r"/[*].*?[*]/", "", css, flags=re.DOTALL)
+    live = re.sub(r":root [{][^}]*[}]", "", live, count=1, flags=re.DOTALL)
+    assert not banned.findall(live), banned.findall(live)
+    for name in TEMPLATES:
+        html = (ROOT / "templates" / name).read_text(encoding="utf-8")
+        assert not banned.search(html), f"{name} uses {banned.search(html).group(0)}"
+    assert not banned.search((ROOT / "charts.py").read_text(encoding="utf-8"))
 
 
 def test_every_colour_token_is_defined_once_and_every_var_resolves():

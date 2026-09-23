@@ -1,104 +1,205 @@
 {% extends "base.html" %}
-{% block title %}Creative — Ads Intelligence{% endblock %}
+{% block title %}Fatigue — Ads Intelligence{% endblock %}
 {% block page_title %}Fatigue{% endblock %}
 
-{% block page_sub %}
-<div class="sub">
-  Five named symptoms and their count, each ad's most recent {{ window }} days
-  against the {{ window }} before. The score is a count, not a weighting —
-  which symptom fired matters more than the total.
-</div>
-{% endblock %}
+{#- =====================================================================
+    FATIGUE. Five named symptoms and their count, each ad's most recent
+    window against the one before. The score is a count, not a weighting.
+
+    WHAT CHANGED, AND WHY
+
+    Two pictures now sit above the table. The first is how many symptoms each
+    readable ad carries -- the shape of the account's fatigue in one bar. The
+    second is WHICH symptom fires, counted across the ads: an account that is
+    mostly losing click-through needs new openings, and one that is mostly
+    paying more per thousand needs new audiences, and a table of ads cannot
+    say which of those this is.
+
+    The symptom pills became the same five-cell grid the brief uses. Position
+    says which symptom, fill says whether it fired, and the count of filled
+    cells is the score -- so the score column went, and so did the paragraph
+    about daily frequency: the column header says "Daily freq", which is the
+    whole of CLAUDE.md's rule, and the column is where a reader needs it.
+
+    The table shows the ads carrying a symptom, eight at a time, and says what
+    is behind the cut. Ads with no symptom are counted, not listed.
+    ===================================================================== -#}
 
 {% block toolbar %}
-<form class="filters" method="get" action="/creative">
-  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
-  <label>Window
-    <select name="window">
-      {% for n in [3, 7, 14] %}
-        <option value="{{ n }}" {{ 'selected' if n == window }}>{{ n }} days</option>
-      {% endfor %}
+<nav class="seg" aria-label="Window">
+  {% for n in [3, 7, 14] %}
+    <a href="/creative?brand={{ d.brand }}&amp;window={{ n }}&amp;min_spend={{ min_spend }}&amp;unconfident={{ unconfident }}"
+       {% if n == window %}aria-current="page"{% endif %}>{{ n }}d</a>
+  {% endfor %}
+</nav>
+<form class="filters" method="get" action="/creative" style="padding:0; margin:0; border:0; background:none">
+  <input type="hidden" name="brand" value="{{ d.brand }}">
+  <input type="hidden" name="window" value="{{ window }}">
+  <label for="min_spend">Min spend<input id="min_spend" name="min_spend" value="{{ min_spend }}" size="5"></label>
+  <label for="unconfident">Low volume
+    <select id="unconfident" name="unconfident">
+      <option value="0" {{ 'selected' if not unconfident }}>hidden</option>
+      <option value="1" {{ 'selected' if unconfident }}>shown</option>
     </select>
   </label>
-  <label>Min spend<input name="min_spend" value="{{ min_spend }}" size="6"></label>
-  <label>Low-volume
-    <select name="unconfident">
-      <option value="0" {{ 'selected' if not unconfident }}>hide</option>
-      <option value="1" {{ 'selected' if unconfident }}>show</option>
-    </select>
-  </label>
-  <button type="submit">Apply</button>
+  <button type="submit" class="btn ghost">Apply</button>
 </form>
 {% endblock %}
 
 {% block body %}
-<div class="caveat">
-  <strong>Daily frequency.</strong>
-  <span>{{ d.frequency_note }} An ad at 1.4 has not been seen 1.4 times by each
-    person — it was shown 1.4 times per person <em>that day</em>.</span>
+{#- Counted, never summed: how many ads carry how many symptoms, and how many
+    ads each symptom fired on. Tallying the rows a function returned is not
+    computing a rate. -#}
+{% set sc = namespace(three=0, two=0, one=0, none=0) %}
+{% set fired = namespace(ctr=0, cpm=0, cpa=0, frq=0, rnk=0) %}
+{% for r in d.rows %}
+  {% if (r.score or 0) >= 3 %}{% set sc.three = sc.three + 1 %}
+  {% elif r.score == 2 %}{% set sc.two = sc.two + 1 %}
+  {% elif r.score == 1 %}{% set sc.one = sc.one + 1 %}
+  {% else %}{% set sc.none = sc.none + 1 %}{% endif %}
+  {% if r.link_ctr_decline %}{% set fired.ctr = fired.ctr + 1 %}{% endif %}
+  {% if r.cpm_rise %}{% set fired.cpm = fired.cpm + 1 %}{% endif %}
+  {% if r.cpa_rise %}{% set fired.cpa = fired.cpa + 1 %}{% endif %}
+  {% if r.frequency_rise %}{% set fired.frq = fired.frq + 1 %}{% endif %}
+  {% if r.ranking_drop %}{% set fired.rnk = fired.rnk + 1 %}{% endif %}
+{% endfor %}
+{% set symptoms = [('Click-through down', fired.ctr), ('Acquisition cost up', fired.cpa),
+                   ('Impression cost up', fired.cpm), ('Daily frequency up', fired.frq),
+                   ('Ranking down', fired.rnk)] %}
+{% set most = (symptoms | sort(attribute='1', reverse=true))[0] %}
+{% set top_fired = most[1] %}
+{% set shown = d.rows | selectattr('score') | list %}
+
+{#- The same five cells the brief draws. -#}
+{% macro grid(r) -%}
+{% set flags = [(r.link_ctr_decline, 'click-through down'), (r.cpm_rise, 'impression cost up'),
+                (r.cpa_rise, 'acquisition cost up'), (r.frequency_rise, 'daily frequency up'),
+                (r.ranking_drop, 'ranking down')] %}
+{% set names = [] %}
+{% for on, name in flags %}{% if on %}{% set _ = names.append(name) %}{% endif %}{% endfor %}
+<div class="sym" role="img" aria-label="{{ names | join(', ') if names else 'no symptoms' }}">
+  {%- for on, name in flags -%}<span{% if on %} class="on"{% endif %} title="{{ name }}"></span>{%- endfor -%}
+</div>
+{%- endmacro %}
+
+{% macro row(r) -%}
+{% set rec = (r.recent or {}).rates or {} %}
+{% set pri = (r.prior or {}).rates or {} %}
+<tr>
+  <td class="name">
+    <a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
+    <div style="margin-top:3px"><span class="pill quiet">{{ words(r.optimization_goal) if r.optimization_goal else 'No goal recorded' }}</span>
+      {% if not r.confident %} <span class="pill warn">low volume</span>{% endif %}</div>
+  </td>
+  <td>{{ grid(r) }}</td>
+  <td>{{ sparkline(spark.get(r.ad_key, [])) | safe }}</td>
+  <td class="num">{{ money(r.spend_recent) }}</td>
+  <td class="num">{{ money(pri.cpa) if pri.cpa else '--' }} &rarr;
+    <strong>{{ money(rec.cpa) if rec.cpa else '--' }}</strong></td>
+  <td class="num">{{ num((r.prior or {}).daily_frequency_avg, 2) }} &rarr;
+    <strong>{{ num((r.recent or {}).daily_frequency_avg, 2) }}</strong></td>
+</tr>
+{%- endmacro %}
+
+
+{% if not d.rows %}
+  <div class="empty">
+    No ad ran in both the recent {{ window }} days and the {{ window }} before
+    them, so there is nothing to compare. That is the usual answer on a new
+    account.
+  </div>
+{% else %}
+
+{#- ================================================================ ANSWER -#}
+<section class="answer" aria-label="Fatigue in one line">
+  <p>Of <strong>{{ num(d.rows | length) }}</strong> ads with enough spend to read,
+    <strong>{{ num(sc.three) }}</strong> show three or more symptoms and
+    <strong>{{ num(sc.two) }}</strong> show two.
+    {%- if top_fired %} {{ most[0] }} is the most common symptom, on
+      <strong>{{ num(top_fired) }}</strong>.{% endif %}</p>
+  <div class="jumps"><a href="#ads">The ads</a></div>
+</section>
+
+
+{#- ========================================================== THE PICTURES -#}
+<div class="grid" style="margin-bottom:20px">
+  <section class="card span2" aria-label="How many symptoms each ad carries">
+    <div class="card-head"><h2 class="card-t">How many symptoms each ad carries</h2></div>
+    <div style="margin-top:12px; border-radius:3px; overflow:hidden">
+      {{ split_bar([('3 or more', sc.three, '--accent'), ('2', sc.two, '--accent-hi'),
+                    ('1', sc.one, '--focus'), ('none', sc.none, '--accent-line')], height=18) | safe }}
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:18px; margin-top:10px; font-size:12px">
+      {% for label, n, tone in [('3+ symptoms', sc.three, '--accent'), ('2', sc.two, '--accent-hi'),
+                                ('1', sc.one, '--focus'), ('none', sc.none, '--accent-line')] %}
+        <span style="display:inline-flex; align-items:center; gap:6px">
+          <span style="width:10px; height:10px; border-radius:2px; background:var({{ tone }})"></span>
+          {{ label }} <strong>{{ num(n) }}</strong></span>
+      {% endfor %}
+    </div>
+    {% if d.suppressed_unconfident and not unconfident %}
+      {#- Counted, not listed: below the spend or impression floor the score is
+          arithmetically correct and means nothing, and a list of them reads
+          like a list of problems. -#}
+      <div style="display:flex; align-items:center; gap:10px; margin-top:14px">
+        <div style="flex:1; height:12px; border-radius:3px; border:1px dashed var(--focus)"></div>
+        <span class="small muted" style="white-space:nowrap"><strong>{{ num(d.suppressed_unconfident) }}</strong>
+          more below the floor &middot;
+          <a href="?brand={{ d.brand }}&amp;window={{ window }}&amp;unconfident=1">show them</a></span>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-label="Which symptom fires">
+    <div class="card-head"><h2 class="card-t">Which symptom fires</h2></div>
+    {% for label, n in symptoms %}
+      <div style="display:flex; align-items:center; gap:10px; margin-top:8px; font-size:12.5px">
+        <span style="flex:0 0 140px; color:var(--ink-2)">{{ label }}</span>
+        {{ meter(n, top_fired, width=130) | safe }}
+        <strong style="color:var(--accent)">{{ num(n) }}</strong>
+      </div>
+    {% endfor %}
+  </section>
 </div>
 
-{% if d.suppressed_unconfident and not unconfident %}
-  <div class="card quiet" style="margin-bottom:18px">
-    {{ d.suppressed_unconfident }} ad(s) show symptoms but fall below the spend
-    or impression floor, so the score would be arithmetically correct and
-    meaningless. <a href="?brand={{ d.brand }}&amp;window={{ window }}&amp;unconfident=1">Show them anyway</a>.
-  </div>
-{% endif %}
 
-<section class="stage">
-  {% if not d.rows %}
-    <div class="empty">
-      No ad ran in both the recent {{ window }} days and the {{ window }} before
-      them, so there is nothing to compare. That is the usual answer on a new
-      account.
-    </div>
-  {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Ad</th><th>Symptoms</th><th>Link CTR</th>
-        <th class="num">Score</th><th class="num">Spend</th>
-        <th class="num">CPA now</th><th class="num">CPA before</th>
-        <th class="num">Daily freq</th>
-      </tr></thead>
-      <tbody>
-      {% for r in d.rows %}
-        <tr>
-          <td class="name">
-            <a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
-            <div class="why">
-              {{ r.optimization_goal or 'no goal recorded' }}
-              {% if not r.confident %} · low volume{% endif %}
-            </div>
-          </td>
-          <td>
-            {#- The word travels with the mark. The palette is one hue, so a
-                colour alone cannot say which symptom this is. -#}
-            {% for flag, label in [
-                 (r.link_ctr_decline, 'CTR down'),
-                 (r.cpm_rise,         'CPM up'),
-                 (r.cpa_rise,         'CPA up'),
-                 (r.frequency_rise,   'freq up'),
-                 (r.ranking_drop,     'ranking down')] %}
-              {% if flag %}<span class="pill warn">{{ label }}</span> {% endif %}
-            {% endfor %}
-            {% if r.score == 0 %}<span class="muted small">none</span>{% endif %}
-          </td>
-          <td>{{ sparkline(spark.get(r.ad_key, [])) | safe }}</td>
-          <td class="num"><strong>{{ r.score }}</strong>/5</td>
-          <td class="num">{{ money(r.spend_recent) }}</td>
-          <td class="num">{{ money(r.recent.rates.cpa) if r.recent.rates and r.recent.rates.cpa else '--' }}</td>
-          <td class="num">{{ money(r.prior.rates.cpa) if r.prior.rates and r.prior.rates.cpa else '--' }}</td>
-          <td class="num">
-            {{ num(r.recent.daily_frequency_avg, 2) }}
-            <div class="why">was {{ num(r.prior.daily_frequency_avg, 2) }}</div>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
+{#- ================================================================ THE ADS -#}
+<section class="stage" id="ads" aria-label="The ads">
+  <div class="stage-head">
+    <h2>The ads</h2>
+    <span class="state">Source: <code>ads.fatigue</code></span>
   </div>
+  {% if not shown %}
+    <div class="empty">No readable ad carries a symptom in this window.</div>
+  {% else %}
+    <div class="table-wrap" style="border-bottom-left-radius:0; border-bottom-right-radius:0">
+      <table>
+        <thead><tr>
+          <th scope="col">Ad</th>
+          <th scope="col">Symptoms
+            <div class="sym-head" aria-hidden="true">
+              <span>CTR</span><span>CPM</span><span>CPA</span><span>FRQ</span><span>RNK</span>
+            </div></th>
+          <th scope="col">Link CTR, {{ window }}d</th>
+          <th scope="col" class="num">Spend, {{ window }}d</th>
+          <th scope="col" class="num">CPA before &rarr; now</th>
+          <th scope="col" class="num">Daily freq</th>
+        </tr></thead>
+        <tbody>{% for r in shown[:8] %}{{ row(r) }}{% endfor %}</tbody>
+      </table>
+    </div>
+    <details class="more" style="background:var(--surface); border:1px solid var(--line);
+             border-top:0; border-radius:0 0 var(--radius) var(--radius)">
+      <summary>
+        {%- if shown | length > 8 %}<strong>Show the other {{ shown | length - 8 }}</strong> &mdash; {% endif -%}
+        {{ num(sc.none) }} readable ad(s) carry no symptom and are not listed.</summary>
+      {% if shown | length > 8 %}
+        <div class="table-wrap" style="border:0">
+          <table><tbody>{% for r in shown[8:] %}{{ row(r) }}{% endfor %}</tbody></table>
+        </div>
+      {% endif %}
+    </details>
   {% endif %}
 </section>
+{% endif %}
 {% endblock %}

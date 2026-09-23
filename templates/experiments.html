@@ -2,82 +2,49 @@
 {% block title %}Experiments — Ads Intelligence{% endblock %}
 {% block page_title %}Experiments{% endblock %}
 
-{% block page_sub %}
-<div class="sub">
-  What we decided to test, and what would have counted as an answer — both
-  registered before any number existed. There is no winner column: the result
-  reports whether the registered effect was cleared, and naming a winner is a
-  decision a person makes.
-</div>
-{% endblock %}
+{#- =====================================================================
+    EXPERIMENTS. What we decided to test, and what would have counted as an
+    answer -- both registered before any number existed. There is no winner
+    column: the result reports whether the registered effect was cleared, and
+    naming a winner is a decision a person makes.
 
-{% block toolbar %}
-<form class="filters" method="get" action="/experiments">
-  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
-  <button type="submit">Apply</button>
-</form>
-{% endblock %}
+    WHAT CHANGED, AND WHY
+
+    Five tiles say the state of the whole pipeline at once: filed, running,
+    waiting on a conclusion, ideas, and findings that are not a test at all.
+
+    The ideas were seven tall cards, each with its own before/after table,
+    copy and brief. They are now one row each -- the idea, where it came
+    from, what moved as small chips, and whether it can be filed -- and every
+    row opens to the full card, so nothing a writer needed is gone.
+
+    The ordering rule is kept: what has been decided outranks what has been
+    suggested. When the log has experiments it comes first; when it is empty,
+    as it is today, it folds into one line at the bottom rather than opening
+    the page with an empty table.
+    ===================================================================== -#}
 
 {% block body %}
+{% set rows = d.rows or [] %}
+{% set running = rows | selectattr('state', 'equalto', 'running') | list %}
+{% set waiting = rows | selectattr('state', 'equalto', 'awaiting_conclusion') | list %}
+{% set props = ideas.proposals or [] %}
+{% set fileable = props | selectattr('fileable') | list %}
+{% set dx = ideas.diagnoses or [] %}
 
-{% if d.awaiting_launch %}
-  <div class="card quiet" style="margin-bottom:18px">
-    {{ d.awaiting_launch }} proposed experiment(s) have never been launched. A
-    proposal nobody ran is a different problem from a test that came back
-    inconclusive.
-  </div>
-{% endif %}
-
-{% if not d.rows %}
-  <div class="empty">
-    Nothing has been proposed yet. An experiment is filed with
-    <code>python -m intel record --kind experiment --json &lt;path&gt;</code>,
-    and launched by a person in Ads Manager.
-  </div>
-{% else %}
-<div class="table-wrap">
-  <table>
-    <thead><tr>
-      <th>Name</th><th>State</th><th>Hypothesis</th><th>Metric</th>
-      <th class="num">Min effect</th><th class="num">Min spend/arm</th>
-      <th>Arms</th><th>Conclusion</th>
-    </tr></thead>
-    <tbody>
-    {% for r in d.rows %}
-      <tr>
-        <td class="name"><strong>{{ r.name }}</strong>
-          <div class="why">{{ r.question }}</div></td>
-        <td>
-          {% set tone = {'concluded':'ok','running':'warn',
-                         'proposed':'quiet','awaiting_conclusion':'warn'}[r.state] %}
-          <span class="pill {{ tone }}">{{ r.state.replace('_',' ') }}</span>
-        </td>
-        <td class="small">{{ r.hypothesis | truncate(90) }}</td>
-        <td><span class="pill quiet">{{ r.primary_metric }}</span></td>
-        <td class="num">{{ num(r.minimum_effect_pct, 1) }}%</td>
-        <td class="num">{{ money(r.minimum_spend_per_arm) }}</td>
-        <td class="small">
-          {% for a in (r.arms or []) %}
-            {{ a.label }}{% if not loop.last %} vs {% endif %}
-          {% endfor %}
-        </td>
-        <td class="small">
-          {% if r.conclusion %}{{ r.conclusion }}
-            <div class="why">{{ r.concluded_by }}</div>
-          {% else %}<span class="muted">--</span>{% endif %}
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+{#- A metric that moved, as a chip: the metric's name and the verb's own
+    percentage. The arrow is the sign; nothing here is coloured by merit. -#}
+{% macro chips(moved) -%}
+<div class="chips">
+  {%- for m in (moved or [])[:4] -%}
+    <span class="chip-m">{{ m.metric }} {{ '&uarr;' | safe if m.pct > 0 else '&darr;' | safe }}{{ num(m.pct | abs, 0) }}%</span>
+  {%- endfor -%}
 </div>
-{% endif %}
+{%- endmacro %}
 
-
-{#- The before/after that a symptom count was standing in for.
-    "2/5 symptoms" tells a reader something is wrong; this tells them what.
-    Movements under 5% are already filtered out in propose.py, so the table
-    stays short without the template deciding what counts as news. -#}
+{#- The full before/after, for the row that opens. Merit, not direction: for
+    CPA and CPM a rise is worse, for the rates a fall is -- said by the word
+    .delta.good/.bad prints, not by a colour. -#}
 {% macro moved_table(moved) -%}
 {% if moved %}
 <div class="table-wrap" style="margin-top:8px; max-width:34rem">
@@ -86,14 +53,11 @@
       <th class="num">now</th><th class="num">change</th></tr></thead>
     <tbody>
       {% for m in moved %}
+        {% set bad = (m.pct > 0) if m.metric in ('CPM', 'CPA') else (m.pct < 0) %}
         <tr>
           <td>{{ m.metric }}</td>
           <td class="num">{{ num(m.prior, 2) }}</td>
           <td class="num">{{ num(m.recent, 2) }}</td>
-          {#- Merit, not direction: for CPA and CPM a rise is bad, for the
-              rates a fall is. The arrow carries the sign so colour is never
-              the only channel. -#}
-          {% set bad = (m.pct > 0) if m.metric in ('CPM', 'CPA') else (m.pct < 0) %}
           <td class="num"><span class="delta {{ 'bad' if bad else 'good' }}
             {{ 'up' if m.pct > 0 else 'down' }}">{{ num(m.pct, 0) }}%</span></td>
         </tr>
@@ -104,179 +68,207 @@
 {% endif %}
 {%- endmacro %}
 
-{#- What the ad actually says, so a card about rewriting it shows the thing
-    being rewritten. Read out of ads.ad_copy; nothing here is generated. -#}
+{#- What the ad actually says, read out of ads.ad_copy; nothing is generated. -#}
 {% macro current_copy(copy) -%}
 {% if copy and (copy.first_headline or copy.first_body) %}
-<div class="small" style="margin-top:8px; padding-left:12px;
-     border-left:2px solid var(--line-2); max-width:70ch">
-  {% if copy.first_headline %}
-    <div><strong>{{ copy.first_headline }}</strong></div>
-  {% endif %}
-  {% if copy.first_body %}
-    <div class="muted" style="margin-top:2px">{{ copy.first_body }}</div>
-  {% endif %}
+<div class="quote">
+  {% if copy.first_headline %}<div><strong>{{ copy.first_headline }}</strong></div>{% endif %}
+  {% if copy.first_body %}<div class="muted" style="margin-top:2px">{{ copy.first_body }}</div>{% endif %}
 </div>
 {% endif %}
 {%- endmacro %}
 
 
-{#- ==================================== NOT A CREATIVE PROBLEM
-    Above Ideas, deliberately. These are ads whose creative is still doing its
-    job -- the click rate held or rose -- and whose cost went up anyway because
-    something downstream of the click broke. A -75% conversion rate is the most
-    urgent thing on this page and it does not belong under a list of
-    suggestions.
-
-    No arms, no metric, no filing command, and that is the point: there is
-    nothing on the AD to test. Giving these the shape of an experiment would
-    invite somebody to register one, and the result would look like an answer.
-    -#}
-{% if ideas.diagnoses %}
-  <div class="stage-head" style="margin-top:28px">
-    <h2>Not a creative problem</h2>
-    <span class="state">{{ ideas.diagnosis_count }} &middot; findings, not tests</span>
-  </div>
-  <p class="sub">The ad is still earning the click. What follows it is not
-    converting, so rewriting the creative would change the one part that is
-    working.</p>
-
-  {% for x in ideas.diagnoses %}
-    <div role="note" style="margin:12px 0; padding:10px 14px;
-         border:1px solid var(--line); border-left:3px solid var(--bad);
-         border-radius:var(--radius-sm); background:var(--surface)">
-      <div class="eyebrow">{{ x.diagnosis.stage }} &middot; not a test</div>
-      <p style="margin:4px 0 0; max-width:86ch"><strong>{{ x.title }}</strong></p>
-      <p style="margin:4px 0 0; max-width:86ch">{{ x.diagnosis.says }}</p>
-      <div class="small muted" style="margin-top:4px; max-width:86ch">
-        {{ x.diagnosis.change }}</div>
-      {{ moved_table(x.moved) }}
-      {% if x.diagnosis.also_broke %}
-        <div class="small muted" style="margin-top:4px">Also moved:
-          {{ x.diagnosis.also_broke | join(', ') }}</div>
-      {% endif %}
-      {{ current_copy(x.ad_copy) }}
-      <div class="small muted" style="margin-top:6px">
-        {{ money(x.spend_recent) }} over {{ x.window }}.
-        {{ x.not_an_experiment }}</div>
-    </div>
-  {% endfor %}
-{% endif %}
-
-
-{#- =============================================== IDEAS, FILED BY NOBODY
-    Below the log, never above it. What has been decided outranks what has
-    been suggested, and a page that opens with suggestions reads as though
-    the machine is running the account.
-
-    Every card here is unfiled and says so. Filing is `intel record`, which
-    takes a path and is run by a person -- there is no button, for the reason
-    ui.py's header gives about every other button on this site.
-    -#}
-<div class="stage-head" style="margin-top:28px">
-  <h2>Ideas</h2>
-  <span class="state">{{ ideas.proposal_count }} &middot; none filed</span>
+{#- ============================================================ SCOREBOARD -#}
+<div class="stats">
+  <div class="stat"><div class="k">Filed</div><div class="v">{{ num(rows | length) }}</div>
+    {% if d.awaiting_launch %}<div class="sub">{{ num(d.awaiting_launch) }} never launched</div>{% endif %}</div>
+  <div class="stat"><div class="k">Running</div><div class="v">{{ num(running | length) }}</div></div>
+  <div class="stat"><div class="k">Awaiting a conclusion</div><div class="v">{{ num(waiting | length) }}</div>
+    {% if waiting %}<div class="sub">a person writes it, under their name</div>{% endif %}</div>
+  <div class="stat"><div class="k">Ideas</div><div class="v">{{ num(props | length) }}</div>
+    <div class="sub">{{ num(fileable | length) }} ready to file</div></div>
+  <div class="stat"><div class="k">Not a creative problem</div><div class="v">{{ num(dx | length) }}</div></div>
 </div>
-<p class="sub">
-  Questions about things that have <strong>not run</strong>. Both thresholds
-  are deliberately blank: deciding what would convince you after reading the
-  window is not deciding it in advance, so that part is yours.
-</p>
 
-{% if not ideas.proposals %}
-  <div class="empty">Nothing to propose from this window. That is a real
-    answer, not an empty state &mdash; it means no ad cleared the fatigue
-    confidence bar and no style is notably under-funded.</div>
-{% endif %}
 
-{% for p in ideas.proposals %}
-  <div role="note" style="margin:12px 0; padding:10px 14px;
-       border:1px solid var(--line); border-left:3px dashed var(--line-2);
-       border-radius:var(--radius-sm); background:var(--surface)">
-    <div class="eyebrow">{{ p.source | replace('_', ' ') }}
-      &middot; not filed</div>
-    <p style="margin:4px 0 0; max-width:86ch"><strong>{{ p.title }}</strong></p>
-    <p style="margin:4px 0 0; max-width:86ch">{{ p.question }}</p>
-    <div class="small muted" style="margin-top:4px; max-width:86ch">
-      {{ p.why }}</div>
-
-    {% if p.moved %}{{ moved_table(p.moved) }}{% endif %}
-    {% if p.diagnosis and p.diagnosis.also_broke %}
-      <div class="small muted" style="margin-top:4px">Also moved:
-        {{ p.diagnosis.also_broke | join(', ') }}</div>
-    {% endif %}
-    {{ current_copy(p.ad_copy) }}
-
-    {% if p.styles_untried %}
-      <div class="small" style="margin-top:8px; max-width:86ch">
-        <span class="muted">Run as</span>
-        {{ p.styles_tried | join(', ') or '--' }}.
-        <span class="muted">Never as</span>
-        <strong>{{ p.styles_untried[:6] | join(', ') }}</strong>.
-      </div>
-    {% endif %}
-
-    {#- THE BRIEF IS A HANDOFF, NOT COPY. Every line is read from the
-        database: the headline and body out of ads.ad_copy, the styles out of
-        the ad names, the numbers out of ads.fatigue. Nothing in this repo
-        writes ad text, because the claim gate, the approved concept and the
-        signature all live in growth-engine -- and for an insurance
-        advertiser those are the product, not paperwork. -#}
-    {% if p.brief %}
-      <details style="margin-top:8px">
-        <summary class="small" style="cursor:pointer">Brief for whoever
-          writes it</summary>
-        <div class="small" style="margin-top:6px; padding:8px 10px;
-             background:var(--surface-3); border-radius:var(--radius-sm)">
-          <div><span class="muted">angle</span> {{ p.brief.angle }}</div>
-          <div><span class="muted">broke</span> {{ p.brief.broke }}</div>
-          <div><span class="muted">change</span> {{ p.brief.change }}</div>
-          <div><span class="muted">beat</span>
-            {{ p.brief.beat.metric }} {{ num(p.brief.beat.current, 2) }}</div>
-          <div><span class="muted">never run as</span>
-            {{ p.brief.never_run_as[:6] | join(', ') or '--' }}</div>
-          <pre class="mono" style="margin:8px 0 0; white-space:pre-wrap"
-            >{{ p.brief.written_where }}</pre>
-          <div class="muted" style="margin-top:6px">{{ p.brief.note }}</div>
-        </div>
-      </details>
-    {% endif %}
-
-    <div class="small" style="margin-top:6px">
-      {% for a in p.arms %}
-        <span class="pill quiet">{{ a.label }}</span>
+{#- ================================================================ THE LOG
+    First when it has anything in it: decided outranks suggested. -#}
+{% macro log() -%}
+<section class="stage" aria-label="The experiment log">
+  <div class="stage-head"><h2>The log</h2>
+    <span class="state">Source: <code>intel experiments</code></span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>State</th><th>Hypothesis</th><th>Metric</th>
+        <th class="num">Min effect</th><th class="num">Min spend/arm</th>
+        <th>Arms</th><th>Conclusion</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="name"><strong>{{ r.name }}</strong><div class="why">{{ r.question }}</div></td>
+          <td>
+            {% set tone = {'concluded':'ok','running':'warn',
+                           'proposed':'quiet','awaiting_conclusion':'stop'}.get(r.state, 'quiet') %}
+            <span class="pill {{ tone }}">{{ r.state.replace('_',' ') }}</span>
+          </td>
+          <td class="small">{{ r.hypothesis | truncate(90) }}</td>
+          <td><span class="pill quiet">{{ r.primary_metric }}</span></td>
+          <td class="num">{{ num(r.minimum_effect_pct, 1) }}%</td>
+          <td class="num">{{ money(r.minimum_spend_per_arm) }}</td>
+          <td class="small">{% for a in (r.arms or []) %}{{ a.label }}{% if not loop.last %} vs {% endif %}{% endfor %}</td>
+          <td class="small">{% if r.conclusion %}{{ r.conclusion }}<div class="why">{{ r.concluded_by }}</div>
+            {% else %}<span class="muted">--</span>{% endif %}</td>
+        </tr>
       {% endfor %}
-      <span class="pill">{{ p.would_register.primary_metric }}</span>
-      {% if p.already_tested %}
-        <span class="pill warn">tested before</span>
-      {% endif %}
-    </div>
-
-    {% if p.fileable %}
-      <div class="small" style="margin-top:6px">
-        <code>{{ p.how_to_file }}</code></div>
-    {% else %}
-      <div class="small muted" style="margin-top:6px">
-        Cannot be filed yet &mdash; {{ p.blocked_on }}.</div>
-    {% endif %}
+      </tbody>
+    </table>
   </div>
-{% endfor %}
+</section>
+{%- endmacro %}
+{% if rows %}{{ log() }}{% endif %}
 
-{#- Observations. Separated, and labelled on every row, because the whole
-    point of the split is that these CANNOT be pre-registered. -#}
-{% if ideas.observations %}
-  <div class="stage-head" style="margin-top:24px">
-    <h2>Worth looking at</h2>
-    <span class="state">not experiments</span>
-  </div>
-  <p class="sub">These describe what already ran. Their thresholds would be
-    chosen with the numbers in view, so none of them can be registered as a
-    test. They say where to look.</p>
-  {% for o in ideas.observations %}
-    <div role="note" style="margin:10px 0 10px 2px; padding:2px 0 2px 16px;
-         border-left:3px solid var(--line-2)">
-      <p style="margin:0; max-width:86ch">{{ o.says }}</p>
+
+{#- ===================================================== NOT A CREATIVE PROBLEM
+    Above the ideas, deliberately: the ad is still earning the click and what
+    follows it is not converting, so rewriting the creative would change the
+    one part that works. No arms and no filing command -- there is nothing on
+    the AD to test, and giving these the shape of an experiment would invite
+    somebody to register one. -#}
+{% if dx %}
+<section class="stage" aria-label="Not a creative problem">
+  <div class="stage-head"><h2>Not a creative problem</h2>
+    <span class="state">findings, not tests</span></div>
+  {% for x in dx %}
+    <div class="card" style="margin-bottom:12px">
+      <div class="finding flag" style="padding:0; border:0; background:none; align-items:flex-start">
+        <div class="rank" aria-hidden="true">!</div>
+        <div class="says">
+          <p><strong>{{ x.title }}</strong> <span class="pill stop">{{ x.diagnosis.stage }}</span></p>
+          <p style="margin-top:4px">{{ x.diagnosis.says }}</p>
+          <div style="margin-top:8px">{{ chips(x.moved) }}</div>
+          <details style="margin-top:8px">
+            <summary class="small" style="cursor:pointer">The change it points to, and the copy</summary>
+            <div class="small muted" style="margin-top:6px; max-width:86ch">{{ x.diagnosis.change }}</div>
+            {{ moved_table(x.moved) }}
+            {% if x.diagnosis.also_broke %}<div class="small muted" style="margin-top:4px">Also moved:
+              {{ x.diagnosis.also_broke | join(', ') }}</div>{% endif %}
+            {{ current_copy(x.ad_copy) }}
+            <div class="small muted" style="margin-top:6px">{{ x.not_an_experiment }}</div>
+          </details>
+        </div>
+        <div style="flex:none; text-align:right">
+          <div class="k" style="font-size:11.5px; color:var(--muted)">spend, {{ x.window }}</div>
+          <div class="big" style="font-size:19px">{{ money(x.spend_recent) }}</div>
+        </div>
+      </div>
     </div>
   {% endfor %}
+</section>
+{% endif %}
+
+
+{#- ================================================================= IDEAS
+    Every row is unfiled and says so. Filing is `intel record`, which takes a
+    path and is run by a person -- there is no button, for the reason ui.py's
+    header gives about every other button on this site. Both thresholds are
+    deliberately blank: deciding what would convince you after reading the
+    window is not deciding it in advance. -#}
+<section class="stage" aria-label="Ideas">
+  <div class="stage-head"><h2>Ideas</h2>
+    <span class="state">{{ ideas.proposal_count }} &middot; none filed &middot; Source: <code>intel propose</code></span></div>
+  {% if not props %}
+    <div class="empty">Nothing to propose from this window. That is a real answer:
+      no ad cleared the fatigue confidence bar and no style is notably under-funded.</div>
+  {% else %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th scope="col" style="width:28px"></th><th scope="col">Idea</th>
+          <th scope="col">From</th><th scope="col">What moved</th><th scope="col">Status</th>
+        </tr></thead>
+        <tbody>
+        {% for p in props %}
+          <tr>
+            <td><strong style="color:var(--accent)">{{ loop.index }}</strong></td>
+            <td class="name" style="max-width:440px">
+              <strong>{{ p.title }}</strong>
+              <div class="why">{{ p.question }}</div>
+              <details style="margin-top:6px">
+                <summary class="small" style="cursor:pointer">The full card</summary>
+                <div class="small muted" style="margin-top:6px">{{ p.why }}</div>
+                {% if p.moved %}{{ moved_table(p.moved) }}{% endif %}
+                {% if p.diagnosis and p.diagnosis.also_broke %}<div class="small muted" style="margin-top:4px">Also moved:
+                  {{ p.diagnosis.also_broke | join(', ') }}</div>{% endif %}
+                {{ current_copy(p.ad_copy) }}
+                {% if p.styles_untried %}<div class="small" style="margin-top:8px">
+                  <span class="muted">Run as</span> {{ p.styles_tried | join(', ') or '--' }}.
+                  <span class="muted">Never as</span> <strong>{{ p.styles_untried[:6] | join(', ') }}</strong>.</div>{% endif %}
+                {#- THE BRIEF IS A HANDOFF, NOT COPY. Every line is read from the
+                    database; nothing in this repo writes ad text, because the
+                    claim gate, the approved concept and the signature live in
+                    growth-engine. -#}
+                {% if p.brief %}
+                  <div class="quote" style="background:var(--surface-3)">
+                    <div><span class="muted">angle</span> {{ p.brief.angle }}</div>
+                    <div><span class="muted">broke</span> {{ p.brief.broke }}</div>
+                    <div><span class="muted">change</span> {{ p.brief.change }}</div>
+                    <div><span class="muted">beat</span> {{ p.brief.beat.metric }} {{ num(p.brief.beat.current, 2) }}</div>
+                    <div><span class="muted">never run as</span> {{ p.brief.never_run_as[:6] | join(', ') or '--' }}</div>
+                    <pre class="mono" style="margin:8px 0 0; white-space:pre-wrap">{{ p.brief.written_where }}</pre>
+                  </div>
+                {% endif %}
+                <div class="small" style="margin-top:6px">
+                  {% for a in p.arms %}<span class="pill quiet">{{ a.label }}</span> {% endfor %}
+                  <span class="pill">{{ p.would_register.primary_metric }}</span>
+                </div>
+              </details>
+            </td>
+            <td><span class="pill quiet">{{ (p.source or '') | replace('_', ' ') }}</span>
+              {% if p.already_tested %}<div style="margin-top:4px"><span class="pill warn">tested before</span></div>{% endif %}</td>
+            <td>{% if p.moved %}{{ chips(p.moved) }}{% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
+            <td class="small">
+              {% if p.fileable %}<span class="pill ok">ready to file</span>
+                <div style="margin-top:4px"><code>{{ p.how_to_file }}</code></div>
+              {% else %}<span class="pill quiet">not fileable yet</span>
+                <div class="why">waits on {{ (p.blocked_on or '') | replace(' -- ', ' — ') }}</div>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+
+
+{#- Observations: they describe what already ran, so their thresholds would
+    be chosen with the numbers in view and none can be registered as a test. -#}
+{% if ideas.observations %}
+<section class="stage" aria-label="Worth looking at">
+  <div class="stage-head"><h2>Worth looking at</h2>
+    <span class="state">describes what already ran, so it cannot be a test</span></div>
+  <div class="card">
+    {% for o in ideas.observations %}<p style="margin:0 0 6px; max-width:86ch">{{ o.says }}</p>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+
+{% if not rows %}
+<section class="stage" aria-label="Nothing to report">
+  <div class="stage-head"><h2>Nothing to report, and why</h2></div>
+  <div class="card" style="padding:0">
+    <div class="quiet-row">
+      <span class="t">The log</span><span class="pill quiet">nothing to show</span>
+      <span class="w">Nothing has been filed. An experiment is filed with
+        <code>python -m intel record --kind experiment --json &lt;path&gt;</code>
+        and launched by a person in Ads Manager.</span>
+    </div>
+  </div>
+</section>
 {% endif %}
 {% endblock %}

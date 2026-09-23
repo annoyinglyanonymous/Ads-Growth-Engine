@@ -109,6 +109,12 @@ def _allowed(r: dict) -> set[str]:
         if isinstance(v, float):
             allowed.add(str(v).rstrip("0").rstrip("."))
             allowed.add(str(int(v)) if v == int(v) else str(v))
+        # The cited value as the page writes it: $0.25 for a cited 0.2537 is
+        # the same figure, rounded the way every tile rounds it.
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            import charts
+            for shown in (charts.money(v), charts.money(abs(v))):
+                allowed.update(NUMBER.findall(shown))
         # A figure INSIDE a cited string is sourced: it came out of the
         # database verbatim, in the value the citation points at. The brief's
         # version of this test has no such case only because its fixture has no
@@ -270,7 +276,11 @@ def test_a_negative_effect_is_still_sourced():
     assert fired, "the bridge rule did not fire on a negative mix effect"
     for r in fired:
         allowed = _allowed(r)
-        assert "-0.3688" in r["says"], "the sign was dropped from the sentence"
+        # Written the way the page writes money -- "−$0.37", U+2212 before the
+        # currency -- and the sign must survive the formatting.
+        import charts
+        assert charts.money(-0.3688) in r["says"], "the sign was dropped from the sentence"
+        assert charts.money(-0.3688).startswith("−")
         for literal in NUMBER.findall(r["says"]):
             assert literal in allowed, (
                 f"{literal!r} not sourced. cited={sorted(allowed)}")

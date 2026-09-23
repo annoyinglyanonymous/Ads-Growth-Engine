@@ -42,7 +42,18 @@ from typing import Callable
 from . import context, metrics
 from .propose import FATIGUE_FLOOR, SYMPTOM_METRIC
 from .propose import diagnose as propose_diagnose
-from .readings import Reading, _at, _cite, _reading
+from .readings import Reading, _at, _cite, _reading, _usd
+
+#: A symptom as a reader says it. The fact keeps the field name -- it is
+#: what the citation points at -- and only the sentence says it in words.
+_SAID = {"link_ctr_decline": "click-through down", "cpm_rise": "impression cost up",
+         "cpa_rise": "acquisition cost up", "frequency_rise": "daily frequency up",
+         "ranking_drop": "ranking down"}
+
+
+def _words(v) -> str:
+    """An enum in words: LEAD_GENERATION -> lead generation."""
+    return str(v).replace("_", " ").lower()
 
 #: Meta's own words for an ad that is delivering. Anything else means the
 #: window below is history: worth reading, not worth acting on.
@@ -213,7 +224,7 @@ def _symptoms_fired(f: dict) -> list[Reading]:
     return [_reading(
         "symptoms_fired",
         f"{score} of the 5 named symptoms fired over {days} day(s) of "
-        f"delivery: {', '.join(fired)}. That is what ads.fatigue measured "
+        f"delivery: {', '.join(_SAID.get(x, _words(x)) for x in fired)}. That is what ads.fatigue measured "
         f"against the window before it, not a judgement about the creative.",
         [_cite(f, "/facts/fatigue/score", "fatigue", "score"),
          _cite(f, "/facts/fatigue/symptoms", "fatigue", "symptoms"),
@@ -230,7 +241,7 @@ def _not_enough_spend_to_read(f: dict) -> list[Reading]:
         return []
     return [_reading(
         "not_enough_spend_to_read",
-        f"ads.fatigue reports this ad as not confident: it spent {spend} in "
+        f"ads.fatigue reports this ad as not confident: it spent {_usd(spend)} in "
         f"the window, which is below the floor the function applies before it "
         f"will stand behind a symptom count. The count above is arithmetically "
         f"correct and should not be acted on alone.",
@@ -307,8 +318,8 @@ def _goal_segments_the_comparison(f: dict) -> list[Reading]:
         return []
     return [_reading(
         "goal_segments_the_comparison",
-        f"This ad's group optimises {goal}. Cost per lead is not comparable "
-        f"across optimization goals, so read this ad against other {goal} "
+        f"This ad's group optimises {_words(goal)}. Cost per lead is not comparable "
+        f"across optimization goals, so read this ad against other {_words(goal)} "
         f"groups or say that you did not.",
         [_cite(f, "/facts/ad/optimization_goal", "ad", "optimization_goal")],
         section="comparability")]
@@ -326,8 +337,8 @@ def _moved_the_brand_cpa(f: dict) -> list[Reading]:
             return []
         return [_reading(
             "moved_the_brand_cpa",
-            f"In the CPA bridge this ad accounts for {total} of the brand's "
-            f"move, split {rate} from its own rate and {mix} from how much of "
+            f"In the CPA bridge this ad accounts for {_usd(total)} of the brand's "
+            f"move, split {_usd(rate)} from its own rate and {_usd(mix)} from how much of "
             f"the spend it took.",
             [_cite(f, "/facts/bridge/total_effect", "why", "total_effect"),
              _cite(f, "/facts/bridge/rate_effect", "why", "rate_effect"),
@@ -335,9 +346,9 @@ def _moved_the_brand_cpa(f: dict) -> list[Reading]:
             section="movement")]
     return [_reading(
         "moved_the_brand_cpa_unattributable",
-        f"In the CPA bridge this ad accounts for {total} of the brand's move, "
+        f"In the CPA bridge this ad accounts for {_usd(total)} of the brand's move, "
         f"and the split into rate and mix is undefined for it -- the bridge "
-        f"names the case as {reason}. Reporting a split here would be the "
+        f"names the case as {_words(reason)}. Reporting a split here would be the "
         f"interesting half of a lie.",
         [_cite(f, "/facts/bridge/total_effect", "why", "total_effect"),
          _cite(f, "/facts/bridge/reason", "why", "reason")],

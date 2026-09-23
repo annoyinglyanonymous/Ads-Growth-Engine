@@ -2,131 +2,168 @@
 {% block title %}{{ ad.ad.name }} — Ads Intelligence{% endblock %}
 {% block page_title %}{{ ad.ad.name }}{% endblock %}
 
-{#- A real button, in the topbar, on the right. It is a button rather than a
-    link because it is not navigation: clicking it starts a Claude Code session
-    that reads this ad's numbers and writes a few sentences about them, and
-    that takes the better part of a minute and costs a model call. A link
-    promises a page; this promises work. -#}
+{#- =====================================================================
+    ONE AD. Its own numbers, what the rules say about it, the words it runs,
+    and how it spent day by day.
+
+    WHAT CHANGED, AND WHY
+
+    The rules' readings lead the page again. They cost nothing -- rules over
+    a fact pack, no model -- and they are this ad's analysis before anybody
+    asks for one, which is what the dashboard now opens every page with. The
+    tiles above them are the ad's own window from ads.window_metrics, and the
+    fatigue tile is the same five-cell grid the brief and Fatigue draw.
+
+    "Ask about this ad" is the one button left on the site that calls a
+    model, and it stays a button for the reason it was one: a model call per
+    page view on 245 ads is a cost somebody should choose to spend. Its answer
+    lands beside the copy it is about.
+
+    The 31-row daily table folds behind a line; the two charts above it carry
+    the shape and the table is there for the exact figure.
+    ===================================================================== -#}
+
 {% block toolbar %}
+{% set a = ad.ad %}
+{% if a.effective_status %}<span class="pill {{ 'ok' if a.effective_status == 'ACTIVE' else 'quiet' }}">{{ words(a.effective_status) }}</span>{% endif %}
+{% if a.optimization_goal %}<span class="chip">{{ words(a.optimization_goal) }}</span>{% endif %}
+{% if a.format %}<span class="chip">{{ words(a.format) }}</span>{% endif %}
+{#- A button rather than a link because it is not navigation: it starts a
+    Claude Code session that reads this ad's numbers, which takes the better
+    part of a minute and costs a model call. -#}
 <button type="button" class="btn"
         data-ask-url="/ad/{{ ad.ad.ad_key }}/analyse.json?brand={{ brand }}"
-        data-ask-target="ad-analysis">
-  Ask about this ad
-</button>
+        data-ask-target="ad-analysis">Ask about this ad</button>
 {% endblock %}
 
 {% block page_sub %}
 {% set a = ad.ad %}
-<div class="sub">
-  <span class="eyebrow">{{ a.campaign_name or 'campaign' }} ·
-    {{ a.ad_group_name or 'ad group' }}</span><br>
-  {{ a.format }} · {{ a.effective_status }} ·
-  first seen {{ a.first_seen_at.strftime('%Y-%m-%d') }},
-  last seen {{ a.last_seen_at.strftime('%Y-%m-%d') }}
-  {% if a.optimization_goal %} · optimising {{ a.optimization_goal }}{% endif %}
-</div>
+<div class="sub">{{ a.campaign_name or 'campaign' }} &rsaquo; {{ a.ad_group_name or 'ad group' }}</div>
 {% endblock %}
 
 {% block body %}
 {% set a = ad.ad %}
+{% set rt = (totals or {}).rates or {} %}
+{% set fat = (((reading or {}).facts or {}).fatigue) or {} %}
+{% set rules = (reading or {}).readings or [] %}
 
 {% if ad.tag_is_stale %}
-  <div class="caveat"><strong>Stale tag.</strong>
-    <span>This ad's copy has changed since it was tagged, so the angle below
-      describes wording that is no longer running. Re-tag it before counting it
-      toward an angle.</span></div>
+  <div class="caveat"><span><strong>Stale tag.</strong> This ad's copy has changed
+    since it was tagged, so its label describes wording that is no longer running.
+    Re-tag it before counting it toward an angle.</span></div>
 {% endif %}
 
 
-<div class="boards">
-  <section class="board">
-    <header><h2>Copy</h2>
-      <div class="note">as Meta reports it, across all creative shapes</div></header>
-    <div class="body">
-      {% if a.thumbnail_url %}
-        <img src="{{ a.thumbnail_url }}" alt="" style="border-radius:8px;margin-bottom:12px;max-height:180px">
-      {% endif %}
-      {% if ad.copy and ad.copy.texts %}
-        {% for t in ad.copy.texts %}
-          <div style="margin-bottom:9px">
-            <span class="pill quiet">{{ t.field }}{% if t.ordinal %} {{ t.ordinal }}{% endif %}</span>
-            <div style="margin-top:3px">{{ t.text }}</div>
-          </div>
-        {% endfor %}
-      {% elif a.needs_page_scope %}
-        <p class="muted small">This is a boosted page post, so its copy is not
-          readable through the ads API.</p>
-      {% else %}
-        <p class="muted small">No copy imported.</p>
-      {% endif %}
-      <hr class="sep">
-      <p class="small">
-        <strong>CTA button:</strong> {{ a.cta or '--' }}<br>
-        <strong>Destination:</strong>
-        {% if a.link_url %}<span class="mono">{{ a.link_url | truncate(90) }}</span>
-        {% else %}--{% endif %}<br>
-        <strong>utm_content:</strong> <span class="mono">{{ a.utm_content or '--' }}</span>
-      </p>
-    </div>
+{#- ============================================================ SCOREBOARD -#}
+<div class="stats">
+  <div class="stat"><div class="k">Spend, {{ days }}d</div>
+    <div class="v">{{ money((totals or {}).spend) }}</div></div>
+  <div class="stat"><div class="k">Conversions</div>
+    <div class="v">{{ num((totals or {}).conversions) }}</div></div>
+  <div class="stat"><div class="k">CPA</div>
+    {#- Comparable only against other ad groups buying the same goal: the goal
+        chip in the topbar is there for exactly this tile. -#}
+    <div class="v">{{ money(rt.cpa) }}</div></div>
+  <div class="stat"><div class="k">Link CTR</div>
+    <div class="v">{{ pct(rt.link_ctr) }}</div></div>
+  <div class="stat"><div class="k">Fatigue</div>
+    {% if fat.score is not none and fat.symptoms is defined %}
+      {% set on = fat.symptoms or [] %}
+      <div class="sym" role="img" style="margin-top:8px"
+           aria-label="{{ on | join(', ') | replace('_', ' ') if on else 'no symptoms' }}">
+        {%- for key, name in [('link_ctr_decline', 'click-through down'), ('cpm_rise', 'impression cost up'),
+                              ('cpa_rise', 'acquisition cost up'), ('frequency_rise', 'daily frequency up'),
+                              ('ranking_drop', 'ranking down')] -%}
+          <span{% if key in on %} class="on"{% endif %} title="{{ name }}"></span>
+        {%- endfor -%}
+      </div>
+      <div class="sub">{{ num(fat.score) }} of 5 symptoms{% if fat.confident is sameas false %} &middot; too little spend to read{% endif %}</div>
+    {% else %}
+      <div class="v" style="font-size:16px; margin-top:6px">&mdash;</div>
+      <div class="sub">not in both windows</div>
+    {% endif %}
+  </div>
+</div>
+
+
+{#- ======================================================= WHAT THE RULES SAY -#}
+{% if rules %}
+<section class="stage" aria-label="What the rules say">
+  <div class="stage-head"><h2>What the rules say about it</h2>
+    <span class="state">readings of the figures on this page, not decisions about them</span></div>
+  <div class="card" style="padding:0">
+    {% for r in rules %}
+      <div class="finding">
+        <div class="rank" aria-hidden="true">{{ loop.index }}</div>
+        <div class="says"><p>{{ r.says }}</p></div>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+
+{#- ====================================================== THE COPY, AND HOW IT SPENT -#}
+<div class="grid" style="margin-bottom:20px">
+  <section class="card" aria-label="The copy">
+    <div class="card-head"><h2 class="card-t">The copy</h2>
+      {% if (ad.get('copy') or {}).texts %}<span class="more">{{ ad.get('copy').texts | length }} variant(s)</span>{% endif %}</div>
+    {% if a.thumbnail_url %}
+      <img src="{{ a.thumbnail_url }}" alt="Thumbnail of {{ a.name }}"
+           style="border-radius:var(--radius-sm); margin:8px 0 4px; max-height:180px">
+    {% endif %}
+    {% if (ad.get('copy') or {}).texts %}
+      {% for t in ad.get('copy').texts %}
+        <div style="padding:9px 0; border-bottom:1px solid var(--line)">
+          <div class="eyebrow">{{ t.field }}{% if t.ordinal %} {{ t.ordinal }}{% endif %}</div>
+          <div style="margin-top:3px">{{ t.text }}</div>
+        </div>
+      {% endfor %}
+    {% elif a.needs_page_scope %}
+      <p class="muted small">This is a boosted page post, so its copy is not readable
+        through the ads API.</p>
+    {% else %}
+      <p class="muted small">No copy imported.</p>
+    {% endif %}
+    <p class="small" style="margin:10px 0 0">
+      Button <span class="pill quiet">{{ words(a.cta) if a.cta else '--' }}</span>
+      &middot; <span class="mono">{{ a.utm_content or 'no utm_content' }}</span>
+      {% if a.link_url %}<br><span class="mono">{{ a.link_url | truncate(70) }}</span>{% endif %}
+    </p>
   </section>
 
-  {#- WHERE THE ANSWER LANDS: a board, in the grid, beside Copy -- the slot
-      "What we think it is" used to hold.
-
-      That board rendered ads.ad_facet, and on this database it said "Not
-      tagged" on every ad, because ads.angle is empty and nothing has ever
-      filed a facet. A permanently empty box in the best position on the page
-      reads as a feature that is broken rather than one nobody has started, so
-      the position goes to the thing that can answer today.
-
-      A board rather than a full-width stage below, because the answer is about
-      the copy on its left and the two belong side by side -- and because
-      dropping it underneath left the grid with a visible hole where the tag
-      board had been.
-
-      `hidden` until the button in the topbar is pressed: an analysis nobody
-      asked for is a model call nobody asked for. Rendered empty rather than
-      absent so app.js has somewhere to put the answer without building page
-      structure. -#}
-  <section class="board" id="ad-analysis" hidden>
-    <header>
-      <h2>What this ad looks like</h2>
-      <div class="note" data-analysis-state></div>
-    </header>
-    <div class="body">
+  <div class="span2" style="display:flex; flex-direction:column; gap:16px">
+    {#- Where the answer lands, beside the copy it is about. Hidden until the
+        button is pressed: an analysis nobody asked for is a model call
+        nobody asked for. -#}
+    <section class="ai-read" id="ad-analysis" hidden aria-label="AI read" style="margin:0">
+      <div class="ai-read-head">
+        <span class="pill stop">AI read</span>
+        <span class="state" data-analysis-state></span>
+      </div>
       <div data-analysis-body></div>
-      <p class="small muted" style="margin-top:12px" data-analysis-foot hidden>
-        Written by a Claude Code session from this ad's own numbers, which it
-        read with the same verbs this page calls. It reports; it decides
-        nothing.
-      </p>
-    </div>
-  </section>
+      <p class="small muted" data-analysis-foot hidden>Written by a Claude Code session
+        from this ad's own numbers. It reports; it decides nothing.</p>
+    </section>
+    <section class="board" aria-label="Spend per day">
+      <header><h2>Spend per day</h2></header>
+      <div class="body">{{ line_chart(spend_series, kind='spend') | safe }}</div>
+    </section>
+    <section class="board" aria-label="Conversions per day">
+      <header><h2>Conversions per day</h2></header>
+      <div class="body">{{ line_chart(conv_series, kind='count') | safe }}</div>
+    </section>
+  </div>
 </div>
 
-<div class="boards">
-</div>
 
-<hr class="sep">
-
-<div class="boards">
-  <section class="board">
-    <header><h2>Spend per day</h2></header>
-    <div class="body">{{ line_chart(spend_series, kind='spend') | safe }}</div>
-  </section>
-  <section class="board">
-    <header><h2>Conversions per day</h2></header>
-    <div class="body">{{ line_chart(conv_series, kind='count') | safe }}</div>
-  </section>
-</div>
-
-<section class="stage" style="margin-top:26px">
-  <div class="stage-head"><h2>Daily</h2>
-    <span class="state">{{ ad.day_count }} days</span></div>
-  {% if not ad.daily %}
-    <div class="empty">No insights rows for this ad.</div>
-  {% else %}
-  <div class="table-wrap">
+{#- ================================================================ DAILY -#}
+{% if ad.daily %}
+<details class="more" style="background:var(--surface); border:1px solid var(--line);
+         border-radius:var(--radius)">
+  <summary><strong>Show {{ ad.day_count }} days</strong> &mdash; spend, impressions,
+    link clicks, conversions, daily frequency and reach that day.</summary>
+  <div class="table-wrap" style="border:0">
     <table>
       <thead><tr>
         <th>Day</th><th class="num">Spend</th><th class="num">Impressions</th>
@@ -142,16 +179,16 @@
           <td class="num">{{ num(r.link_clicks) }}</td>
           <td class="num">{{ num(r.conversions) }}</td>
           <td class="num">{{ num(r.frequency_this_day, 2) }}</td>
+          {#- Deduplicated within the day, so adding this column up would count
+              the same person once per day. -#}
           <td class="num">{{ num(r.reach_this_day) }}</td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
-  <p class="small muted" style="margin-top:8px">
-    Reach is per day and deduplicated within that day. Adding this column up
-    would count the same person once per day.
-  </p>
-  {% endif %}
-</section>
+</details>
+{% else %}
+  <div class="empty">No insights rows for this ad.</div>
+{% endif %}
 {% endblock %}

@@ -46,8 +46,11 @@ rather than something a person remembers to do.
 from __future__ import annotations
 
 import json
+import re
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import chat
@@ -453,3 +456,74 @@ async def summarise(doc: dict, slug: str | None = None) -> dict:
         if len(question) <= creative_mod.PROMPT_BUDGET:
             break
     return await chat.answer(question, doc.get("brand") or slug)
+
+
+# ---------------------------------------------------------------------------
+# The published brief, read back.
+# ---------------------------------------------------------------------------
+
+#: Where scripts/brief.py writes, derived the same way it derives it.
+BRIEF_DIR = Path(__file__).resolve().parent.parent / "briefs"
+
+_DECIMAL = re.compile(r"^-?\d+(?:\.\d+)?$")
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
+
+
+def _revive(v: Any) -> Any:
+    """Undo json.dumps(default=str) for the two types it flattened.
+
+    A published brief stores every Decimal as a string and every date as a
+    string, and the page compares both -- `score >= 3`, a coverage date against
+    the prior window's start. Handing it strings would make those comparisons
+    raise, or worse, compare lexically and look fine. Numbers come back as
+    Decimal, exactly as the pack held them; dates and timestamps come back as
+    date and datetime. Nothing is recomputed, so nothing can drift.
+    """
+    if isinstance(v, dict):
+        return {k: _revive(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_revive(x) for x in v]
+    if isinstance(v, str):
+        if _DECIMAL.match(v):
+            return Decimal(v)
+        if _DAY.match(v):
+            return date.fromisoformat(v)
+        if _STAMP.match(v):
+            try:
+                return datetime.fromisoformat(v)
+            except ValueError:
+                return v
+    return v
+
+
+def latest(slug: str) -> dict | None:
+    """The newest published brief for this brand, or None.
+
+    Filename order is date order -- `YYYY-MM-DD-<brand>.json` -- the same
+    convention creative.latest_suggestion reads. A brand nothing has published
+    for yet is a normal answer on a fresh install, not a failure.
+
+    The readings are re-read against the STORED facts. The facts are the
+    archive and are not touched; re-running the rules over them yields the same
+    claims about the same numbers, in whatever wording readings.py writes
+    today, rather than the wording frozen into last week's file. The summary is
+    the model's and is rendered as it was published.
+    """
+    try:
+        files = sorted(BRIEF_DIR.glob(f"*-{slug}.json"))
+    except OSError:
+        return None
+    if not files:
+        return None
+    try:
+        doc = _revive(json.loads(files[-1].read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+    doc["file"] = files[-1].name
+    doc.setdefault("summary", None)
+    try:
+        doc["readings"] = readings.read(doc)
+    except Exception:  # a rule that cannot read an older pack keeps the old text
+        pass
+    return doc
