@@ -57,6 +57,24 @@ SYMPTOMS: tuple[str, ...] = tuple(s for s, _ in SYMPTOM_METRIC)
 # The fact pack.
 # ---------------------------------------------------------------------------
 
+def _diagnosis(row: dict) -> dict:
+    """intel/propose.diagnose() for this ad, or {} when there is no row.
+
+    Kept whole rather than reduced to `metric`. This module used to take the
+    metric and throw the rest away, which meant FOUR different situations --
+    nothing moved, nothing could be read, the break is at the landing page,
+    the break is after the click -- all arrived here as `metric is None` and
+    all rendered as the same silence.
+
+    That is the substitution intel/gaps.py exists to prevent, one layer down:
+    "an empty section and an unanswerable question look identical", and
+    CLAUDE.md opens on the same shape -- a stale import looks exactly like a
+    quiet week. `says` already distinguishes them, so there is nothing to
+    reconstruct and no branch on `stage` to write.
+    """
+    return propose_diagnose(row) or {}
+
+
 def _registerable(row: dict) -> str | None:
     """The metric a refresh would register, or None when none can be justified.
 
@@ -127,6 +145,7 @@ async def ad_facts(slug: str, ad_key: str, days: int = 14,
             # quiet -- silence is the correct answer when the evidence does not
             # support naming a metric.
             "would_register": _registerable(row),
+            "diagnosis": _diagnosis(row),
             "meets_floor": (row.get("score") or 0) >= FATIGUE_FLOOR,
         }
 
@@ -231,6 +250,34 @@ def _below_the_proposal_floor(f: dict) -> list[Reading]:
         f"one window is noise often enough to bury the ads showing three.",
         [_cite(f, "/facts/fatigue/score", "fatigue", "score"),
          _cite(f, "/facts/fatigue/meets_floor", "fatigue", "meets_floor")],
+        section="fatigue")]
+
+
+def _no_refresh_to_register(f: dict) -> list[Reading]:
+    """Why no metric was named, when none was.
+
+    The sentence comes from the diagnosis verbatim and is cited, so any figure
+    inside it resolves at the pointer -- a rule still cannot type a number, it
+    can only point at one and interpolate what it got.
+
+    Four stages reach here and they are three different statements: `steady`
+    looked and found nothing, `unreadable` could not look at all, and
+    `landing` / `after the click` mean the ad is still earning its click and
+    the break is downstream of it. Rendering them identically would say "this
+    ad is fine" about an ad nobody managed to measure.
+    """
+    if _at(f, "/facts/fatigue/would_register") is not None:
+        return []
+    says = _at(f, "/facts/fatigue/diagnosis/says")
+    stage = _at(f, "/facts/fatigue/diagnosis/stage")
+    if not says or not stage:
+        return []
+    return [_reading(
+        "no_refresh_to_register",
+        f"{says} No refresh metric is named for this ad, because naming one "
+        f"would register a test against a number this window does not support.",
+        [_cite(f, "/facts/fatigue/diagnosis/says", "propose", "says"),
+         _cite(f, "/facts/fatigue/diagnosis/stage", "propose", "stage")],
         section="fatigue")]
 
 
@@ -350,6 +397,7 @@ AD_RULES: tuple[tuple[str, Callable[[dict], list[Reading]]], ...] = (
     ("not_enough_spend_to_read", _not_enough_spend_to_read),
     ("below_the_proposal_floor", _below_the_proposal_floor),
     ("what_a_refresh_would_register", _what_a_refresh_would_register),
+    ("no_refresh_to_register", _no_refresh_to_register),
     ("moved_the_brand_cpa", _moved_the_brand_cpa),
     ("goal_segments_the_comparison", _goal_segments_the_comparison),
     ("untagged", _untagged),

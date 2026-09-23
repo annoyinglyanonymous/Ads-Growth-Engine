@@ -344,3 +344,53 @@ def test_precedence_still_matches_propose():
 
 def test_no_symptom_names_no_metric():
     assert ad_readings._registerable({"recent": {}, "prior": {}}) is None
+
+
+# ---------------------------------------------------------------------------
+# "We could not tell" is not "nothing happened".
+# ---------------------------------------------------------------------------
+
+def _fatigue(**over) -> dict:
+    """A pack whose fatigue section carries a real diagnosis."""
+    from intel.propose import diagnose
+    row = over.pop("row")
+    return _facts(fatigue={"score": over.get("score", 1), "confident": True,
+                           "spend_recent": 500.0, "days_observed": 14,
+                           "symptoms": over.get("symptoms", []),
+                           "would_register": diagnose(row).get("metric"),
+                           "diagnosis": diagnose(row),
+                           "meets_floor": False})
+
+
+def test_unreadable_and_steady_do_not_render_the_same():
+    """The bug this rule exists for: four situations arrived as
+    `metric is None` and all rendered as identical silence, so an ad nobody
+    managed to measure read as an ad that is fine."""
+    unreadable = ad_readings.read_ad(_fatigue(
+        row={"frequency_rise": True,
+             "recent": {"rates": {}}, "prior": {"rates": {}}},
+        symptoms=["frequency_rise"]))
+    steady = ad_readings.read_ad(_fatigue(
+        row={"recent": {"rates": {"cpa": 30.0, "cpm": 50.0, "link_ctr": 1.0}},
+             "prior": {"rates": {"cpa": 30.0, "cpm": 50.0, "link_ctr": 1.0}}}))
+
+    def said(rs):
+        return next((r["says"] for r in rs
+                     if r["rule"] == "no_refresh_to_register"), None)
+
+    assert said(unreadable), "the unreadable case says nothing at all"
+    assert said(steady), "the steady case says nothing at all"
+    assert said(unreadable) != said(steady), (
+        "'we could not look' and 'we looked and nothing moved' render "
+        "identically")
+    assert "evidence either way" in said(unreadable)
+
+
+def test_the_rule_is_quiet_when_a_metric_was_named():
+    """It explains an absence. With a metric named there is no absence."""
+    rs = ad_readings.read_ad(_fatigue(
+        row={"cpa_rise": True,
+             "recent": {"rates": {"cpa": 120.0, "cpm": 50.0, "link_ctr": 1.0}},
+             "prior": {"rates": {"cpa": 80.0, "cpm": 50.0, "link_ctr": 1.0}}},
+        symptoms=["cpa_rise"]))
+    assert not [r for r in rs if r["rule"] == "no_refresh_to_register"]
