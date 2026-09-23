@@ -533,6 +533,43 @@ async def finish_pull(run_id: int, *, status: str, counts: dict,
             (status, json.dumps(counts), error, run_id))
 
 
+async def close_stale_runs(older_than_hours: int = 2) -> list[dict]:
+    """Close `running` rows that nothing is going to finish. Returns them.
+
+    A pull writes its row at the start and closes it at the end, so a process
+    that dies in between -- a terminal shut, a machine slept, a dropped
+    database connection eighteen minutes in -- leaves a row that says `running`
+    for ever. Two have said so since 2026-09-21.
+
+    The cost is not the row. `intel status` reports them as recent failures,
+    the dashboard's import card reads the newest as a pull in flight, and
+    /refresh/status has to distinguish "running" from "stalled" by age because
+    of them. They make a healthy account look permanently mid-import.
+
+    TWO HOURS, matching scripts/sync.py's STALE_LOCK_AFTER. A pull of a normal
+    window is minutes; past the window that lock would already have been broken
+    as dead, and a row outliving its own lock is by definition abandoned.
+
+    Marked `failed`, not deleted. What happened is that a run started and did
+    not finish, which is a failure and is worth being able to count -- deleting
+    it would make the ledger say the run never happened.
+    """
+    async with cursor() as cur:
+        await cur.execute(
+            "update public.meta_pulls "
+            "   set status = 'failed', finished_at = now(), "
+            "       error = %s "
+            " where status = 'running' "
+            "   and started_at < now() - make_interval(hours => %s) "
+            "returning run_id, account_id, kind, started_at",
+            (f"Closed by --close-stale-runs: still 'running' more than "
+             f"{older_than_hours}h after it started, so the process that "
+             f"opened it is gone. Whatever it imported before dying was "
+             f"committed as it went and is still there.",
+             older_than_hours))
+        return await cur.fetchall()
+
+
 async def recent_pulls(brand_id: str, limit: int = 6) -> list[dict]:
     """The last few runs, whatever they did. A failed run is the one worth
     seeing, so this does not filter on status."""

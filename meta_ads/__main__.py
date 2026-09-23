@@ -62,6 +62,10 @@ async def amain() -> int:
                        help="register act_<digits> under --brand")
     group.add_argument("--list-accounts", action="store_true",
                        help="every account, active and inactive")
+    group.add_argument("--close-stale-runs", action="store_true",
+                       help="mark 'running' pulls older than --stale-hours as "
+                            "failed. A killed run leaves one every time, and "
+                            "they read as an import still in flight")
     group.add_argument("--deactivate-account", metavar="ACT_ID",
                        help="stop pulling act_<digits>. Reversible with "
                             "--add-account, and it keeps the account's "
@@ -76,6 +80,10 @@ async def amain() -> int:
                          "They use different Graph edges and different tables, "
                          "so one being broken is not a reason to skip the "
                          "other -- which is exactly why this flag exists.")
+    ap.add_argument("--stale-hours", type=int, default=2,
+                    help="how old a 'running' row must be before "
+                         "--close-stale-runs will close it (default: 2, "
+                         "matching scripts/sync.py's stale-lock window)")
     ap.add_argument("--label", default=None,
                     help="what to call the account on screen, for "
                          "--add-account")
@@ -113,6 +121,15 @@ async def amain() -> int:
                     f"{args.deactivate_account} is not registered, so there "
                     f"was nothing to deactivate. List them: "
                     f"python -m meta_ads --list-accounts")
+        elif args.close_stale_runs:
+            out = await store.close_stale_runs(args.stale_hours)
+            if not out:
+                # Not silence. "Nothing to close" and "closed them" print the
+                # same way if this returns a bare [], and the caller acts on
+                # the first as though it were the second.
+                out = {"closed": 0,
+                       "why": f"no run has been 'running' for more than "
+                              f"{args.stale_hours}h. Nothing was abandoned."}
         elif args.list_accounts:
             brand = await _brand(args.brand)
             out = await store.accounts_for(brand["id"], active_only=False)
