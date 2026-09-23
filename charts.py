@@ -309,3 +309,124 @@ def column_chart(rows: list[tuple[str, Number]], *, kind: str = "conversions",
     return (f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" '
             f'aria-label="{escape(aria)}" data-chart="column">'
             f'{"".join(out)}</svg>')
+
+
+# --------------------------------------------------------------- miniatures
+# Two forms sized to sit beside a sentence rather than to be looked at on
+# their own. The brief's findings band is the only caller: a finding is one
+# claim, and a picture of the claim earns its place there precisely because it
+# lets the claim be shorter. Anywhere a reader would STUDY the shape, the
+# full-size forms above are the right answer.
+
+
+def split_bar(segments: list[tuple[str, Number, str]], *, height: int = 12) -> str:
+    """One bar cut into proportional parts. Composition, not magnitude.
+
+    For the places where the FINDING IS THE SPLIT -- what share of the window's
+    spend bought which optimisation goal, how many readable ads carry how many
+    fatigue symptoms, how much of the money was tagged at all. A pie answers
+    the same question worse: people read angles badly, and the ~2% of this
+    account that bought thruplay becomes a sliver nobody can see or hover.
+
+    `tone` names a CSS custom property, so a segment follows the palette rather
+    than carrying a colour of its own. Segments draw in the order GIVEN and are
+    never sorted here: for the symptom distribution the order is the scale, and
+    ranking it by size would destroy the thing it is showing.
+
+    A zero segment is dropped rather than drawn one pixel wide. "No ad carries
+    three symptoms" is said better by absence than by a sliver that reads as
+    one ad and cannot be hovered to find out.
+    """
+    vals = [(str(name), _f(v) or 0.0, tone) for name, v, tone in segments]
+    total = sum(v for _, v, _ in vals if v > 0)
+    if total <= 0:
+        return '<div class="empty small">Nothing to split in this window.</div>'
+
+    out, x = [], 0.0
+    for name, v, tone in vals:
+        if v <= 0:
+            continue
+        w = 100.0 * v / total
+        out.append(
+            f'<rect x="{x:.4f}" y="0" width="{w:.4f}" height="{height}" '
+            f'fill="var({tone})"><title>{escape(name)}</title></rect>')
+        x += w
+
+    # The height is inline rather than in the stylesheet because the viewBox
+    # is a percentage ruler, not a size: with preserveAspectRatio="none" the
+    # bar stretches to whatever box CSS gives it, so a fixed height in
+    # base.html would silently make this argument do nothing.
+    aria = ", ".join(f"{name} {v:g}" for name, v, _ in vals if v > 0)
+    return (f'<svg class="split" viewBox="0 0 100 {height}" '
+            f'preserveAspectRatio="none" style="height:{height}px" role="img" '
+            f'aria-label="{escape(aria)}" data-chart="split">'
+            f'{"".join(out)}</svg>')
+
+
+def effect_bars(rows: list[tuple[str, Number, int]], *, kind: str = "cpa",
+                width: int = 200, row_h: int = 17, label_w: int = 30,
+                value_w: int = 58) -> str:
+    """Signed bars around a shared zero, at about the size of a line of text.
+
+    The CPA bridge in miniature: rate effect one way, mix effect the other, the
+    net between them. Two bars pointing opposite ways say "these cancelled"
+    faster than a sentence can, which is the entire reason this exists -- it is
+    what lets the finding beside it run to two lines instead of four.
+
+    `merit` is +1 when a positive value is GOOD, -1 when a positive value is
+    BAD, 0 when the number carries no direction of merit at all. That is
+    base.html's rule and it is NOT the sign: a rate effect of +$38 pushes CPA
+    up, so it is bad, and it still points right. Colour follows merit,
+    direction follows sign, and neither is ever allowed to stand in for the
+    other -- which is also why the value prints beside every bar.
+
+    One scale across all rows, taken from the largest magnitude present. Per-row
+    scaling would make three unrelated pictures stacked up and the comparison
+    between them is the only thing this form is for.
+    """
+    vals = [(str(name), _f(v), int(merit)) for name, v, merit in rows]
+    mags = [abs(v) for _, v, _ in vals if v is not None]
+    if not mags or max(mags) <= 0:
+        return '<div class="empty small">No effect to split in this window.</div>'
+
+    top = max(mags)
+    track = width - label_w - value_w - 12
+    half = track / 2.0
+    mid = label_w + 6 + half
+    height = len(vals) * row_h + 4
+
+    out = []
+    for i, (name, v, merit) in enumerate(vals):
+        y = i * row_h + 2
+        cy = y + row_h * 0.62
+        out.append(f'<text class="axis" x="{label_w}" y="{cy:.1f}" '
+                   f'text-anchor="end">{escape(name[:9])}</text>')
+        out.append(f'<rect class="track" x="{label_w + 6}" y="{y + 3}" '
+                   f'width="{track:.1f}" height="{row_h - 8}" rx="2"/>')
+        if v is None:
+            out.append(f'<text class="axis" x="{width}" y="{cy:.1f}" '
+                       f'text-anchor="end">--</text>')
+            continue
+        tone = "--accent" if merit == 0 else (
+            "--good" if (v > 0) == (merit > 0) else "--bad")
+        w = max(1.0, half * (abs(v) / top))
+        x = mid if v > 0 else mid - w
+        out.append(
+            f'<rect x="{x:.1f}" y="{y + 3}" width="{w:.1f}" '
+            f'height="{row_h - 8}" rx="2" fill="var({tone})">'
+            f'<title>{escape(name)}: {escape(fmt(v, kind))}</title></rect>')
+        out.append(
+            f'<text class="val" x="{width}" y="{cy:.1f}" text-anchor="end" '
+            f'fill="var({tone})">{escape(fmt(v, kind))}</text>')
+
+    out.append(f'<line class="zero" x1="{mid:.1f}" y1="2" x2="{mid:.1f}" '
+               f'y2="{height - 2}"/>')
+    # Width inline, and capped, for the reason split_bar states: the caller
+    # asks for 200 beside a finding and 560 inside a card, and a width pinned
+    # in the stylesheet would make one of those a lie. max-width keeps the
+    # wide one from overflowing its card on a narrow screen.
+    aria = ", ".join(f"{name} {fmt(v, kind)}" for name, v, _ in vals)
+    return (f'<svg class="chart micro" viewBox="0 0 {width} {height}" '
+            f'style="width:{width}px; max-width:100%" role="img" '
+            f'aria-label="{escape(aria)}" data-chart="effect">'
+            f'{"".join(out)}</svg>')
