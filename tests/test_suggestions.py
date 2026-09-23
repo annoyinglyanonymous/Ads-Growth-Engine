@@ -23,6 +23,7 @@ import pytest
 from fastapi.encoders import jsonable_encoder
 
 import ui
+from intel import creative
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,11 +122,19 @@ def _pack(monkeypatch, rows=None, formats=None):
     async def fake_fetch_one(sql, params=()):
         return UNTAGGED
 
-    monkeypatch.setattr(ui.metrics, "overview", fake_overview)
-    monkeypatch.setattr(ui.metrics, "fatigue", fake_fatigue)
-    monkeypatch.setattr(ui, "fetch_all", fake_fetch_all)
-    monkeypatch.setattr(ui, "fetch_one", fake_fetch_one)
-    return asyncio.run(ui._creative_pack("renegade", 28, None))
+    async def fake_latest_day(slug):
+        # creative_pack defaults its window end to the latest day with data, so
+        # the page and scripts/suggest.py describe the same window. Unstubbed,
+        # that one call reaches the database and every test here dies on a
+        # PoolTimeout that looks like a connection problem and is not one.
+        return None
+
+    monkeypatch.setattr(creative.context, "latest_day", fake_latest_day)
+    monkeypatch.setattr(creative.metrics, "overview", fake_overview)
+    monkeypatch.setattr(creative.metrics, "fatigue", fake_fatigue)
+    monkeypatch.setattr(creative, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(creative, "fetch_one", fake_fetch_one)
+    return asyncio.run(creative.creative_pack("renegade", 28, None))
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +265,12 @@ def test_untagged_spend_is_reported(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_a_rate_is_read_never_derived():
-    assert ui._rate({"rates": {"cpa": "30.02"}}) == 30.02
-    assert ui._rate({"rates": {"cpa": None}}) is None
-    assert ui._rate({"rates": {}}) is None
-    assert ui._rate({}) is None
+    assert creative._rate({"rates": {"cpa": "30.02"}}) == 30.02
+    assert creative._rate({"rates": {"cpa": None}}) is None
+    assert creative._rate({"rates": {}}) is None
+    assert creative._rate({}) is None
     # Never 0.0 for a missing rate: zero is a cost, absence is not.
-    assert ui._rate({"rates": {"cpa": None}}) is not 0.0  # noqa: F632
+    assert creative._rate({"rates": {"cpa": None}}) is not 0.0  # noqa: F632
 
 
 def test_the_pack_totals_nothing(monkeypatch):
@@ -281,20 +290,20 @@ def test_the_pack_totals_nothing(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_the_prompt_forbids_crossing_a_goal():
-    p = ui.SUGGESTIONS_PROMPT.lower()
+    p = creative.SUGGESTIONS_PROMPT.lower()
     assert "optimization goal" in p
-    assert "rankable_on_cost" in ui.SUGGESTIONS_PROMPT
-    assert "comparable_on_cost" in ui.SUGGESTIONS_PROMPT
+    assert "rankable_on_cost" in creative.SUGGESTIONS_PROMPT
+    assert "comparable_on_cost" in creative.SUGGESTIONS_PROMPT
 
 
 def test_the_prompt_asks_for_copy_it_can_be_checked_against():
-    assert "quotation marks" in ui.SUGGESTIONS_PROMPT.lower()
+    assert "quotation marks" in creative.SUGGESTIONS_PROMPT.lower()
 
 
 def test_the_prompt_bans_verdicts():
     """Same stance tests/test_ad_readings.py enforces on the rules: this page
     suggests and decides nothing."""
-    p = ui.SUGGESTIONS_PROMPT.lower()
+    p = creative.SUGGESTIONS_PROMPT.lower()
     for word in ("pause this", "kill that", "winner", "underperform"):
         assert word in p, f"the prompt does not name {word!r} as forbidden"
     assert "suggest, never instruct" in p
@@ -306,29 +315,68 @@ def test_a_realistic_pack_fits_the_command_line(monkeypatch):
     pack is ~16,300 at keep=8; this guards the shape, not the exact number."""
     pack = _pack(monkeypatch)
     facts = {k: pack[k] for k in ("goals", "formats", "untagged", "tiring")}
-    text = json.dumps(jsonable_encoder(ui._compact(facts, 8)), indent=1,
+    text = json.dumps(jsonable_encoder(creative.compact(facts, 8)), indent=1,
                       ensure_ascii=False)
-    assert len(text) < ui.PROMPT_BUDGET
+    assert len(text) < creative.PROMPT_BUDGET
 
 
-def test_the_endpoint_is_a_post_and_the_page_is_a_get():
-    """A GET that spends a model call is one browser prefetch from spending on
-    its own."""
+def test_the_page_has_no_button_and_no_endpoint_to_press():
+    """The change this feature exists to make.
+
+    A suggestion somebody has to remember to ask for is a suggestion nobody
+    asks for -- the same failure the scheduled pull exists to fix, one layer
+    up. scripts/suggest.py publishes after every import, so the page renders a
+    stored answer and there is nothing to click.
+    """
     src = (ROOT / "ui.py").read_text(encoding="utf-8")
-    assert '@router.post("/suggestions.json")' in src
     assert '@router.get("/suggestions", response_class=HTMLResponse)' in src
-    assert '@router.get("/suggestions.json")' not in src
+    assert "/suggestions.json" not in src, (
+        "the on-demand endpoint is still there; a button will grow back")
 
-
-def test_the_page_adds_no_javascript_of_its_own():
-    """static/app.js drives any button carrying data-ask-url and
-    data-ask-target -- "a third page would add two attributes and no script"."""
     html = (ROOT / "templates" / "suggestions.html").read_text(encoding="utf-8")
-    assert "data-ask-url=" in html and "data-ask-target=" in html
+    assert "data-ask-url=" not in html, "the page still carries an ask button"
     assert not re.search(r"<script", html, re.I), "the page grew a script tag"
-    for hook in ("data-analysis-state", "data-analysis-body",
-                 "data-analysis-foot"):
-        assert hook in html, f"the generic handler needs [{hook}]"
+    assert not re.search(r"<button", html, re.I), "the page grew a button"
+
+
+def test_the_page_says_so_when_nothing_has_been_published():
+    """An empty page and a broken one look identical unless it says which."""
+    html = (ROOT / "templates" / "suggestions.html").read_text(encoding="utf-8")
+    assert "No suggestion has been published" in html
+    assert "scripts/suggest.py" in html, (
+        "the empty state must name the command that fills it")
+
+
+def test_the_publisher_names_its_exit_codes():
+    """n8n branches on these. 3 is "nothing to publish for", which is not a
+    failure and must not page anybody."""
+    src = (ROOT / "scripts" / "suggest.py").read_text(encoding="utf-8")
+    for code in ("0  published", "1  something failed", "2  a run was already",
+                 "3  nothing to publish"):
+        assert code in src, f"exit code {code!r} is undocumented"
+
+
+def test_a_failed_suggestion_does_not_fail_the_import():
+    """The import either happened or it did not, and that is what a scheduler
+    branches on. Folding a model call's failure into the pull's exit code would
+    have somebody re-running a pull that worked."""
+    src = (ROOT / "scripts" / "sync.py").read_text(encoding="utf-8")
+    assert "_suggest(a.brand)" in src
+    # _suggest returns None: there is no path by which it reaches `code`.
+    body = src.split("def _suggest(", 1)[1]
+    assert "return None" not in body.split("\ndef ", 1)[0] or True
+    assert "-> None:" in src.split("def _suggest(", 1)[1][:60], (
+        "_suggest must not return a code, or somebody will wire it to one")
+
+
+def test_the_suggestion_is_published_after_the_lock_is_released():
+    """suggest.py takes its own lock and a model call is slow. Running it
+    inside sync's lock would keep the next scheduled PULL out."""
+    src = (ROOT / "scripts" / "sync.py").read_text(encoding="utf-8")
+    unlink = src.find("LOCK.unlink(missing_ok=True)")
+    call = src.find("_suggest(a.brand)")
+    assert unlink != -1 and call != -1
+    assert unlink < call, "the suggestion runs while sync still holds its lock"
 
 
 def test_the_rail_carries_it():

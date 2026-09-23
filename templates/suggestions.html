@@ -2,16 +2,11 @@
 {% block title %}Suggestions — Ads Intelligence{% endblock %}
 {% block page_title %}Suggestions{% endblock %}
 
-{#- A button, not a link. It is not navigation: it starts a Claude Code session
-    that reads the copy below and writes about it, which takes the better part
-    of a minute and costs a model call. -#}
+{#- NO BUTTON. scripts/suggest.py publishes one after every import, so the
+    answer is here before the page is opened -- a suggestion somebody has to
+    remember to ask for is a suggestion nobody asks for. -#}
 {% block toolbar %}
 <span class="chip">{{ d.days }} days to {{ d.until }}</span>
-<button type="button" class="btn"
-        data-ask-url="/suggestions.json?brand={{ d.brand }}&amp;days={{ d.days }}"
-        data-ask-target="creative-suggestions">
-  Ask for ideas
-</button>
 {% endblock %}
 
 {% block page_sub %}
@@ -36,20 +31,54 @@
     it will be read and the evidence sits under it, which is also how /brief now
     reads.
 
-    Hidden until the button is pressed: a suggestion nobody asked for is a model
-    call nobody asked for. -#}
-<section class="stage" id="creative-suggestions" hidden
-         style="margin-bottom:18px" aria-label="Suggestions">
+    It is published rather than requested. scripts/suggest.py writes one after
+    every import, so what is here was written from the numbers that landed -- a
+    suggestion somebody has to remember to ask for is a suggestion nobody asks
+    for, which is the same failure the scheduled pull exists to fix. -#}
+<section class="stage" style="margin-bottom:18px" aria-label="Suggestions">
   <div class="stage-head">
     <h2>Worth writing next</h2>
-    <span class="state" data-analysis-state></span>
+    <span class="state">
+      {%- if published %}written {{ published.published_at[:16] | replace('T', ' ') }}
+        {%- if published.age_hours is not none %} &middot;
+          {{ published.age_hours }}h ago{% endif -%}
+      {%- else %}nothing published yet{% endif %}
+    </span>
   </div>
-  <div data-analysis-body></div>
-  <p class="small muted" style="margin-top:12px; max-width:80ch"
-     data-analysis-foot hidden>
-    Written by a Claude Code session from the copy and the numbers below. It
-    suggests; it decides nothing, and it files nothing.
-  </p>
+
+  {% if published and published.suggestion %}
+    {#- Split on blank lines the way app.js does for the other two surfaces, so
+        a paragraph break in the answer survives into the page. -#}
+    {% for para in published.suggestion.split('\n\n') %}
+      {% if para.strip() %}
+        <p style="margin:0 0 10px; max-width:80ch">{{ para.strip() }}</p>
+      {% endif %}
+    {% endfor %}
+
+    {#- The prose is dated; the evidence under it is live. When an import has
+        landed since, the two disagree, and the reader has to be told which half
+        moved rather than left to assume they match. -#}
+    {% if published.until and published.until != d.until|string %}
+      <div class="caveat" style="margin-top:12px">{{ ico.i('warn') }}<span>
+        This was written against the window ending
+        <strong>{{ published.until }}</strong>; the tables below now run to
+        <strong>{{ d.until }}</strong>. The next import republishes it.</span>
+      </div>
+    {% endif %}
+
+    <p class="small muted" style="margin-top:12px; max-width:80ch">
+      Written by a Claude Code session from the copy and the numbers below,
+      published by <span class="mono">scripts/suggest.py</span> after the import
+      that produced them. It suggests; it decides nothing, and it files nothing.
+    </p>
+  {% else %}
+    <div class="empty">
+      No suggestion has been published for this brand yet. One is written after
+      every import &mdash; <span class="mono">python scripts/sync.py</span> runs
+      it, or <span class="mono">python scripts/suggest.py --brand {{ d.brand }}</span>
+      publishes one on its own. The evidence below is live either way.
+    </div>
+  {% endif %}
 </section>
 
 {#- ----------------------------------------------------------- by goal ----

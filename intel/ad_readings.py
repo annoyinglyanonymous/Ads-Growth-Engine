@@ -52,10 +52,66 @@ DELIVERING = {"ACTIVE"}
 #: disagree about precedence.
 SYMPTOMS: tuple[str, ...] = tuple(s for s, _ in SYMPTOM_METRIC)
 
+#: Which direction is BAD for each rate. link_ctr wants to go up; the costs
+#: want to go down.
+WORSE_WHEN_HIGHER = {"cpa", "cpm", "cpc", "cost_per_link_click"}
+
+
+def _moved_adversely(metric: str, recent: dict, prior: dict) -> bool | None:
+    """Did `metric` actually move the wrong way? None when it cannot be read.
+
+    THE PROXY SYMPTOMS ARE WHY THIS EXISTS. Three of the five flags name the
+    rate they are measured on -- migrations/003 computes link_ctr_decline as
+    `recent < prior * 0.80`, cpm_rise as `recent > prior * 1.20`, cpa_rise as
+    `recent > prior * 1.25` -- so those are one-sided and mean what they say.
+
+    The other two do not. SYMPTOM_METRIC maps `frequency_rise` to cpm and
+    `ranking_drop` to link_ctr, and neither symptom is measured on the rate it
+    is mapped to: daily frequency rising says nothing about CPM, and a quality
+    ranking falling says nothing about link CTR. So when only a proxy symptom
+    fires, the registered metric can be one that is getting BETTER.
+
+    Four live ads on renegade did exactly that -- `frequency_rise` alone,
+    registering cpm, while cpm fell 5% to 41%. "Refresh this ad and watch cpm"
+    for an ad whose cpm improved by 41% is a test nobody should run.
+
+    A comparison, not a calculation: both numbers came out of ads.rate and
+    nothing here divides them (CLAUDE.md's first rule, and
+    tests/test_ad_readings.py walks this module's AST for arithmetic).
+    """
+    now, was = (recent or {}).get(metric), (prior or {}).get(metric)
+    if now is None or was is None:
+        return None
+    try:
+        now, was = float(now), float(was)
+    except (TypeError, ValueError):
+        return None
+    return now > was if metric in WORSE_WHEN_HIGHER else now < was
+
 
 # ---------------------------------------------------------------------------
 # The fact pack.
 # ---------------------------------------------------------------------------
+
+def _registerable(row: dict) -> str | None:
+    """The metric a refresh would register, or None if none can be justified.
+
+    Walks SYMPTOM_METRIC in its own order -- first firing symptom wins, which
+    is what keeps this and intel/propose.py agreeing about precedence -- and
+    skips any whose metric is not actually moving the wrong way.
+    """
+    recent = (row.get("recent") or {}).get("rates") or {}
+    prior = (row.get("prior") or {}).get("rates") or {}
+    for symptom, metric in SYMPTOM_METRIC:
+        if not row.get(symptom):
+            continue
+        adverse = _moved_adversely(metric, recent, prior)
+        # None means one of the two windows has no such rate, which is not
+        # evidence that it improved. The symptom fired; take it.
+        if adverse is None or adverse:
+            return metric
+    return None
+
 
 async def ad_facts(slug: str, ad_key: str, days: int = 14,
                    until: date | None = None) -> dict:
@@ -99,8 +155,14 @@ async def ad_facts(slug: str, ad_key: str, days: int = 14,
             # Which metric a refresh test would register. Read off
             # SYMPTOM_METRIC rather than chosen here, so this and
             # intel/propose.py cannot drift about the same ad.
-            "would_register": next(
-                (m for s, m in SYMPTOM_METRIC if row.get(s)), None),
+            #
+            # Then CHECKED, because the mapping alone is not enough: two of the
+            # five symptoms are proxies for a rate they are not measured on,
+            # and naming one that is improving would propose a test against a
+            # number already going the right way. None means the rule stays
+            # quiet -- silence is the correct answer when the evidence does not
+            # support naming a metric.
+            "would_register": _registerable(row),
             "meets_floor": (row.get("score") or 0) >= FATIGUE_FLOOR,
         }
 

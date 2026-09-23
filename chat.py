@@ -88,7 +88,23 @@ PYTHON = "python"
 #: the interpreter, because that would include `record`.
 READ_VERBS = ("status", "brief", "overview", "compare", "why", "fatigue",
               "trend", "ad", "angles", "candidates", "queue", "coverage",
-              "versus", "experiments", "experiment")
+              "versus", "experiments", "experiment", "propose")
+
+#: `propose` is on the list because leaving it off cost a real question.
+#:
+#: Asked "What ads creatives can be improved?", the session did the only thing
+#: left to it: ran `fatigue`, got a page of rows, and reached for Bash to pick
+#: them apart -- which the allowlist refuses, correctly. It then spent eight
+#: turns going nowhere and returned an error envelope.
+#:
+#: That question IS propose's job. It reads fatigue, the CPA bridge and angle
+#: coverage and returns the ideas already ranked, which is one call instead of
+#: a reconstruction the session is not permitted to perform. A read verb kept
+#: off this list does not make the box safer, it makes it reach for the tool
+#: that is genuinely dangerous.
+#:
+#: `record` and `live` stay off, and for unchanged reasons: one writes, the
+#: other spends the Meta rate limit one keystroke at a time.
 
 #: Denied a second time. The allowlist above already excludes these, so this is
 #: belt and braces -- but the cost of the belt failing is a write from a text
@@ -119,8 +135,17 @@ def _denied() -> list[str]:
 TIMEOUT_SECONDS = 180.0
 
 SYSTEM = """\
-You are answering one question about this brand's Meta ads, for the operator,
-in a browser. Answer in prose. Be brief -- a few sentences, or a short list.
+You are answering one question about this brand's Meta ads, in a browser.
+
+STYLE
+Plain sentences. No markdown at all: no asterisks, no bold, no headings, no
+tables, no bullet points unless the answer genuinely is a list of things, in
+which case use plain lines.
+
+Short. Two or three sentences answers most questions. Answer what was asked
+and then stop -- no preamble, no restating the question, no description of
+what you are about to do, no summary of what you did, no offer to help
+further, no closing paragraph.
 
 HOW TO FIND THE ANSWER
 Run the read verbs. `python` on your PATH is already this project's virtualenv
@@ -130,37 +155,35 @@ refused:
 
     {python} -m intel <verb> --brand {brand}
 
-Start with `status` if anything looks stale or empty. Every verb prints JSON.
+Every verb prints JSON.
 
-THE ONE RULE THAT MATTERS
+THE ONE RULE
 Every figure you state must have come out of a verb you actually ran. Do not
-calculate. Do not add up a column, do not work out a percentage, do not derive
-a rate from two other numbers. If the number you want is not in a verb's
-output, say that it is not available and name the verb you looked in. This is
-the repo's first rule and the reason is that a number you computed and a number
-on the dashboard can disagree, and whoever is reading has no way to tell which
-is wrong.
+calculate: no adding up a column, no percentages, no deriving a rate from two
+other numbers. If the number is not in a verb's output, say so in one sentence
+and name the verb you looked in.
 
-WHAT TO REPEAT EVERY TIME
-- `unsettled_days` and the `caveat`, if either is set. Meta restates
-  conversions for about three days and a decline at the edge of a window is
-  usually not real.
-- "daily frequency", never "frequency". Never sum reach.
-- A null CPA is undefined, not zero. Never rank on it.
-- CPA is not comparable between ads with different `optimization_goal`. Say so
-  rather than comparing them.
-- Report unconfident fatigue rows as a count, not as findings.
+CAVEATS, SPARINGLY
+Mention a caveat only when it changes how the answer should be read -- a
+decline or a conversion count inside the unsettled window, a CPA that is null,
+a comparison across different optimization goals. One short clause, in your
+own words. Do not quote the caveat text verbatim, do not print field names
+like unsettled_days, and do not add a trust paragraph to an answer that does
+not need one.
+
+Never rank on a null CPA: it is undefined, not zero. Never compare CPA between
+ads with different optimization_goal -- say they are not comparable. Say
+"daily frequency", never "frequency". Never sum reach. Report unconfident
+fatigue rows as a count.
+
+Do not label your sentences as facts or opinions. If you are reading something
+into the numbers rather than quoting them, a short "looks like" or "probably"
+carries it.
 
 WHAT YOU CANNOT DO
-Approve anything, activate an angle, conclude an experiment, file a proposal,
-pull from Meta, or apply a migration. If the answer is "somebody has to sign
-this", say that and say where: growth-engine's UI.
-
-Facts and opinions are different. A number a verb returned is a fact. Your
-reading of it is an opinion. Keep them apart in the wording.
-
-Answer only the question asked. No preamble, no summary of what you are about
-to do, no closing offer of further help.
+Approve, activate an angle, conclude an experiment, file anything, pull, or
+apply a migration. If the answer is that somebody has to sign something, say
+so in one line.
 """
 
 
@@ -249,12 +272,35 @@ async def answer(question: str, brand: str = "renegade") -> dict:
                 "error": f"Could not start a Claude Code session: {exc}"}
 
     text = (out or b"").decode("utf-8", "replace").strip()
+
     if code != 0:
+        # The CLI prints its result JSON even when it exits non-zero, and that
+        # payload carries the reason. The first version of this read stderr --
+        # which is EMPTY for a max-turns stop -- and discarded stdout, so it
+        # reported a bare "the session exited 1" while holding the explanation
+        # the whole time. That cost most of an hour ruling out the event loop,
+        # the worker thread and the interpreter before anyone looked in the
+        # stream it had thrown away. Read the payload first, stderr second.
+        subtype, turns = None, None
+        try:
+            failed_payload = json.loads(text)
+            if isinstance(failed_payload, dict):
+                subtype = failed_payload.get("subtype")
+                turns = failed_payload.get("num_turns")
+        except ValueError:
+            pass
         detail = (err or b"").decode("utf-8", "replace").strip().splitlines()
-        log.warning("chat: exit %s -- %s", code, detail[:1])
-        return {"ok": False, "answer": None,
-                "error": f"The session exited {code}."
-                         + (f" {detail[0][:200]}" if detail else "")}
+        log.warning("chat: exit %s subtype=%s turns=%s -- %s",
+                    code, subtype, turns, detail[:1])
+
+        if subtype == "error_max_turns":
+            msg = (f"That question needed more than {turns} steps and was "
+                   f"stopped. Try asking for one thing at a time.")
+        elif detail:
+            msg = f"The session exited {code}. {detail[0][:200]}"
+        else:
+            msg = f"The session exited {code} without saying why."
+        return {"ok": False, "answer": None, "error": msg}
 
     # --output-format json wraps the reply. Fall back to the raw text rather
     # than failing: a changed wrapper shape should cost the metadata, not the
@@ -263,9 +309,72 @@ async def answer(question: str, brand: str = "renegade") -> dict:
     try:
         payload = json.loads(text)
         if isinstance(payload, dict):
-            reply = (payload.get("result") or payload.get("text") or text)
+            # PRESENT-BUT-EMPTY IS NOT ABSENT, and `or` cannot tell them apart.
+            # `payload.get("result") or ... or text` falls through on an empty
+            # string exactly as it does on a missing key, and `text` is the
+            # whole envelope -- so a session that finished with nothing to say
+            # printed its own receipt, the same leak as a failed run. Keyed on
+            # membership so an empty answer stays empty and is caught below.
+            if "result" in payload:
+                reply = payload["result"]
+            elif "text" in payload:
+                reply = payload["text"]
+            # else: an unrecognised wrapper. Keep `text`, on the original
+            # reasoning that a changed shape should cost the metadata rather
+            # than the answer.
     except ValueError:
         pass
+
+    # A ZERO EXIT IS NOT A SUCCESS, and this is the branch that was missing.
+    #
+    # The CLI can finish cleanly and still report a failed run: `is_error` is
+    # true, `subtype` says which kind, and there is NO `result` key at all. The
+    # fallback above then handed back `text` -- the entire envelope -- and the
+    # page printed a wall of JSON, session ids and token counts where a
+    # sentence belonged. Observed on "What ads creatives can be improved?":
+    # subtype error_during_execution, eight turns, a denied Bash call, and a
+    # 900-character blob on screen ending in "$0.39".
+    #
+    # Checked AFTER the parse rather than before, so a run that failed but
+    # still wrote a partial answer keeps the answer.
+    if isinstance(payload, dict) and payload.get("is_error"):
+        denied = [d.get("tool_name") for d in (payload.get("permission_denials") or [])
+                  if isinstance(d, dict)]
+        subtype = payload.get("subtype")
+        turns = payload.get("num_turns")
+        log.warning("chat: is_error subtype=%s turns=%s denied=%s on %r",
+                    subtype, turns, denied, question)
+        if reply is payload.get("result") and isinstance(reply, str) and reply.strip():
+            # It failed on the way out but had already said something useful.
+            pass
+        else:
+            if denied:
+                # Naming the tool is the whole value here. "Something went
+                # wrong" sends somebody to the logs; this says the session
+                # wanted a command it is not allowed, which is a decision
+                # rather than a fault.
+                msg = (f"The session tried to use {denied[0]}, which it is not "
+                       f"allowed, and stopped after {turns} steps. It can only "
+                       f"run the read verbs. Try asking for one thing at a "
+                       f"time, or run the verb yourself.")
+            elif subtype == "error_max_turns":
+                msg = (f"That question needed more than {turns} steps and was "
+                       f"stopped. Try asking for one thing at a time.")
+            else:
+                msg = (f"The session stopped after {turns} step(s) without "
+                       f"finishing" + (f" ({subtype})" if subtype else "") +
+                       ". Try a narrower question.")
+            return {"ok": False, "answer": None, "error": msg}
+
+    # An empty or non-string reply is a failure too, whatever the envelope
+    # claimed. Returning "" would render as a blank answer box, which reads as
+    # the model having nothing to say rather than as something having broken.
+    if not isinstance(reply, str) or not reply.strip():
+        log.warning("chat: empty reply on %r (subtype=%s)", question,
+                    (payload or {}).get("subtype"))
+        return {"ok": False, "answer": None,
+                "error": "The session finished without writing an answer. "
+                         "Try asking again, or narrow the question."}
 
     return {
         "ok": True,

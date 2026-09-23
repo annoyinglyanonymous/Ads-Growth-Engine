@@ -1,5 +1,9 @@
 """The brief summary fits in a command line, and says how it was shortened.
 
+The compaction helpers moved to intel/creative.py when scripts/suggest.py
+became a second caller -- a helper the web layer owns cannot be used by a
+script the scheduler runs.
+
 `claude -p` takes the question as one argv element, and Windows caps a command
 line at 32,767 characters. The brief pack is ~52,000 as produced. A spawn that
 failed on length would surface as "the session returned nothing", which is the
@@ -13,19 +17,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import ui
+import ui  # noqa: F401  (routes under test)
+from intel import creative
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_short_lists_are_left_alone():
     pack = {"a": [1, 2, 3], "b": {"rows": list(range(8))}, "c": "x", "d": 4}
-    assert ui._compact(pack, keep=8) == pack
+    assert creative.compact(pack, keep=8) == pack
 
 
 def test_long_lists_are_cut_and_say_so():
     rows = [{"i": i} for i in range(30)]
-    out = ui._compact({"creative": {"rows": rows}}, keep=8)
+    out = creative.compact({"creative": {"rows": rows}}, keep=8)
     kept = out["creative"]["rows"]
     assert kept[:8] == rows[:8], "the head is the part worth reading"
     assert len(kept) == 9
@@ -34,14 +39,14 @@ def test_long_lists_are_cut_and_say_so():
 
 
 def test_keep_zero_omits_lists_entirely_but_still_counts_them():
-    out = ui._compact({"x": {"rows": [1] * 40}, "y": 2}, keep=0)
+    out = creative.compact({"x": {"rows": [1] * 40}, "y": 2}, keep=0)
     assert out["y"] == 2
     assert "40 rows omitted" in out["x"]["rows"]
 
 
 def test_compaction_is_recursive():
     nested = {"outer": [{"inner": list(range(20))} for _ in range(20)]}
-    out = ui._compact(nested, keep=3)
+    out = creative.compact(nested, keep=3)
     assert len(out["outer"]) == 4
     assert len(out["outer"][0]["inner"]) == 4
 
@@ -70,8 +75,8 @@ def test_a_pack_the_size_of_the_real_brief_fits_the_budget():
     raw = len(json.dumps(pack))
     assert raw > 40000, f"fixture is thinner than the real pack: {raw}"
     for keep in (8, 3, 0):
-        text = json.dumps(ui._compact(pack, keep))
-        if len(text) <= ui.PROMPT_BUDGET - 3000:
+        text = json.dumps(creative.compact(pack, keep))
+        if len(text) <= creative.PROMPT_BUDGET - 3000:
             break
     else:
         raise AssertionError("no compaction level fit the budget")
@@ -84,7 +89,7 @@ def test_the_budget_leaves_room_for_the_rest_of_the_command_line():
     import chat
     fixed = len(chat.SYSTEM) + sum(len(t) for t in chat._allowed()) \
         + sum(len(t) for t in chat._denied()) + 200
-    assert ui.PROMPT_BUDGET + fixed < 32767, (ui.PROMPT_BUDGET, fixed)
+    assert creative.PROMPT_BUDGET + fixed < 32767, (creative.PROMPT_BUDGET, fixed)
 
 
 def test_both_ask_endpoints_are_posts():

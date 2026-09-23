@@ -40,6 +40,7 @@ from intel import ad_readings as ad_readings_mod
 from intel import angles as angles_mod
 from intel import brief as brief_mod
 from intel import context
+from intel import creative as creative_mod
 from intel import experiments as exp_mod
 from intel import propose as propose_mod
 from intel import metrics
@@ -88,40 +89,14 @@ def _day(value: str | None) -> date | None:
 
 
 async def _latest_day(brand_slug: str) -> date | None:
-    """The most recent day this brand actually has numbers for.
+    """The dashboard's window end. Defined once, in intel/context.py.
 
-    THE PAGE ENDS HERE, NOT AT THE SETTLED EDGE. `context.window` defaults to
-    `settled_through` -- today in the account's timezone minus Meta's 3-day
-    restatement horizon -- and that remains the default for `python -m intel`,
-    where an agent is expected to report `unsettled_days` and a partial day
-    quietly read as a decline is the false alarm this system exists to prevent.
-
-    The dashboard is a different reader with a different question. Somebody who
-    opens it and presses Refresh is asking what happened yesterday, and being
-    shown a window that stops three days back reads as the refresh having done
-    nothing. The numbers for those days are imported and real; what moves is
-    attributed conversions, and the rail's "Settled through" card says so on
-    every screen.
-
-    The LATEST DAY WITH DATA, not today. Today is routinely a day that has not
-    started in the account's timezone -- on 2026-09-22 at 05:35 UTC the account
-    was still on the 21st -- so ending the window at the calendar date appends
-    an empty day and every chart falls off a cliff at the right-hand edge. That
-    is the same "reads as a collapse in spend" failure, arrived at from the
-    other direction.
-
-    None when the brand has no facts at all, which puts the window back on the
-    old default rather than inventing a date.
+    It used to be defined here, and then scripts/suggest.py needed the same
+    window to write prose that matched the tables underneath it -- at which
+    point a copy in the web layer was a copy that would drift. The reasoning
+    lives with the definition.
     """
-    row = await fetch_one(
-        """
-        select max(f.day) as day
-          from ads.fact_ad_day f
-          join ads.brand b on b.id = f.brand_id
-         where b.slug = %s
-        """,
-        (brand_slug,))
-    return (row or {}).get("day")
+    return await context.latest_day(brand_slug)
 
 
 def _fail(request: Request, nav: str, exc: Exception):
@@ -486,272 +461,37 @@ async def ad_detail(request: Request, ad_key: str, brand: str = "renegade",
                  conv_series=[(r["day"], r["conversions"]) for r in daily])
 
 
-#: How many ads per optimization goal go into the pack, at each end.
-#:
-#: Three, not ten. The pack carries a headline and a body per ad, so the cost of
-#: another row is real -- and a model handed forty ads writes about the account
-#: rather than about the writing, which is the one thing this page is for.
-PER_GOAL = 3
-
-#: The rate every goal here is ranked on. One metric, because the ads inside a
-#: single optimization goal ARE comparable on it -- that is what makes the
-#: grouping worth doing.
-RANK_RATE = "cpa"
-
-
-def _rate(row: dict, name: str = RANK_RATE):
-    """One rate out of the `rates` object a SQL function returned.
-
-    Reading a value out of a function's output is not computing one. Nothing
-    here divides, sums or averages -- CLAUDE.md's first rule, and the reason
-    this returns None rather than 0 for a missing rate: a null CPA is
-    undefined, not zero, and must never be ranked.
-    """
-    value = (row.get("rates") or {}).get(name)
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-async def _creative_pack(brand: str, days: int, until=None) -> dict:
-    """What the account is currently saying, and what it cost, by goal.
-
-    GROUPED BY optimization_goal, AND THAT IS THE WHOLE POINT. This account
-    runs four goals; a single "best and worst ads" list would rank every
-    OFFSITE_CONVERSIONS ad a failure and every LEAD_GENERATION ad a success,
-    and a model asked about the COPY would then explain that difference in
-    terms of the writing. Grouping is what stops the feature inventing a
-    creative finding out of a measurement artefact.
-
-    Nothing is totalled or averaged here. Rows arrive from ads.window_metrics
-    with their rates already computed, and this selects and orders them.
-    """
-    d = await metrics.overview(brand, days, until, level="ad", limit=500)
-
-    by_goal: dict = {}
-    for row in d.get("rows") or []:
-        by_goal.setdefault(row.get("optimization_goal") or "(none)", []).append(row)
-
-    # The copy, for the ads that actually make the cut. Fetched after the
-    # selection rather than before it, so a 500-ad account does not carry 500
-    # bodies through a page render to throw 494 of them away.
-    chosen: list = []
-    goals: list = []
-    for goal, rows in sorted(by_goal.items(),
-                             key=lambda kv: -len(kv[1])):
-        ranked = [r for r in rows if _rate(r) is not None]
-        ranked.sort(key=_rate)
-        # `rankable` is false when NO ad under this goal converted -- THRUPLAY
-        # is the live case, 16 ads and not one conversion. The ads are still
-        # worth reading for their copy; the ranking is what has to be withheld.
-        best = ranked[:PER_GOAL]
-        # max(), so the two ends cannot overlap. With five ranked ads,
-        # ranked[-3:] would return rows 2, 3 and 4 -- and rows 2 and 3 are
-        # already in `best`, so the same ad would be presented to the model as
-        # both the cheapest and the dearest under one goal. It would then
-        # explain, in terms of the copy, why an ad beats itself.
-        worst = list(reversed(ranked[max(PER_GOAL, len(ranked) - PER_GOAL):]))
-        fallback = sorted(rows, key=lambda r: float(r.get("spend") or 0),
-                          reverse=True)[:PER_GOAL] if not ranked else []
-        picked = best + worst + fallback
-        chosen.extend(picked)
-        goals.append({
-            "optimization_goal": goal,
-            "ads_run": len(rows),
-            "rankable_on_cost": bool(ranked),
-            "ads_with_no_conversions": len(rows) - len(ranked),
-            "ranked_on": RANK_RATE if ranked else None,
-            "cheapest": best,
-            "dearest": worst,
-            "by_spend_only": fallback,
-        })
-
-    keys = [str(r["entity_key"]) for r in chosen if r.get("entity_key")]
-    copy_by_key: dict = {}
-    if keys:
-        for row in await fetch_all(
-            """
-            select c.ad_key, c.first_headline, c.first_body,
-                   c.headlines, c.bodies, d.cta,
-                   -- THE BUTTON LIVES IN TWO PLACES, and for most of this
-                   -- account it is not the obvious one. store.upsert_ad reads
-                   -- creative.call_to_action_type into ads.ad.cta, which is
-                   -- null on 588 of 713 ads here -- a DYNAMIC ad carries its
-                   -- calls to action inside asset_feed_spec instead, and
-                   -- parse.creative_texts already lifts those out as `cta`
-                   -- rows. Reading only the column would have shown "--" for
-                   -- every ad in the format that carries most of the spend.
-                   (select t ->> 'text'
-                      from jsonb_array_elements(c.texts) t
-                     where t ->> 'field' = 'cta'
-                     order by (t ->> 'ordinal')::int
-                     limit 1) as cta_text
-              from ads.ad_copy c
-              join ads.ad d on d.ad_key = c.ad_key
-             where c.ad_key = any(%s::uuid[])
-            """, (keys,)):
-            copy_by_key[str(row["ad_key"])] = row
-
-    def _shape(row: dict) -> dict:
-        """One ad as the model sees it: what it says, and what that cost."""
-        copy = copy_by_key.get(str(row.get("entity_key"))) or {}
-        return {
-            "ad": row.get("entity_name"),
-            "format": row.get("format"),
-            "status": row.get("effective_status"),
-            "spend": row.get("spend"),
-            "conversions": row.get("conversions"),
-            RANK_RATE: _rate(row),
-            "link_ctr": _rate(row, "link_ctr"),
-            "headline": copy.get("first_headline"),
-            "body": copy.get("first_body"),
-            "cta_button": copy.get("cta_text") or copy.get("cta"),
-            "wordings_on_this_ad": copy.get("headlines"),
-        }
-
-    for g in goals:
-        for key in ("cheapest", "dearest", "by_spend_only"):
-            g[key] = [_shape(r) for r in g[key]]
-
-    # ads.facet_performance, not a group-by written here. It is the function
-    # that already knows a dimension is not rankable when its rows ran under
-    # more than one optimization goal, and `comparable_on_cost` is that answer.
-    # Passing it through unchanged is how the model learns what it may not say.
-    formats = await fetch_all(
-        """
-        select value, ads_run, spend, conversions, rates,
-               optimization_goals, optimization_goal_count,
-               comparable_on_cost, spend_sufficient, rank_within_goal
-          from ads.facet_performance(%s::uuid, %s, %s, 'format')
-        """, (d["brand_id"], d["since"], d["until"]))
-
-    untagged = await fetch_one(
-        """
-        select total_spend, tagged_spend, untagged_ads, untagged_spend,
-               stale_tag_ads, stale_tag_spend
-          from ads.untagged_spend(%s::uuid, %s, %s)
-        """, (d["brand_id"], d["since"], d["until"]))
-
-    fatigue = await metrics.fatigue(brand, days, until, 100.0, False)
-
-    return {
-        "verb": "creative_pack",
-        "brand": d["brand"], "since": d["since"], "until": d["until"],
-        "days": d["days"], "settled_through": d["settled_through"],
-        "unsettled_days": d["unsettled_days"],
-        "goals": goals,
-        "formats": formats,
-        "untagged": untagged,
-        "tiring": [{"ad": r.get("entity_name"),
-                    "optimization_goal": r.get("optimization_goal"),
-                    "score": r.get("score"),
-                    "confident": r.get("confident"),
-                    "spend_recent": r.get("spend_recent")}
-                   for r in (fatigue.get("rows") or [])[:6]],
-    }
-
-
-SUGGESTIONS_PROMPT = """\
-You are a direct-response copywriter looking at one advertiser's live Meta ads.
-Say what is worth writing next. Your reader owns the business and writes the
-ads; they want ideas they can act on this week.
-
-Brand: {brand}
-Window: {since} to {until} ({days} days). Settled through {settled}; the last
-{unsettled} day(s) can still move.
-
-WHAT IS RUNNING, grouped by optimization goal, with the copy and what it cost:
-
-{facts}
-
-WHAT YOU MAY AND MAY NOT COMPARE
-
-Ads inside ONE optimization goal are comparable on cost per result. Ads under
-different goals are not, and saying "this beats that" across two goals is the
-single worst mistake available here -- LEAD_GENERATION and OFFSITE_CONVERSIONS
-are not measuring the same event. Name the goal you are talking about.
-
-Where a goal has `rankable_on_cost: false`, nothing under it converted, so
-there is no cost ranking to read. Its ads are there for their copy only.
-
-The `formats` block carries `comparable_on_cost`. Where that is false, the
-formats ran under different goals and you may NOT say one format beats
-another -- say they have not been compared on equal terms, and move on.
-
-Only the CURRENT wording of each ad is stored. An ad edited since it ran carries
-today's words against older spend, so do not claim a specific line CAUSED a
-result. Say what the winning ads have in common and what is worth trying.
-
-WRITE IT LIKE THIS
-
-Six to nine plain sentences, one or two paragraphs. No headings, no bullets, no
-markdown, no preamble and no closing offer.
-
-Quote the actual copy you are reacting to, in quotation marks, so the reader can
-find the ad. Name ads as they are named in the account.
-
-Lead with what the cheapest ads in a goal have in common as WRITING -- the
-first line, what it promises, who it addresses, what it asks for -- not their
-spend. Then the dearest, and what they do differently. Then two or three
-concrete things worth writing next: a hook to try, an offer to state more
-plainly, a first line to cut. Be specific enough to write from.
-
-Suggest, never instruct. "Worth trying" and "the cheapest ones tend to", never
-"pause this", "kill that", "this is your winner" or "this ad underperforms".
-Nothing here decides anything; a person chooses what to make.
-
-If the copy does not support a conclusion, say that rather than reaching.
-"""
-
-
 @router.get("/suggestions", response_class=HTMLResponse)
 async def suggestions(request: Request, brand: str = "renegade",
                       days: int = 28):
-    """The inputs, on load. The suggestion itself costs a model call and waits
-    for the button."""
-    try:
-        pack = await _creative_pack(brand, days, await _latest_day(brand))
-    except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "suggestions", exc)
-    return _page(request, "suggestions.html", "suggestions", pack, days=days,
-                 settled=pack.get("settled_through"))
+    """The latest published suggestion, and the evidence it was written from.
 
+    THERE IS NO BUTTON, and that is the change this page exists to make. A
+    suggestion somebody has to remember to ask for is a suggestion nobody asks
+    for -- the same failure the scheduled pull exists to fix, one layer up.
+    `scripts/suggest.py` publishes one after every import, so the answer is
+    already here when the page is opened.
 
-@router.post("/suggestions.json")
-async def suggestions_json(brand: str = "renegade", days: int = 28):
-    """Creative suggestions, written by a Claude Code session.
-
-    POST for the reason /refresh and /brief/summary.json are: it costs a model
-    call and the better part of a minute, and a GET that spends is one browser
-    prefetch away from spending on its own.
+    The pack is still built live, because it IS the evidence: a stored
+    suggestion read against stale numbers is worse than no suggestion. The
+    prose is dated and the numbers are current, and the page says so when they
+    have drifted apart.
     """
     try:
-        pack = await _creative_pack(brand, days, await _latest_day(brand))
-    except UnknownBrand as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
-    except (NotConfigured, ValueError) as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        # until=None: creative_pack defaults to the latest day with data, the
+        # same end scripts/suggest.py wrote its prose against.
+        pack = await creative_mod.creative_pack(brand, days, None)
+    except (UnknownBrand, NotConfigured, ValueError) as exc:
+        return _fail(request, "suggestions", exc)
 
-    facts = {k: pack[k] for k in ("goals", "formats", "untagged", "tiring")}
-    question = None
-    for keep in (8, 3, 0):
-        question = SUGGESTIONS_PROMPT.format(
-            brand=pack["brand"], since=pack["since"], until=pack["until"],
-            days=pack["days"], settled=pack["settled_through"],
-            unsettled=pack["unsettled_days"],
-            facts=json.dumps(jsonable_encoder(_compact(facts, keep)),
-                             indent=1, ensure_ascii=False))
-        if len(question) <= PROMPT_BUDGET:
-            break
-
-    try:
-        out = await chat.answer(question, brand)
-    except chat.ChatUnavailable as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
-    return JSONResponse(jsonable_encoder(out))
+    published = creative_mod.latest_suggestion(brand)
+    if published:
+        # Attached here rather than stored, because it is a fact about NOW and
+        # the file is a fact about then. Writing it into the document would
+        # freeze an age that only ever gets older.
+        published["age_hours"] = creative_mod.age_hours(published)
+    return _page(request, "suggestions.html", "suggestions", pack, days=days,
+                 settled=pack.get("settled_through"), published=published)
 
 
 #: What the session is asked. The facts come WITH the question rather than
@@ -783,37 +523,6 @@ worth trying. Four or five sentences. Be specific to this ad and its copy
 rather than general about advertising. If the numbers do not support a
 conclusion, say that instead of reaching for one.
 """
-
-
-#: The question reaches the session as ONE COMMAND-LINE ARGUMENT, and Windows
-#: caps a command line at 32,767 characters. chat.SYSTEM and the tool lists
-#: take a few thousand of those, so the question itself stops here. The brief's
-#: pack is ~52,000 characters as produced, almost all of it two row lists, so
-#: it cannot be sent whole and a spawn that fails on length would read as "the
-#: session returned nothing".
-PROMPT_BUDGET = 24000
-
-
-def _compact(node, keep: int = 8):
-    """Shorten every list past `keep` rows, and say how many were dropped.
-
-    Structure-agnostic on purpose: the brief's shape is intel/brief.py's to
-    change, and a compaction that named sections would break the day a section
-    was renamed. Rows are already ordered by whatever matters (spend, effect,
-    score) so the head is the part worth reading; the note at the end tells the
-    session the rest exists and which way to get it.
-    """
-    if isinstance(node, dict):
-        return {k: _compact(v, keep) for k, v in node.items()}
-    if isinstance(node, list):
-        if keep <= 0:
-            return f"[{len(node)} rows omitted; run the verb for them]"
-        head = [_compact(x, keep) for x in node[:keep]]
-        if len(node) > keep:
-            head.append(f"... {len(node) - keep} more rows not shown; run the "
-                        f"verb for all of them")
-        return head
-    return node
 
 
 BRIEF_SUMMARY_PROMPT = """\
@@ -906,10 +615,10 @@ async def brief_summary(brand: str = "renegade", days: int = 28,
             brand=d.get("brand") or brand, since=d.get("since"),
             until=d.get("until"), days=d.get("days") or days,
             settled=d.get("settled_through"), unsettled=d.get("unsettled_days"),
-            facts=json.dumps(jsonable_encoder(_compact(payload, keep)),
+            facts=json.dumps(jsonable_encoder(creative_mod.compact(payload, keep)),
                              indent=1, ensure_ascii=False),
             readings=json.dumps(readings, indent=1, ensure_ascii=False))
-        if len(question) <= PROMPT_BUDGET:
+        if len(question) <= creative_mod.PROMPT_BUDGET:
             break
 
     try:

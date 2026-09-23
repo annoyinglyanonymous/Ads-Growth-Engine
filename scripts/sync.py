@@ -39,6 +39,21 @@ second is a button that looks broken.
 
 Unscoped is still the default, and the scheduled task still runs both.
 
+WHAT RUNS AFTER IT
+
+A suggestion, unless --no-suggest. `scripts/suggest.py` reads the copy that was
+just imported and publishes what is worth writing next, so the answer is on the
+page before anybody opens it -- a suggestion somebody has to remember to ask for
+is a suggestion nobody asks for, which is this file's own argument about the
+pull, one layer up.
+
+It runs as a SEPARATE PROCESS and its outcome does NOT change this one's exit
+code. The import either happened or it did not, and that is what a scheduler
+needs to branch on; a model call that failed afterwards is a different fact, and
+folding it into exit 1 would have somebody re-running a pull that worked. It is
+logged here and again in logs/suggest.log, and `python scripts/suggest.py` is
+the way to alert on it separately.
+
 WHAT IT DOES NOT DO
 
 Backfills. `--since` is deliberately absent: a 13-month backfill is chunked, run
@@ -52,6 +67,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -68,6 +84,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import identity  # noqa: E402
 from db_meta import fetch_all, pool  # noqa: E402
 from meta_ads import pull as meta_pull  # noqa: E402
+
+SUGGEST = PROJECT_ROOT / "scripts" / "suggest.py"
 
 LOCK = PROJECT_ROOT / ".sync.lock"
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -188,6 +206,9 @@ def main() -> int:
                         "structure is the ad list and its copy, insights the "
                         "daily numbers; they use different Graph edges, so one "
                         "being broken is not a reason to skip the other.")
+    p.add_argument("--no-suggest", action="store_true",
+                   help="import only; do not publish a creative suggestion "
+                        "afterwards")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
 
@@ -208,8 +229,47 @@ def main() -> int:
     finally:
         LOCK.unlink(missing_ok=True)
 
+    # AFTER the lock is released and after the pull's own exit code is
+    # settled. suggest.py takes its own lock, and running it inside this one
+    # would mean a slow model call kept the next scheduled PULL out.
+    if code == 0 and not a.no_suggest:
+        _suggest(a.brand)
+    elif a.no_suggest:
+        log("skipping the suggestion (--no-suggest)")
+    else:
+        log("not suggesting: the import did not succeed, and a suggestion "
+            "written from a failed import describes numbers that did not land")
+
     log(f"sync finished, exit {code}")
     return code
+
+
+def _suggest(brand: str | None) -> None:
+    """Publish a creative suggestion. Never changes this script's exit code.
+
+    sys.executable, not `python`: a scheduled task inherits no PATH worth
+    trusting, and sync.bat already went to the trouble of finding the venv --
+    spending that only to call a bare `python` would undo it.
+    """
+    cmd = [sys.executable, str(SUGGEST), "--force"]
+    if brand:
+        cmd += ["--brand", brand]
+    try:
+        done = subprocess.run(cmd, cwd=str(PROJECT_ROOT), timeout=600)
+    except subprocess.TimeoutExpired:
+        log("suggest: timed out after 600s; the import is unaffected")
+        return
+    except OSError as exc:
+        log(f"suggest: could not start ({type(exc).__name__}: {exc}); "
+            f"the import is unaffected")
+        return
+    if done.returncode == 0:
+        log("suggest: published")
+    elif done.returncode == 3:
+        log("suggest: nothing to publish for")
+    else:
+        log(f"suggest: exit {done.returncode} -- see logs/suggest.log. "
+            f"The import itself succeeded.")
 
 
 if __name__ == "__main__":

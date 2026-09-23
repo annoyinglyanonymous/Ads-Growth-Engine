@@ -247,3 +247,65 @@ def test_a_negative_effect_is_still_sourced():
         for literal in NUMBER.findall(r["says"]):
             assert literal in allowed, (
                 f"{literal!r} not sourced. cited={sorted(allowed)}")
+
+
+# ---------------------------------------------------------------------------
+# A refresh is never proposed against a metric that is improving.
+# ---------------------------------------------------------------------------
+
+def test_a_proxy_symptom_does_not_name_an_improving_metric():
+    """Two of the five symptoms are proxies for a rate they are not measured
+    on: SYMPTOM_METRIC sends `frequency_rise` to cpm and `ranking_drop` to
+    link_ctr. Daily frequency rising says nothing about CPM.
+
+    Four live renegade ads fired `frequency_rise` alone while their cpm FELL
+    between 5% and 41%, and the panel offered to register cpm against each --
+    a test against a number already going the right way.
+    """
+    row = {"frequency_rise": True,
+           "recent": {"rates": {"cpm": 314.2}},
+           "prior": {"rates": {"cpm": 535.8}}}
+    assert ad_readings._registerable(row) is None
+
+
+def test_a_proxy_symptom_still_counts_when_the_metric_did_worsen():
+    row = {"frequency_rise": True,
+           "recent": {"rates": {"cpm": 535.8}},
+           "prior": {"rates": {"cpm": 314.2}}}
+    assert ad_readings._registerable(row) == "cpm"
+
+
+def test_the_direct_symptoms_are_unaffected():
+    """link_ctr_decline, cpm_rise and cpa_rise are one-sided in
+    migrations/003, so they already mean what they say and the guard must not
+    second-guess them."""
+    assert ad_readings._registerable({
+        "cpa_rise": True,
+        "recent": {"rates": {"cpa": 120.0}},
+        "prior": {"rates": {"cpa": 80.0}}}) == "cpa"
+    assert ad_readings._registerable({
+        "link_ctr_decline": True,
+        "recent": {"rates": {"link_ctr": 0.6}},
+        "prior": {"rates": {"link_ctr": 1.2}}}) == "link_ctr"
+
+
+def test_an_unreadable_rate_does_not_silence_the_symptom():
+    """A missing rate is not evidence that the metric improved. The symptom
+    fired; saying nothing would lose a real finding."""
+    assert ad_readings._registerable({
+        "cpa_rise": True, "recent": {"rates": {}}, "prior": {"rates": {}}
+    }) == "cpa"
+    assert ad_readings._registerable({"cpa_rise": True}) == "cpa"
+
+
+def test_precedence_still_matches_propose():
+    """The guard skips a symptom it cannot justify; it must not reorder the
+    ones it keeps."""
+    row = {"link_ctr_decline": True, "cpa_rise": True,
+           "recent": {"rates": {"link_ctr": 0.5, "cpa": 120.0}},
+           "prior": {"rates": {"link_ctr": 1.0, "cpa": 80.0}}}
+    assert ad_readings._registerable(row) == "link_ctr"
+
+
+def test_no_symptom_names_no_metric():
+    assert ad_readings._registerable({"recent": {}, "prior": {}}) is None
