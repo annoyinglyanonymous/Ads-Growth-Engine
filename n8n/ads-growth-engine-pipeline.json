@@ -1,0 +1,259 @@
+{
+  "name": "Ads Growth Engine — import + suggest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 1 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "01:00 LA — full run",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-320, -120],
+      "notes": "Anchored to the AD ACCOUNT's clock, not yours. act_153704749222533 is America/Los_Angeles and a day closes at midnight there, so 01:00 PT is the first moment yesterday is complete. Set the WORKFLOW timezone to America/Los_Angeles (Settings > Timezone) or this fires at the wrong hour."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 13 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "13:00 LA — numbers only",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-320, 200],
+      "notes": "Halves the staleness. With one nightly run, a question asked at 5pm is answered from data up to 17 hours old, and 'spend is down' can mean 'the morning has not been imported'."
+    },
+    {
+      "parameters": {
+        "command": "cd /d \"C:\\Users\\Renegade\\Desktop\\Ads Growth Engine\" && \".venv\\Scripts\\python.exe\" scripts\\sync.py --brand renegade"
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Import both phases, then suggest",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [-60, -120],
+      "onError": "continueRegularOutput",
+      "notes": "Both phases AND the creative suggestion — sync.py chains scripts/suggest.py after a successful import, so this is the whole pipeline in one command. It takes minutes: structure crawls the ad list, insights pulls ~4 days, then one model call of about 45 seconds.\n\nonError is continueRegularOutput on purpose: exit 2 means a run was already going, which is the lock working, not a failure. Branching happens in the next node."
+    },
+    {
+      "parameters": {
+        "command": "cd /d \"C:\\Users\\Renegade\\Desktop\\Ads Growth Engine\" && \".venv\\Scripts\\python.exe\" scripts\\sync.py --brand renegade --phase insights --no-suggest"
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Import insights only",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [-60, 200],
+      "onError": "continueRegularOutput",
+      "notes": "Insights only, and no suggestion. ~80 seconds, one Graph request over a ~4-day window.\n\nStructure is skipped because the ad list changes slowly and the crawl is the expensive half. --no-suggest keeps this to one model call a day: the 01:00 run already published one, and a second would cost ~$0.37 to say much the same thing."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Did the import fail?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [220, -120],
+      "notes": "ONLY exit 1 is a failure worth waking somebody for.\n\n  0  everything pulled\n  1  something failed — read logs\\sync.log\n  2  a sync was already running, so this one did nothing\n\nAlerting on 2 trains people to ignore the alert: it is the lock refusing to let two pulls race the Meta rate limiter, which is the lock doing its job. A suggestion that failed after a successful import also does not reach here — sync.py logs it and leaves the exit code alone, because the import either happened or it did not and that is what this branch is asking."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Did the midday pull fail?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [220, 200],
+      "notes": "Same three exit codes as the morning run."
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "ALERT — wire your channel here",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [500, -200],
+      "notes": "Replace this with Slack / email / whatever you use. Deliberately left as a No-Op rather than guessed at.\n\nUseful fields on the incoming item:\n  {{ $json.exitCode }}   1\n  {{ $json.stderr }}     the one-sentence reason\n  {{ $json.stdout }}     the same lines that went to logs\\sync.log\n\nWhat a failure usually means, in rough order of likelihood:\n  • the Meta token expired — a System User token is silent when it dies\n  • an ad account the token cannot read is still marked active\n  • the Supabase pooler dropped the connection mid-write\n\n`python -m intel status --brand renegade` names all three in one sentence each."
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Quiet — imported, or already running",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [500, -40],
+      "notes": "Exit 0 or 2. Nothing to do: the dashboard's import card already shows when the last pull landed, and /suggestions already carries what was published from it."
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "ALERT — midday",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [500, 120],
+      "notes": "Wire to the same channel as the morning alert."
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000010",
+      "name": "Quiet — midday",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [500, 280],
+      "notes": "Exit 0 or 2."
+    }
+  ],
+  "connections": {
+    "01:00 LA — full run": {
+      "main": [
+        [
+          {
+            "node": "Import both phases, then suggest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13:00 LA — numbers only": {
+      "main": [
+        [
+          {
+            "node": "Import insights only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Import both phases, then suggest": {
+      "main": [
+        [
+          {
+            "node": "Did the import fail?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Import insights only": {
+      "main": [
+        [
+          {
+            "node": "Did the midday pull fail?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Did the import fail?": {
+      "main": [
+        [
+          {
+            "node": "ALERT — wire your channel here",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Quiet — imported, or already running",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Did the midday pull fail?": {
+      "main": [
+        [
+          {
+            "node": "ALERT — midday",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Quiet — midday",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/Los_Angeles",
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "executionTimeout": 3600
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": ""
+  },
+  "tags": []
+}
