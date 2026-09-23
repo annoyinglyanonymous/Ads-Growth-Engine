@@ -74,6 +74,96 @@
 {% endif %}
 
 
+{#- The before/after that a symptom count was standing in for.
+    "2/5 symptoms" tells a reader something is wrong; this tells them what.
+    Movements under 5% are already filtered out in propose.py, so the table
+    stays short without the template deciding what counts as news. -#}
+{% macro moved_table(moved) -%}
+{% if moved %}
+<div class="table-wrap" style="margin-top:8px; max-width:34rem">
+  <table>
+    <thead><tr><th>metric</th><th class="num">before</th>
+      <th class="num">now</th><th class="num">change</th></tr></thead>
+    <tbody>
+      {% for m in moved %}
+        <tr>
+          <td>{{ m.metric }}</td>
+          <td class="num">{{ num(m.prior, 2) }}</td>
+          <td class="num">{{ num(m.recent, 2) }}</td>
+          {#- Merit, not direction: for CPA and CPM a rise is bad, for the
+              rates a fall is. The arrow carries the sign so colour is never
+              the only channel. -#}
+          {% set bad = (m.pct > 0) if m.metric in ('CPM', 'CPA') else (m.pct < 0) %}
+          <td class="num"><span class="delta {{ 'bad' if bad else 'good' }}
+            {{ 'up' if m.pct > 0 else 'down' }}">{{ num(m.pct, 0) }}%</span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{#- What the ad actually says, so a card about rewriting it shows the thing
+    being rewritten. Read out of ads.ad_copy; nothing here is generated. -#}
+{% macro current_copy(copy) -%}
+{% if copy and (copy.first_headline or copy.first_body) %}
+<div class="small" style="margin-top:8px; padding-left:12px;
+     border-left:2px solid var(--line-2); max-width:70ch">
+  {% if copy.first_headline %}
+    <div><strong>{{ copy.first_headline }}</strong></div>
+  {% endif %}
+  {% if copy.first_body %}
+    <div class="muted" style="margin-top:2px">{{ copy.first_body }}</div>
+  {% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
+
+{#- ==================================== NOT A CREATIVE PROBLEM
+    Above Ideas, deliberately. These are ads whose creative is still doing its
+    job -- the click rate held or rose -- and whose cost went up anyway because
+    something downstream of the click broke. A -75% conversion rate is the most
+    urgent thing on this page and it does not belong under a list of
+    suggestions.
+
+    No arms, no metric, no filing command, and that is the point: there is
+    nothing on the AD to test. Giving these the shape of an experiment would
+    invite somebody to register one, and the result would look like an answer.
+    -#}
+{% if ideas.diagnoses %}
+  <div class="stage-head" style="margin-top:28px">
+    <h2>Not a creative problem</h2>
+    <span class="state">{{ ideas.diagnosis_count }} &middot; findings, not tests</span>
+  </div>
+  <p class="sub">The ad is still earning the click. What follows it is not
+    converting, so rewriting the creative would change the one part that is
+    working.</p>
+
+  {% for x in ideas.diagnoses %}
+    <div role="note" style="margin:12px 0; padding:10px 14px;
+         border:1px solid var(--line); border-left:3px solid var(--bad);
+         border-radius:var(--radius-sm); background:var(--surface)">
+      <div class="eyebrow">{{ x.diagnosis.stage }} &middot; not a test</div>
+      <p style="margin:4px 0 0; max-width:86ch"><strong>{{ x.title }}</strong></p>
+      <p style="margin:4px 0 0; max-width:86ch">{{ x.diagnosis.says }}</p>
+      <div class="small muted" style="margin-top:4px; max-width:86ch">
+        {{ x.diagnosis.change }}</div>
+      {{ moved_table(x.moved) }}
+      {% if x.diagnosis.also_broke %}
+        <div class="small muted" style="margin-top:4px">Also moved:
+          {{ x.diagnosis.also_broke | join(', ') }}</div>
+      {% endif %}
+      {{ current_copy(x.ad_copy) }}
+      <div class="small muted" style="margin-top:6px">
+        {{ money(x.spend_recent) }} over {{ x.window }}.
+        {{ x.not_an_experiment }}</div>
+    </div>
+  {% endfor %}
+{% endif %}
+
+
 {#- =============================================== IDEAS, FILED BY NOBODY
     Below the log, never above it. What has been decided outranks what has
     been suggested, and a page that opens with suggestions reads as though
@@ -109,6 +199,48 @@
     <p style="margin:4px 0 0; max-width:86ch">{{ p.question }}</p>
     <div class="small muted" style="margin-top:4px; max-width:86ch">
       {{ p.why }}</div>
+
+    {% if p.moved %}{{ moved_table(p.moved) }}{% endif %}
+    {% if p.diagnosis and p.diagnosis.also_broke %}
+      <div class="small muted" style="margin-top:4px">Also moved:
+        {{ p.diagnosis.also_broke | join(', ') }}</div>
+    {% endif %}
+    {{ current_copy(p.ad_copy) }}
+
+    {% if p.styles_untried %}
+      <div class="small" style="margin-top:8px; max-width:86ch">
+        <span class="muted">Run as</span>
+        {{ p.styles_tried | join(', ') or '--' }}.
+        <span class="muted">Never as</span>
+        <strong>{{ p.styles_untried[:6] | join(', ') }}</strong>.
+      </div>
+    {% endif %}
+
+    {#- THE BRIEF IS A HANDOFF, NOT COPY. Every line is read from the
+        database: the headline and body out of ads.ad_copy, the styles out of
+        the ad names, the numbers out of ads.fatigue. Nothing in this repo
+        writes ad text, because the claim gate, the approved concept and the
+        signature all live in growth-engine -- and for an insurance
+        advertiser those are the product, not paperwork. -#}
+    {% if p.brief %}
+      <details style="margin-top:8px">
+        <summary class="small" style="cursor:pointer">Brief for whoever
+          writes it</summary>
+        <div class="small" style="margin-top:6px; padding:8px 10px;
+             background:var(--surface-3); border-radius:var(--radius-sm)">
+          <div><span class="muted">angle</span> {{ p.brief.angle }}</div>
+          <div><span class="muted">broke</span> {{ p.brief.broke }}</div>
+          <div><span class="muted">change</span> {{ p.brief.change }}</div>
+          <div><span class="muted">beat</span>
+            {{ p.brief.beat.metric }} {{ num(p.brief.beat.current, 2) }}</div>
+          <div><span class="muted">never run as</span>
+            {{ p.brief.never_run_as[:6] | join(', ') or '--' }}</div>
+          <pre class="mono" style="margin:8px 0 0; white-space:pre-wrap"
+            >{{ p.brief.written_where }}</pre>
+          <div class="muted" style="margin-top:6px">{{ p.brief.note }}</div>
+        </div>
+      </details>
+    {% endif %}
 
     <div class="small" style="margin-top:6px">
       {% for a in p.arms %}
