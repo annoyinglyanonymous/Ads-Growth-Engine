@@ -242,6 +242,20 @@ def _diagnose(prior: dict, recent: dict) -> dict:
     # may simply not be true, and a refresh proposal built on it would
     # register a metric that is improving. `metric` is None here, and callers
     # are expected to say nothing rather than say this.
+    # "We looked and nothing moved" and "we could not look" are different
+    # statements, and collapsing them is this repo's signature failure --
+    # a stale import looks exactly like a quiet week. `steady` asserts a
+    # fact about the rates; it may only be returned when there were rates.
+    if all(v is None for v in (ctr, cvr, lpv, cpm, cpa)):
+        return _out({
+            "stage": "unreadable",
+            "creative_is_the_problem": False,
+            "says": "No rate could be compared across the two windows, so "
+                    "nothing here is evidence either way.",
+            "change": "Nothing to act on. ads.fatigue flagged this ad on a "
+                      "symptom whose metric cannot be read here -- most "
+                      "likely frequency or a ranking band.",
+        })
     if not also:
         return _out({
             "stage": "steady",
@@ -288,8 +302,16 @@ def diagnose(row: dict) -> dict:
     symptom has no rate of its own, so it never gets to choose.
 
     Returns the diagnosis dict plus `metric`: the metric a refresh would
-    register, or **None** when nothing moved adversely. None means "say
+    register, or **None** when a refresh is not the answer. None means "say
     nothing", not "use cpa".
+
+    Three stages return None and they are NOT the same statement:
+      steady      the rates were read and none moved adversely
+      unreadable  no rate could be compared -- we did not look, and saying
+                  "nothing moved" here would be the stale-import failure
+      landing / after the click
+                  the ad is still earning the click; there is no refresh to
+                  register because the break is downstream of it
     """
     dx = _diagnose(row.get("prior") or {}, row.get("recent") or {})
     # None whenever a refresh is not the right response -- nothing moved
@@ -423,7 +445,7 @@ def _from_fatigue(fat: dict, prior_by_ad: dict,
         # The public entry point, not _diagnose, so this page and /ad/<key>
         # run the same code rather than two implementations that agree today.
         dx = diagnose(r)
-        if dx["stage"] == "steady":
+        if dx["stage"] in ("steady", "unreadable"):
             # Nothing adverse moved. ads.fatigue flagged it -- most likely on
             # a proxy symptom -- but no rate backs that up, so there is
             # nothing to propose AND nothing to report.

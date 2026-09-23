@@ -365,5 +365,33 @@ def test_diagnose_takes_a_row_and_tolerates_a_bare_one():
     """ad_readings passes ads.fatigue rows straight through; a row with no
     prior/recent must not raise."""
     dx = propose.diagnose({})
-    assert dx["metric"] is None and dx["stage"] == "steady"
+    assert dx["metric"] is None and dx["stage"] == "unreadable"
+
+
+def test_we_did_not_look_is_not_the_same_as_nothing_moved():
+    """The distinction this repo exists to keep.
+
+    A flagged ad whose rates cannot be read must not report "no rate moved
+    adversely" -- that asserts a fact nobody established, and it is the same
+    shape as a stale import reading as a quiet week. Both return no metric;
+    only one of them claims to have looked.
+
+    Raised by the session on intel/ad_readings.py, whose guard named cpa here
+    on the reasoning that a missing rate is not evidence of improvement. It
+    is not evidence of anything, which is why the sentence had to change
+    rather than the metric.
+    """
+    blind = propose.diagnose({"cpa_rise": True,
+                              "prior": {"rates": {}}, "recent": {"rates": {}}})
+    assert blind["stage"] == "unreadable"
+    assert blind["metric"] is None
+    assert "either way" in blind["says"]
+
+    looked = propose.diagnose({"prior": _rates(1.0), "recent": _rates(1.0)})
+    assert looked["stage"] == "steady"
+    assert looked["metric"] is None
+    assert "moved adversely" in looked["says"]
+
+    assert blind["says"] != looked["says"], (
+        "two different findings must not render as the same sentence")
 
