@@ -226,7 +226,34 @@ def test_it_borrows_the_brief_s_citation_machinery():
 
 def test_the_refresh_metric_comes_from_propose_not_from_here():
     """`would_register` must agree with what intel propose would file, so the
-    panel and the Ideas list cannot name different metrics for the same ad."""
+    panel and the Ideas list cannot name different metrics for the same ad.
+
+    Pointed at diagnose() rather than at SYMPTOM_METRIC, because those are no
+    longer the same question. SYMPTOM_METRIC is the legacy FLAG mapping and
+    still orders SYMPTOMS; the metric is now decided by reading the rate
+    objects in funnel order, which is what stops a proxy symptom naming a
+    metric it is not measured on.
+    """
+    from intel import propose
+
+    assert ad_readings._registerable.__module__ == "intel.ad_readings"
+    # Identity, not similarity: a local reimplementation would drift, and the
+    # drift is invisible -- both surfaces keep rendering, they just name
+    # different metrics for the same row.
+    assert ad_readings.propose_diagnose is propose.diagnose
+
+    # And it really is the delegate that decides, on a row where the legacy
+    # mapping and the diagnosis disagree: frequency_rise maps to cpm, but cpm
+    # improved, so nothing should be named.
+    row = {"frequency_rise": True,
+           "recent": {"rates": {"cpm": 314.2}},
+           "prior": {"rates": {"cpm": 535.8}}}
+    assert ad_readings._registerable(row) == propose.diagnose(row).get("metric")
+
+
+def test_the_symptom_ordering_still_comes_from_the_flag_mapping():
+    """SYMPTOMS is a different job from the metric: it is which flags fired, in
+    a stable order, for the sentence that lists them."""
     from intel.propose import SYMPTOM_METRIC
 
     assert ad_readings.SYMPTOMS == tuple(s for s, _ in SYMPTOM_METRIC)
@@ -289,13 +316,21 @@ def test_the_direct_symptoms_are_unaffected():
         "prior": {"rates": {"link_ctr": 1.2}}}) == "link_ctr"
 
 
-def test_an_unreadable_rate_does_not_silence_the_symptom():
-    """A missing rate is not evidence that the metric improved. The symptom
-    fired; saying nothing would lose a real finding."""
+def test_an_unreadable_rate_names_nothing():
+    """No rates, no diagnosis, no metric.
+
+    This reverses what an earlier local guard in this module did: it took the
+    symptom on the reasoning that a missing rate is not evidence the metric
+    improved. intel/propose.diagnose() -- which this module now delegates to,
+    so the ad page and /experiments cannot name different metrics for one ad --
+    reads the rate objects in funnel order and returns None when it cannot read
+    them. That is the safer half of the trade: it costs a finding on an ad with
+    no readable rates, and it cannot name a metric it has no evidence for.
+    """
     assert ad_readings._registerable({
         "cpa_rise": True, "recent": {"rates": {}}, "prior": {"rates": {}}
-    }) == "cpa"
-    assert ad_readings._registerable({"cpa_rise": True}) == "cpa"
+    }) is None
+    assert ad_readings._registerable({"cpa_rise": True}) is None
 
 
 def test_precedence_still_matches_propose():
