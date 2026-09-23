@@ -363,6 +363,16 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
 .spark { display: block; width: 104px; height: 24px; }
 .spark path { fill: none; stroke: var(--accent-hi); stroke-width: 1.5; }
 
+/* The two miniatures charts.py renders beside a finding. `.split` stretches
+   to whatever box it is given (preserveAspectRatio="none", so the viewBox is
+   a percentage ruler rather than a size); the radius lives here rather than
+   on each rect so the ENDS round and the joins between segments do not. */
+.split { display: block; width: 100%; border-radius: 3px; }
+.chart.micro { height: auto; }
+.chart .track { fill: var(--surface-2); }
+.chart .zero  { stroke: var(--line-2); stroke-width: 1; }
+.chart.micro .axis, .chart.micro .val { font-size: 9.5px; }
+
 .chart-tip {
   position: fixed; z-index: 40; pointer-events: none;
   background: var(--surface); color: var(--ink);
@@ -441,6 +451,76 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
 .board .table-wrap { margin: 0; }
 .board .body table th { background: var(--surface); }
 .card.quiet { background: var(--surface-2); }
+
+/* ============================================ the brief's findings band
+   A finding is a rank, a sentence, a picture of that sentence, and a link to
+   the table underneath it. The picture is what lets the sentence be short --
+   the band exists because six rules were producing six sentences and the page
+   was scattering them one per section, where nobody read them in order.
+
+   Only ONE row is ever tinted, and only when the finding is about the data
+   rather than about the advertising. A reading is an opinion; tinting them all
+   would turn opinions into alarms, which is the distinction this whole page is
+   built to keep. */
+.finding { display: flex; align-items: center; gap: 18px; padding: 14px 20px;
+           border-bottom: 1px solid var(--line); }
+.finding:last-child { border-bottom: 0; }
+.finding.flag { background: var(--warn-bg); }
+.finding .rank { flex: none; display: grid; place-items: center;
+                 width: 26px; height: 26px; border-radius: 50%;
+                 background: var(--surface-3); color: var(--accent);
+                 font-size: 12px; font-weight: 700; }
+.finding.flag .rank { background: var(--warn); color: var(--surface); }
+.finding .says { flex: 1; min-width: 0; font-size: 14.5px; line-height: 1.5; }
+.finding .says p { margin: 0; }
+.finding .vis { flex: 0 0 200px; }
+.finding .vis .n { font-size: 10px; margin-top: 4px; }
+.finding .go { flex: none; font-size: 12.5px; font-weight: 600;
+               white-space: nowrap; }
+
+/* Two tracks, drawn rather than described: what imported, and what did not. */
+.track-row { display: flex; align-items: center; gap: 6px; font-size: 10px;
+             color: var(--muted); }
+.track-row + .track-row { margin-top: 5px; }
+.track-row .k { flex: 0 0 52px; text-align: right; }
+.track-row .v { flex: 0 0 48px; }
+.track-row .bar { flex: 1; height: 10px; border-radius: 2px;
+                  background: var(--accent); }
+.track-row .bar.off { background: var(--surface); border: 1px dashed var(--line-2); }
+
+/* ================================================ the fatigue symptom grid
+   Five cells, one per named symptom, in a fixed order with the names above
+   them. POSITION says which symptom fired and fill says whether it did, so
+   colour is never the only channel -- and the count of filled cells IS the
+   score, which is why the score no longer prints beside it. */
+.sym { display: flex; gap: 3px; }
+.sym span { width: 20px; height: 15px; border-radius: 3px;
+            background: var(--surface); border: 1px solid var(--line); }
+.sym span.on { background: var(--warn); border-color: var(--warn); }
+th .sym-head { display: flex; gap: 3px; margin-top: 4px; letter-spacing: 0; }
+th .sym-head span { width: 20px; text-align: center; font-size: 8.5px;
+                    color: var(--subtle); }
+
+/* ====================================== a section with nothing in it today
+   One line instead of a stage, carrying the REASON. "It loaded and there is
+   nothing" and "it could not be read" are different claims and an empty box
+   says neither. Open it and the whole section is still there. */
+.quiet-row { display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+             border-bottom: 1px solid var(--line); }
+.quiet-row:last-child { border-bottom: 0; }
+.quiet-row .t { flex: 0 0 200px; font-size: 13.5px; font-weight: 700;
+                color: var(--accent); }
+.quiet-row .w { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); }
+
+/* The tail of a cut table. A <details> rather than a button because the rows
+   must be there for Ctrl-F and for print whether or not anyone opened it. */
+details.more { border-top: 1px solid var(--line); }
+details.more > summary { cursor: pointer; padding: 10px 20px;
+                         background: var(--surface-2); font-size: 12.5px;
+                         color: var(--muted); }
+details.more > summary strong { color: var(--ink-2); }
+details.more > summary::marker { color: var(--subtle); }
+details.more[open] > summary { border-bottom: 1px solid var(--line); }
 .stage .table-wrap { background: var(--surface); border: 1px solid var(--line);
                      border-radius: var(--radius); }
 .stage .table-wrap th { background: var(--surface); }
@@ -461,8 +541,17 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
   .span2, .span3 { grid-column: span 2; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 1180px) {
+  /* The miniature goes under the sentence rather than beside it. It is an
+     illustration of the claim, so it may move; it may not be dropped. */
+  .finding { flex-wrap: wrap; }
+  .finding .says { flex-basis: 100%; }
+  .finding .vis { margin-left: 44px; }
+}
 @media (max-width: 860px) {
   .shell { flex-direction: column; }
+  .quiet-row { flex-wrap: wrap; }
+  .quiet-row .t, .quiet-row .w { flex-basis: 100%; }
   .rail { width: auto; flex: none; height: auto; position: static;
           border-right: 0; border-bottom: 1px solid var(--line); }
   .rail nav { flex-direction: row; flex-wrap: wrap; }
@@ -502,7 +591,8 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
     {% for key, href, label, glyph in [
         ('creative',    '/creative',    'Fatigue',     'creative'),
         ('angles',      '/angles',      'Angles',      'angles'),
-        ('experiments', '/experiments', 'Experiments', 'experiments')] %}
+        ('experiments', '/experiments', 'Experiments', 'experiments'),
+        ('suggestions', '/suggestions', 'Suggestions', 'suggest')] %}
       <a class="rail-link" href="{{ href }}{% if brand %}?brand={{ brand }}{% endif %}"
          {% if nav == key %}aria-current="page"{% endif %}>{{ ico.i(glyph) }}{{ label }}</a>
     {% endfor %}

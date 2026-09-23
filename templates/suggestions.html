@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Suggestions — Ads Intelligence{% endblock %}
+{% block page_title %}Suggestions{% endblock %}
+
+{#- A button, not a link. It is not navigation: it starts a Claude Code session
+    that reads the copy below and writes about it, which takes the better part
+    of a minute and costs a model call. -#}
+{% block toolbar %}
+<span class="chip">{{ d.days }} days to {{ d.until }}</span>
+<button type="button" class="btn"
+        data-ask-url="/suggestions.json?brand={{ d.brand }}&amp;days={{ d.days }}"
+        data-ask-target="creative-suggestions">
+  Ask for ideas
+</button>
+{% endblock %}
+
+{% block page_sub %}
+<div class="sub">
+  What the account is currently saying, and what it cost &mdash; grouped by
+  optimization goal, because cost per result is not comparable across them.
+</div>
+{% endblock %}
+
+{% block body %}
+
+{#- WHERE THE ANSWER LANDS, and it sits ABOVE the evidence on this one page.
+
+    experiments.html argues the opposite for its Ideas list -- "below the log,
+    never above it… a page that opens with suggestions reads as though the
+    machine is running the account" -- and that is right there, because the log
+    is a record of decisions somebody made and the ideas are unfiled guesses.
+
+    Here the relationship is reversed. The tables below are not decisions, they
+    are the INPUT the suggestion was written from, and a reader who wants to
+    check a sentence goes looking for the ad it quotes. So the prose goes where
+    it will be read and the evidence sits under it, which is also how /brief now
+    reads.
+
+    Hidden until the button is pressed: a suggestion nobody asked for is a model
+    call nobody asked for. -#}
+<section class="stage" id="creative-suggestions" hidden
+         style="margin-bottom:18px" aria-label="Suggestions">
+  <div class="stage-head">
+    <h2>Worth writing next</h2>
+    <span class="state" data-analysis-state></span>
+  </div>
+  <div data-analysis-body></div>
+  <p class="small muted" style="margin-top:12px; max-width:80ch"
+     data-analysis-foot hidden>
+    Written by a Claude Code session from the copy and the numbers below. It
+    suggests; it decides nothing, and it files nothing.
+  </p>
+</section>
+
+{#- ----------------------------------------------------------- by goal ----
+    One block per optimization goal. The grouping is the point: LEAD_GENERATION
+    and OFFSITE_CONVERSIONS do not count the same event, so a cost from one
+    cannot be read against a cost from the other. -#}
+{% for g in d.goals %}
+<section class="stage" style="margin-top:14px"
+         aria-label="{{ g.optimization_goal }}">
+  <div class="stage-head">
+    <h2>{{ g.optimization_goal }}</h2>
+    <span class="state">
+      {{ num(g.ads_run) }} ad(s)
+      {%- if g.rankable_on_cost %} &middot; ranked on {{ g.ranked_on }}
+        {%- if g.ads_with_no_conversions %} &middot;
+          {{ num(g.ads_with_no_conversions) }} with no conversions, not ranked
+        {%- endif -%}
+      {%- else %} &middot; nothing converted, so no cost ranking{% endif %}
+    </span>
+  </div>
+
+  {% set groups = [('Cheapest per result', g.cheapest),
+                   ('Dearest per result', g.dearest),
+                   ('By spend only', g.by_spend_only)] %}
+  {% for label, rows in groups %}
+    {% if rows %}
+      <div class="eyebrow" style="margin:12px 0 4px">{{ label }}</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Ad</th><th>Headline</th><th>Opens with</th>
+            <th>Button</th><th>Format</th>
+            <th class="num">Spend</th><th class="num">Conv</th>
+            <th class="num">CPA</th>
+          </tr></thead>
+          <tbody>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.ad or '--' }}</td>
+              <td>{{ r.headline or '--' }}</td>
+              {#- The first words are what a reader stops or scrolls on, so the
+                  table shows the opening rather than the whole body. -#}
+              <td class="small muted">{{ (r.body or '--') | truncate(90) }}</td>
+              <td class="small">{{ r.cta_button or '--' }}</td>
+              <td class="small">{{ r.format or '--' }}</td>
+              <td class="num">{{ money(r.spend) }}</td>
+              <td class="num">{{ num(r.conversions) }}</td>
+              {#- money(None) is "--" where money(0) would be "$0.00": a null
+                  CPA is undefined, not free. -#}
+              <td class="num">{{ money(r.cpa) }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  {% endfor %}
+</section>
+{% else %}
+<div class="empty">No ads spent in this window, so there is nothing to read
+  the copy against.</div>
+{% endfor %}
+
+{#- ---------------------------------------------------------- formats ----
+    ads.facet_performance, passed through with its own refusal intact. -#}
+{% if d.formats %}
+<section class="stage" style="margin-top:14px" aria-label="Formats">
+  <div class="stage-head">
+    <h2>By format</h2>
+    <span class="state">from ads.facet_performance</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Format</th><th class="num">Ads</th><th class="num">Spend</th>
+        <th class="num">Conv</th><th>Comparable on cost?</th>
+      </tr></thead>
+      <tbody>
+      {% for f in d.formats %}
+        <tr>
+          <td>{{ f.value or 'untagged' }}</td>
+          <td class="num">{{ num(f.ads_run) }}</td>
+          <td class="num">{{ money(f.spend) }}</td>
+          <td class="num">{{ num(f.conversions) }}</td>
+          <td class="small muted">
+            {%- if f.comparable_on_cost %}yes
+            {%- else %}no &mdash; ran under
+              {{ num(f.optimization_goal_count) }} optimization goals
+            {%- endif -%}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin-top:8px; max-width:80ch">
+    A format that ran under more than one optimization goal carries no cost
+    ranking. That is the function declining to compare two things measured
+    differently, not a missing number.
+  </p>
+</section>
+{% endif %}
+
+{#- --------------------------------------------------------- the gap ----
+    Said plainly rather than left as an empty section elsewhere on the site:
+    hook, offer and audience are seeded vocabularies with no tags against them,
+    so none of them can be read yet. -#}
+{% if d.untagged %}
+<section class="stage" style="margin-top:14px" aria-label="What is not tagged">
+  <div class="stage-head"><h2>What cannot be read yet</h2></div>
+  <div class="cards">
+    <div class="card">
+      <div class="t">Untagged spend</div>
+      <div class="v">{{ money(d.untagged.untagged_spend) }}</div>
+      <div class="sub">{{ num(d.untagged.untagged_ads) }} ad(s) carry no
+        creative tag, so hook, offer and audience cannot be compared.</div>
+    </div>
+    <div class="card">
+      <div class="t">Tagged spend</div>
+      <div class="v">{{ money(d.untagged.tagged_spend) }}</div>
+      <div class="sub">of {{ money(d.untagged.total_spend) }} in the window.</div>
+    </div>
+    <div class="card">
+      <div class="t">Stale tags</div>
+      <div class="v">{{ num(d.untagged.stale_tag_ads) }}</div>
+      <div class="sub">tagged against wording the ad no longer runs
+        ({{ money(d.untagged.stale_tag_spend) }}).</div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if d.tiring %}
+<section class="stage" style="margin-top:14px" aria-label="Wearing out">
+  <div class="stage-head">
+    <h2>Wearing out</h2>
+    <span class="state">most in need of new copy</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Ad</th><th>Goal</th><th class="num">Symptoms</th>
+        <th class="num">Recent spend</th><th>Enough spend to read?</th>
+      </tr></thead>
+      <tbody>
+      {% for t in d.tiring %}
+        <tr>
+          <td>{{ t.ad or '--' }}</td>
+          <td class="small">{{ t.optimization_goal or '--' }}</td>
+          <td class="num">{{ num(t.score) }} of 5</td>
+          <td class="num">{{ money(t.spend_recent) }}</td>
+          <td class="small muted">{{ 'yes' if t.confident else 'no' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% endblock %}

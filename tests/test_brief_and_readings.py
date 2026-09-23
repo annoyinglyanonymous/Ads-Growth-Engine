@@ -302,7 +302,8 @@ def test_brief_does_not_import_the_writer():
 # of zeroes. Nothing in the suite rendered a page, so nothing caught it.
 # ---------------------------------------------------------------------------
 
-PAGES = ("/brief", "/", "/why", "/creative", "/angles", "/experiments", "/ask")
+PAGES = ("/brief", "/", "/why", "/creative", "/angles", "/experiments",
+         "/ask", "/suggestions")
 
 
 @pytest.fixture(scope="module")
