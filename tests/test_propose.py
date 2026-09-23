@@ -303,3 +303,67 @@ def test_an_untried_style_is_one_from_the_vocabulary_not_a_persons_name():
     for tried, untried in styles.values():
         every |= tried | untried
     assert "doug" not in every, "a person is not a creative direction"
+
+
+# ------------------------------------------- the public diagnose() contract
+
+def test_diagnose_never_registers_a_metric_that_improved():
+    """THE PROPERTY THE WHOLE EXPORT EXISTS FOR.
+
+    intel/ad_readings.py found four live ads registering a metric that had
+    moved the GOOD way -- one with CPM down 41%. The cause was not the
+    ads.fatigue flags, which 003 makes one-sided and honest. It was
+    SYMPTOM_METRIC's two PROXY entries: frequency_rise -> cpm and
+    ranking_drop -> link_ctr, neither measured on the metric it points at.
+
+    This sweeps the corners of the rate space and asserts the property
+    directly, so it holds for inputs nobody thought to enumerate.
+    """
+    better = {"link_ctr": lambda a, b: b > a,      # up is good
+              "conversion_rate": lambda a, b: b > a,
+              "cpm": lambda a, b: b < a,           # down is good
+              "cpa": lambda a, b: b < a}
+    for ctr in (0.5, 1.0, 2.0):
+        for cvr in (10.0, 40.0, 80.0):
+            for lpv in (2.0, 20.0, 40.0):
+                for cpm in (20.0, 50.0, 90.0):
+                    for cpa in (10.0, 30.0, 60.0):
+                        row = {"prior": _rates(1.0),
+                               "recent": _rates(ctr, cvr, lpv, cpm, cpa)}
+                        dx = propose.diagnose(row)
+                        m = dx["metric"]
+                        if m is None:
+                            continue
+                        prior = propose._rate(row["prior"], m)
+                        recent = propose._rate(row["recent"], m)
+                        assert not better[m](prior, recent), (
+                            f"{dx['stage']} registered {m} which improved "
+                            f"{prior} -> {recent}")
+
+
+def test_a_steady_ad_gets_no_metric_and_claims_nothing():
+    """ads.fatigue can flag an ad on a proxy symptom while every rate it
+    tracks held. Saying 'cost rose' there would be false, and registering a
+    metric would be worse."""
+    dx = propose.diagnose({"prior": _rates(1.0), "recent": _rates(1.0)})
+    assert dx["stage"] == "steady"
+    assert dx["metric"] is None
+    assert dx["creative_is_the_problem"] is False
+
+
+def test_a_downstream_problem_gets_no_metric_either():
+    """`metric` means what a REFRESH would register, and there is no refresh
+    to run for a landing page. This is what stops /ad/<key> naming a metric
+    for an ad /experiments files nothing against."""
+    dx = propose.diagnose({"prior": _rates(1.0, cvr=40.0, lpv=20.0),
+                           "recent": _rates(1.2, cvr=15.0, lpv=19.0)})
+    assert dx["creative_is_the_problem"] is False
+    assert dx["metric"] is None
+
+
+def test_diagnose_takes_a_row_and_tolerates_a_bare_one():
+    """ad_readings passes ads.fatigue rows straight through; a row with no
+    prior/recent must not raise."""
+    dx = propose.diagnose({})
+    assert dx["metric"] is None and dx["stage"] == "steady"
+

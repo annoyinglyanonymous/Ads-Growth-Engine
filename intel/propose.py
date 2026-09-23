@@ -170,15 +170,25 @@ def _diagnose(prior: dict, recent: dict) -> dict:
     # link CTR -28% AND landing page views -91% -- and naming only the first
     # in funnel order hides the larger number. The primary still decides the
     # RESPONSE; this decides what the reader gets told.
-    also = []
+    cpa = _move(_rate(prior, "cpa"), _rate(recent, "cpa"))
+
+    # Every movement that is ADVERSE past its threshold, carried with the
+    # metric it was measured on. Keeping the metric beside the sentence is
+    # what stops the fall-through below inventing one: the first version
+    # defaulted to `cpa` and registered it for two ads whose CPA had improved
+    # by 25% and 42%. A metric nothing measured is not a safe default.
+    adverse: list[tuple[str, str]] = []
     if ctr is not None and ctr <= -10:
-        also.append(f"link CTR {ctr:.0f}%")
+        adverse.append(("link_ctr", f"link CTR {ctr:.0f}%"))
     if lpv is not None and lpv <= -15:
-        also.append(f"landing page views {lpv:.0f}%")
+        adverse.append(("conversion_rate", f"landing page views {lpv:.0f}%"))
     if cvr is not None and cvr <= -15:
-        also.append(f"conversion rate {cvr:.0f}%")
+        adverse.append(("conversion_rate", f"conversion rate {cvr:.0f}%"))
     if cpm is not None and cpm >= 15:
-        also.append(f"CPM +{cpm:.0f}%")
+        adverse.append(("cpm", f"CPM +{cpm:.0f}%"))
+    if cpa is not None and cpa >= 20:
+        adverse.append(("cpa", f"CPA +{cpa:.0f}%"))
+    also = [text for _, text in adverse]
 
     def _out(d: dict) -> dict:
         # The primary is already spelled out in `says`; the rest is the tail.
@@ -227,13 +237,71 @@ def _diagnose(prior: dict, recent: dict) -> dict:
             "change": "Audience or rotation before copy. The same idea in "
                       "front of new people is the cheaper test.",
         })
-    return _out({
+    # Nothing adverse past a threshold. This branch exists because the
+    # alternative -- falling through to "cost rose" -- states something that
+    # may simply not be true, and a refresh proposal built on it would
+    # register a metric that is improving. `metric` is None here, and callers
+    # are expected to say nothing rather than say this.
+    if not also:
+        return _out({
+            "stage": "steady",
+            "creative_is_the_problem": False,
+            "says": "No rate moved adversely past its threshold in this "
+                    "window.",
+            "change": "Nothing to change on the evidence here.",
+        })
+    # Something moved adversely but no stage owns it. Register the metric it
+    # was actually measured on rather than a default.
+    d = _out({
         "stage": "unclear",
         "creative_is_the_problem": True,
-        "says": "Cost rose without one stage clearly breaking.",
+        "says": f"Nothing broke cleanly, but {adverse[0][1]}.",
         "change": "A straight refresh is the cheapest way to find out which "
                   "half moved.",
     })
+    d["fallback_metric"] = adverse[0][0]
+    return d
+
+
+def diagnose(row: dict) -> dict:
+    """PUBLIC. One ads.fatigue row -> what broke, and what a refresh would
+    register.
+
+    Exported for intel/ad_readings.py so that /ad/<key> and /experiments
+    cannot disagree about the same ad. Two implementations of "which metric
+    is this ad's problem" WILL drift, and the drift is invisible: both
+    surfaces keep rendering, they just name different metrics for the same
+    row, and whichever the reader is looking at is the one they act on.
+
+    WHY THIS DOES NOT READ THE SYMPTOM FLAGS.
+
+    The flags themselves are honest -- 003 makes them one-sided, so
+    `link_ctr_decline`, `cpm_rise` and `cpa_rise` each mean what they say.
+    The trouble is SYMPTOM_METRIC's two PROXY entries: `frequency_rise` maps
+    to cpm and `ranking_drop` maps to link_ctr, and neither symptom is
+    measured on the metric it points at. Daily frequency rising says nothing
+    about CPM; a quality-ranking fall says nothing about link CTR. So when
+    only a proxy fires, the mapping can register a metric that has IMPROVED
+    -- four live renegade ads do exactly that, one of them with CPM down 41%.
+
+    Reading the rates in funnel order sidesteps the whole class: a proxy
+    symptom has no rate of its own, so it never gets to choose.
+
+    Returns the diagnosis dict plus `metric`: the metric a refresh would
+    register, or **None** when nothing moved adversely. None means "say
+    nothing", not "use cpa".
+    """
+    dx = _diagnose(row.get("prior") or {}, row.get("recent") or {})
+    # None whenever a refresh is not the right response -- nothing moved
+    # adversely, or what broke is downstream of the click. `metric` means
+    # "what a REFRESH would register", and there is no refresh to register
+    # for a landing-page problem. Returning `cpa` there named a metric that
+    # had improved by 25% and 42% on two live ads.
+    dx["metric"] = (None if not dx["creative_is_the_problem"]
+                    else _STAGE_METRIC.get(dx["stage"])
+                    or dx.get("fallback_metric")
+                    or "cpa")
+    return dx
 
 
 def _brief(name: str, dx: dict, moved: list[dict], copy: dict,
@@ -352,7 +420,18 @@ def _from_fatigue(fat: dict, prior_by_ad: dict,
                   key=lambda r: float(r.get("spend_recent") or 0), reverse=True)
     for r in rows[:PER_SOURCE]:
         name = r.get("entity_name") or r.get("ad_key")
-        dx = _diagnose(r.get("prior") or {}, r.get("recent") or {})
+        # The public entry point, not _diagnose, so this page and /ad/<key>
+        # run the same code rather than two implementations that agree today.
+        dx = diagnose(r)
+        if dx["stage"] == "steady":
+            # Nothing adverse moved. ads.fatigue flagged it -- most likely on
+            # a proxy symptom -- but no rate backs that up, so there is
+            # nothing to propose AND nothing to report.
+            #
+            # Checked on the stage and not on `metric is None`: metric is also
+            # None for the downstream stages, and testing it here swallowed
+            # every diagnosis before it reached the branch below.
+            continue
         # str() on both sides: ad_key is a UUID object here and the two
         # dicts are keyed by string, so a raw lookup silently misses and
         # every card renders with no copy and no prior art.
@@ -401,7 +480,7 @@ def _from_fatigue(fat: dict, prior_by_ad: dict,
             })
             continue
 
-        metric = _STAGE_METRIC.get(dx["stage"], "cpa")
+        metric = dx["metric"]
         out.append(_proposal(
             "fatigue",
             f"Refresh: {name}",
