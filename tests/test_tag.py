@@ -282,3 +282,40 @@ def test_the_audience_vocabulary_is_closed():
     for a in tag.AUDIENCES:
         assert a in prompt, f"{a!r} never reaches the model"
     assert "Do not invent a value" in prompt
+
+
+def test_a_new_hook_reaches_the_model_without_a_code_change():
+    """`ads.hook` is a controlled table precisely so that adding a hook is a
+    row and not a release. The prompt used to also say "if none of the eight
+    fits" -- a second copy of the list's length, and the copy that goes stale
+    silently. 015 adds three hooks; the sentence would have been wrong on the
+    day it was applied, and wrong in the direction that tells the model to
+    ignore them."""
+    hooks = [{"slug": s, "definition": f"what {s} means"}
+             for s in ("stat", "problem", "affirmation", "imperative")]
+    offers = [{"slug": "none", "definition": "d"}]
+    prompt = tag.build_prompt("renegade", hooks, offers, [
+        {"ad_key": "k", "name": "n", "first_headline": "h",
+         "first_body": "b", "cta": None}])
+    for h in hooks:
+        assert h["slug"] in prompt, f"{h['slug']} never reaches the model"
+        assert h["definition"] in prompt, f"{h['slug']} arrives undefined"
+    for stale in ("the eight", "eight hooks", "of the eight"):
+        assert stale not in prompt, f"the prompt counts the vocabulary: {stale!r}"
+
+
+def test_the_prompt_names_no_hook_the_database_might_not_have():
+    """The guidance block is hardcoded while the vocabulary is read live, so a
+    hook named there and missing from ads.hook is every row the model files
+    under it dropped by the foreign key check. Only the seeded eight may be
+    named, and only to say what they are not."""
+    hooks = [{"slug": "stat", "definition": "d"}]
+    prompt = tag.build_prompt("renegade", hooks,
+                              [{"slug": "none", "definition": "d"}],
+                              [{"ad_key": "k", "name": "n",
+                                "first_headline": "h", "first_body": "b",
+                                "cta": None}])
+    guidance = prompt.split("OFFER --", 1)[1]
+    for added in ("problem", "affirmation", "imperative"):
+        assert f"`{added}`" not in guidance, (
+            f"{added} is named in the prompt but may not be in ads.hook yet")

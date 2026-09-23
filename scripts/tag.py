@@ -279,7 +279,9 @@ run:
   `stat` needs a FIGURE in the opening -- a number, a percentage, an amount, a
   year, a count. "31 years", "over 11 acquisitions", "$2-3M". A general
   assertion, an opinion, or a sentence containing "should" is NOT a stat. Of 91
-  ads labelled `stat` last time, four opened with a number.
+  ads labelled `stat` last time, four opened with a number. A claim with no
+  figure in it goes to whichever hook above describes a claim -- and to null if
+  there is none, which is a gap worth seeing rather than a stat worth doubting.
 
   `callout` needs the first line to NAME the audience -- "captive agents",
   "P&C agency owners". Addressing the reader as "you" is not naming them.
@@ -290,7 +292,8 @@ run:
   `testimonial` only where the copy is written in a customer's first person.
 
 Judge the hook from the FIRST sentence of the body, or from the headline when
-there is no body. If none of the eight fits that sentence, return null -- a
+there is no body. If none of the hooks above fits that sentence, return null
+-- a
 missing hook is a gap that can be seen, a wrong one is a number somebody
 compares against.
 
