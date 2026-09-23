@@ -59,6 +59,139 @@ DIMENSION_ROWS = 10
 RANK_RATE = "cpa"
 
 
+#: Per campaign card: how many ad groups and how many of its ads ride along.
+#: By spend, so the rows shown are the ones carrying the campaign's money.
+CAMPAIGN_AD_GROUPS = 3
+CAMPAIGN_ADS = 2
+
+#: How much of each leading ad's body a campaign card carries.
+CAMPAIGN_BODY_CHARS = 160
+
+
+async def _ad_campaigns(ad_keys: list[str]) -> dict:
+    """ad_key -> campaign_key, for the ads asked about."""
+    if not ad_keys:
+        return {}
+    rows = await fetch_all(
+        "select ad_key, campaign_key from ads.ad "
+        " where ad_key = any(%s::uuid[])", (ad_keys,))
+    return {str(r["ad_key"]): str(r["campaign_key"]) for r in rows}
+
+
+async def _campaigns(brand: str, days: int, until, ad_rows: list) -> tuple:
+    """One entry per campaign that ran in the window, by spend.
+
+    A CAMPAIGN HAS NO SINGLE GOAL, and this is built around that.
+    ads.window_metrics returns a NULL optimization_goal at campaign level
+    because one campaign can hold ad groups optimising for different events,
+    and a campaign CPA across two of them is the non-comparable number
+    CLAUDE.md warns about. So the campaign's own cost per result is only
+    carried when every ad group in it shares one goal, and the evidence that
+    IS comparable -- where each ad group sits among the ad groups optimising
+    for the same thing -- is carried per ad group.
+
+    `cpa_rank_in_goal` is an ORDERING of rates ads.window_metrics already
+    computed, 1 being the cheapest. It is not a rate and nothing is divided to
+    make it; it is `goals` from creative_pack, one level up.
+
+    Returns (campaigns, the ad rows each campaign leads with), the second so
+    the caller can fetch their copy in the one query it already makes.
+    """
+    camp = await metrics.overview(brand, days, until, level="campaign",
+                                  limit=200)
+    grp = await metrics.overview(brand, days, until, level="ad_group",
+                                 limit=1000)
+    camp_rows = camp.get("rows") or []
+    grp_rows = grp.get("rows") or []
+    if not camp_rows:
+        return [], []
+
+    group_keys = [str(r["entity_key"]) for r in grp_rows if r.get("entity_key")]
+    group_campaign: dict = {}
+    if group_keys:
+        for r in await fetch_all(
+                "select ad_group_key, campaign_key, effective_status "
+                "  from ads.ad_group where ad_group_key = any(%s::uuid[])",
+                (group_keys,)):
+            group_campaign[str(r["ad_group_key"])] = r
+
+    camp_keys = [str(r["entity_key"]) for r in camp_rows if r.get("entity_key")]
+    camp_meta = {str(r["campaign_key"]): r for r in await fetch_all(
+        "select campaign_key, effective_status, objective from ads.campaign "
+        " where campaign_key = any(%s::uuid[])", (camp_keys,))}
+
+    ad_campaign = await _ad_campaigns(
+        [str(r["entity_key"]) for r in ad_rows if r.get("entity_key")])
+
+    # Rank every ad group among the ad groups sharing its goal.
+    by_goal: dict = {}
+    for r in grp_rows:
+        if _rate(r) is not None:
+            by_goal.setdefault(r.get("optimization_goal") or "(none)",
+                               []).append(r)
+    rank: dict = {}
+    ranked_in: dict = {}
+    for goal, rows in by_goal.items():
+        rows.sort(key=_rate)
+        for i, r in enumerate(rows, 1):
+            rank[str(r["entity_key"])] = i
+        ranked_in[goal] = len(rows)
+
+    groups_of: dict = {}
+    for r in grp_rows:
+        meta = group_campaign.get(str(r.get("entity_key"))) or {}
+        if meta.get("campaign_key"):
+            groups_of.setdefault(str(meta["campaign_key"]), []).append((r, meta))
+
+    ads_of: dict = {}
+    for r in ad_rows:      # already ordered by spend, desc
+        ck = ad_campaign.get(str(r.get("entity_key")))
+        if ck:
+            ads_of.setdefault(ck, []).append(r)
+
+    out, leading = [], []
+    for c in camp_rows:
+        key = str(c.get("entity_key"))
+        groups = groups_of.get(key, [])
+        goals = sorted({(g.get("optimization_goal") or "(none)")
+                        for g, _ in groups})
+        ads = ads_of.get(key, [])
+        lead = ads[:CAMPAIGN_ADS]
+        leading.extend(lead)
+        meta = camp_meta.get(key) or {}
+        out.append({
+            "_key": key,
+            "campaign": c.get("entity_name"),
+            "status": meta.get("effective_status"),
+            "objective": meta.get("objective"),
+            "optimization_goals": goals,
+            "spend": c.get("spend"),
+            "conversions": c.get("conversions"),
+            # Withheld across goals, for the reason window_metrics withholds
+            # the goal itself at this level.
+            "cpa": _rate(c) if len(goals) == 1 else None,
+            "link_ctr": _rate(c, "link_ctr"),
+            "ads_run": len(ads),
+            "ads_with_no_conversions": sum(1 for a in ads
+                                           if _rate(a) is None),
+            "ad_groups": [{
+                "ad_group": g.get("entity_name"),
+                "optimization_goal": g.get("optimization_goal"),
+                "status": m.get("effective_status"),
+                "spend": g.get("spend"),
+                "conversions": g.get("conversions"),
+                "cpa": _rate(g),
+                "cpa_rank_in_goal": rank.get(str(g.get("entity_key"))),
+                "ad_groups_ranked_in_goal":
+                    ranked_in.get(g.get("optimization_goal") or "(none)"),
+            } for g, m in groups[:CAMPAIGN_AD_GROUPS]],
+            "more_ad_groups": max(0, len(groups) - CAMPAIGN_AD_GROUPS),
+            "leading_ads": lead,
+            "tiring_ads": [],
+        })
+    return out, leading
+
+
 def _rate(row: dict, name: str = RANK_RATE):
     """One rate out of the `rates` object a SQL function returned.
 
@@ -133,7 +266,14 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
             "by_spend_only": fallback,
         })
 
-    keys = [str(r["entity_key"]) for r in chosen if r.get("entity_key")]
+    # ---------------------------------------------------------- campaigns --
+    # The unit the triage is written about. Built BEFORE the copy fetch so the
+    # ads each campaign leads with ride the same single query as the rest.
+    campaigns, campaign_ads = await _campaigns(brand, days, until,
+                                               d.get("rows") or [])
+    chosen.extend(campaign_ads)
+
+    keys = list({str(r["entity_key"]) for r in chosen if r.get("entity_key")})
     copy_by_key: dict = {}
     if keys:
         for row in await fetch_all(
@@ -179,6 +319,24 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     for g in goals:
         for key in ("cheapest", "dearest", "by_spend_only"):
             g[key] = [_shape(r) for r in g[key]]
+
+    def _lead(row: dict) -> dict:
+        """An ad as a campaign card needs it: the opening, not the essay.
+
+        The full body is what the `goals` block is for. Twenty-odd campaigns of
+        full bodies would take the prompt past the command-line budget, and
+        what a reader stops or scrolls on is the first line anyway.
+        """
+        s = _shape(row)
+        body = (s.get("body") or "").strip()
+        s["body"] = body[:CAMPAIGN_BODY_CHARS] + (
+            "…" if len(body) > CAMPAIGN_BODY_CHARS else "")
+        s.pop("wordings_on_this_ad", None)
+        s.pop("format", None)
+        return s
+
+    for c in campaigns:
+        c["leading_ads"] = [_lead(r) for r in c["leading_ads"]]
 
     # ads.facet_performance, not a group-by written here. It is the function
     # that already knows a dimension is not rankable when its rows ran under
@@ -290,11 +448,28 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
 
     fatigue = await metrics.fatigue(brand, days, until, 100.0, False)
 
+    # Which campaign each tiring ad belongs to, so a card can say its own ads
+    # are wearing out. Only confident rows reach here (include_unconfident is
+    # False above), so a name on a card is a symptom with enough spend to read.
+    by_campaign = {c["_key"]: c for c in campaigns}
+    ad_campaign = await _ad_campaigns(
+        [str(r["ad_key"]) for r in (fatigue.get("rows") or [])
+         if r.get("ad_key")])
+    for r in fatigue.get("rows") or []:
+        c = by_campaign.get(ad_campaign.get(str(r.get("ad_key"))))
+        # score 0 is a confident read of NO symptoms, not a tiring ad.
+        if c is not None and (r.get("score") or 0) > 0:
+            c["tiring_ads"].append({"ad": r.get("entity_name"),
+                                    "symptoms_of_5": r.get("score")})
+    for c in campaigns:
+        del c["_key"]
+
     return {
         "verb": "creative_pack",
         "brand": d["brand"], "since": d["since"], "until": d["until"],
         "days": d["days"], "settled_through": d["settled_through"],
         "unsettled_days": d["unsettled_days"],
+        "campaigns": campaigns,
         "goals": goals,
         "formats": formats,
         "dimensions": dimensions,
@@ -339,73 +514,108 @@ def compact(node, keep: int = 8):
     return node
 
 
+#: What a triage reply may say about a campaign. Closed, because the page
+#: colours a card by it and an invented value would render as no colour at all.
+RATINGS = ("red", "yellow", "green")
+
 SUGGESTIONS_PROMPT = """\
-You are a direct-response copywriter looking at one advertiser's live Meta ads.
-Say what is worth writing next. Your reader owns the business and writes the
-ads; they want ideas they can act on this week.
+You are a senior direct-response media buyer reviewing one advertiser's live
+Meta campaigns. Your reader owns the business and writes the ads. They want to
+know, campaign by campaign, where to look first and what is worth changing
+this week.
 
 Brand: {brand}
 Window: {since} to {until} ({days} days). Settled through {settled}; the last
 {unsettled} day(s) can still move.
 
-WHAT IS RUNNING, grouped by optimization goal, with the copy and what it cost:
+THE ACCOUNT, campaign by campaign, then by optimization goal, with the copy
+and what it cost:
 
 {facts}
 
+`campaigns` is the unit you are rating. Each one carries its ad groups (with
+the optimization goal each one optimises for), the ads that carry its spend
+with their copy, and any of its ads showing confident fatigue.
+
 `dimensions` is the same spend cut four ways -- by the HOOK the copy opens
 with, the OFFER it asks for, the AUDIENCE it addresses, and the ad FORMAT.
-Those labels were read off the copy itself, so they are the account's own
-patterns rather than a taxonomy imposed on it. Use them to say which KIND of
-writing carries the money and which has barely been tried, which is a thing no
-list of individual ads can tell you.
+Those labels were read off the copy itself. Use them when a campaign's copy
+repeats a kind of writing the account has funded heavily, or never tried.
 
 WHAT YOU MAY AND MAY NOT COMPARE
 
-Ads inside ONE optimization goal are comparable on cost per result. Ads under
-different goals are not, and saying "this beats that" across two goals is the
-single worst mistake available here -- LEAD_GENERATION and OFFSITE_CONVERSIONS
-are not measuring the same event. Name the goal you are talking about.
+Ads and ad groups inside ONE optimization goal are comparable on cost per
+result. Across different goals they are not, and saying "this beats that"
+across two goals is the single worst mistake available here --
+LEAD_GENERATION and OFFSITE_CONVERSIONS are not measuring the same event.
 
-Where a goal has `rankable_on_cost: false`, nothing under it converted, so
-there is no cost ranking to read. Its ads are there for their copy only.
+So judge each campaign ONLY against ad groups with the same optimization goal.
+`cpa_rank_in_goal` is where an ad group sits among `ad_groups_ranked_in_goal`
+ad groups sharing its goal, 1 being the cheapest per result. A campaign's own
+`cpa` is null when its ad groups span two goals; that is deliberate, do not
+reconstruct it.
 
-Every row in `dimensions` carries `comparable_on_cost`. Where it is false --
-which is most of them -- those rows ran under two or more optimization goals
-and you may NOT say one hook, offer, audience or format beats another on cost.
-Say what carries the spend and what is barely funded, which the counts support,
-and say plainly that the cost comparison is not available on equal terms. A
-cheaper cost-per-result under a different goal is not a cheaper result.
+Where a goal in `goals` has `rankable_on_cost: false`, nothing under it
+converted, so there is no cost ranking to read. An engagement or video-view
+campaign is often built not to convert: rate it on its copy and fatigue, and
+say that cost could not be judged.
 
-Only the CURRENT wording of each ad is stored. An ad edited since it ran carries
-today's words against older spend, so do not claim a specific line CAUSED a
-result. Say what the winning ads have in common and what is worth trying.
+Every row in `dimensions` carries `comparable_on_cost`. Where it is false,
+those rows ran under two or more optimization goals and you may NOT say one
+hook, offer, audience or format beats another on cost.
+
+Only the CURRENT wording of each ad is stored. An ad edited since it ran
+carries today's words against older spend, so do not claim a specific line
+CAUSED a result.
 
 `untagged` reports TWO coverages and they are not the same question.
 `angle_attribution` is about angles, which this brand has none of, so it reads
 0 and always will -- it is NOT evidence that the hook, offer and audience
 labels are missing. `creative_labels` is the one that says whether the
-`dimensions` block has anything behind it. Read that one before deciding
-whether you can talk about kinds of writing.
+`dimensions` block has anything behind it.
 
-WRITE IT LIKE THIS
+THE RATING. One per campaign, every campaign in `campaigns`, exactly once.
 
-Six to nine plain sentences, one or two paragraphs. No headings, no bullets, no
-markdown, no preamble and no closing offer.
+  red     Critical: look at this first. It is spending and its ad groups sit
+          at the expensive end of their goal, or it spent with no conversions
+          under a goal that converts elsewhere in the account, or the ads
+          carrying its money show confident fatigue.
+  yellow  Some changes worth making. Middle of its goal; or too few
+          conversions to read (a handful is noise); or one ad tiring; or copy
+          with a weakness you can name and fix; or cost could not be judged.
+  green   No change suggested. Its ad groups sit at the cheap end of their
+          goal on enough conversions to mean something, nothing is tiring,
+          and the copy has no obvious weakness. Leave it alone.
 
-Quote the actual copy you are reacting to, in quotation marks, so the reader can
-find the ad. Name ads as they are named in the account.
+Weigh spend: a dear ad group on a few dollars is a yellow, not a red.
 
-Lead with what the cheapest ads in a goal have in common as WRITING -- the
-first line, what it promises, who it addresses, what it asks for -- not their
-spend. Then the dearest, and what they do differently. Then two or three
-concrete things worth writing next: a hook to try, an offer to state more
-plainly, a first line to cut. Be specific enough to write from.
+REPLY WITH JSON AND NOTHING ELSE. The first character is [ and the last is ].
+No markdown fence, no preamble, no commentary. One object per campaign, in
+the order `campaigns` lists them:
 
-Suggest, never instruct. "Worth trying" and "the cheapest ones tend to", never
-"pause this", "kill that", "this is your winner" or "this ad underperforms".
-Nothing here decides anything; a person chooses what to make.
+[
+  {{"campaign": "<the campaign name exactly as given>",
+    "rating": "red" | "yellow" | "green",
+    "why": "<one or two plain sentences: the evidence, citing figures that
+             appear in the facts above, and naming the goal it was judged in>",
+    "changes": ["<a concrete thing worth trying>", "..."]}}
+]
 
-If the copy does not support a conclusion, say that rather than reaching.
+`changes`: two or three for red, one to three for yellow, [] for green. Each
+one specific enough to act on today: a first line to cut, in quotation marks;
+a replacement hook written out in full; an offer to state plainly; an
+ad group whose copy is worth refreshing because it is tiring. Quote the actual
+copy you are reacting to, and name ads as they are named in the account.
+
+Every figure you write must appear in the facts above. Do not add, divide or
+average anything.
+
+Suggest, never instruct. "Worth trying" and "the cheaper ad groups in this
+goal tend to", never "pause this", "kill that", "this is your winner" or
+"this ad underperforms". The rating says where to look, not what to decide; a
+person chooses what to change.
+
+If the numbers do not support a rating either way, give yellow and say why.
 """
 
 
@@ -451,3 +661,55 @@ def age_hours(doc: dict | None) -> float | None:
     if written.tzinfo is None:
         written = written.replace(tzinfo=timezone.utc)
     return round((datetime.now(timezone.utc) - written).total_seconds() / 3600, 1)
+
+
+#: What the triage session is told on top of the question. It returns JSON for
+#: a page to colour, so chat.SYSTEM -- plain sentences for a browser -- is the
+#: wrong instruction, and chat.CLASSIFY_SYSTEM is about labelling copy.
+TRIAGE_SYSTEM = """\
+You are rating advertising campaigns for the person who runs them. You return
+JSON and nothing else: the first character of your reply is [ and the last is
+]. No preamble, no markdown fence, no trailing commentary. A reply that does
+not parse is discarded and the work is wasted.
+
+Every figure you write must appear in the facts you were given. Do not add,
+divide or average anything. Never compare cost per result across two
+optimization goals.
+"""
+
+
+def triage_from(rows: list, campaigns: list) -> list:
+    """The model's reply, checked against the campaigns it was asked about.
+
+    Returns one entry per campaign in `campaigns`, in that order. A campaign
+    the reply named wrongly, rated outside RATINGS, or left out comes back
+    with rating None and says so, rather than being dropped: a card that
+    silently vanished reads as a campaign nobody ran.
+
+    The campaign's own figures are attached from the PACK, never from the
+    reply, so the numbers on a card are the function's and not the model's
+    retelling of them.
+    """
+    by_name: dict = {}
+    for r in rows:
+        if isinstance(r, dict) and r.get("campaign"):
+            by_name.setdefault(str(r["campaign"]).strip(), r)
+
+    out = []
+    for c in campaigns:
+        r = by_name.get(str(c.get("campaign") or "").strip()) or {}
+        rating = str(r.get("rating") or "").strip().lower()
+        changes = r.get("changes") if isinstance(r.get("changes"), list) else []
+        out.append({
+            "campaign": c.get("campaign"),
+            "rating": rating if rating in RATINGS else None,
+            "why": (str(r.get("why")).strip() if r.get("why") else
+                    "The reply did not rate this campaign."),
+            "changes": [str(x).strip() for x in changes if str(x).strip()],
+            "status": c.get("status"),
+            "optimization_goals": c.get("optimization_goals"),
+            "spend": c.get("spend"),
+            "conversions": c.get("conversions"),
+            "cpa": c.get("cpa"),
+        })
+    return out

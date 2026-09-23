@@ -96,6 +96,43 @@ COPY = [
               "b1", "b2", "c1", "c2")
 ]
 
+
+# Campaign X holds two LEAD_GENERATION ad groups; campaign Y spans two goals,
+# which is the case whose campaign-level CPA must be withheld.
+def _grp(key, name, goal, spend, conv, cpa):
+    return {"entity_key": key, "entity_name": name, "optimization_goal": goal,
+            "spend": spend, "conversions": conv,
+            "rates": {"cpa": cpa, "link_ctr": 1.0}}
+
+
+GROUP_ROWS = [
+    _grp("g1", "X cheap", "LEAD_GENERATION", 5000, 300, 16.0),
+    _grp("g2", "X dear", "LEAD_GENERATION", 2000, 20, 100.0),
+    _grp("g3", "Y leads", "LEAD_GENERATION", 1500, 30, 50.0),
+    _grp("g4", "Y offsite", "OFFSITE_CONVERSIONS", 1800, 34, 52.0),
+    _grp("g5", "Y views", "THRUPLAY", 700, 0, None),
+]
+GROUP_META = [
+    {"ad_group_key": "g1", "campaign_key": "X", "effective_status": "ACTIVE"},
+    {"ad_group_key": "g2", "campaign_key": "X", "effective_status": "ACTIVE"},
+    {"ad_group_key": "g3", "campaign_key": "Y", "effective_status": "ACTIVE"},
+    {"ad_group_key": "g4", "campaign_key": "Y", "effective_status": "ACTIVE"},
+    {"ad_group_key": "g5", "campaign_key": "Y", "effective_status": "PAUSED"},
+]
+CAMPAIGN_ROWS = [
+    {"entity_key": "X", "entity_name": "Campaign X", "optimization_goal": None,
+     "spend": 7000, "conversions": 320, "rates": {"cpa": 21.9, "link_ctr": 1.2}},
+    {"entity_key": "Y", "entity_name": "Campaign Y", "optimization_goal": None,
+     "spend": 4000, "conversions": 64, "rates": {"cpa": 62.5, "link_ctr": 0.9}},
+]
+CAMPAIGN_META = [
+    {"campaign_key": "X", "effective_status": "ACTIVE", "objective": "LEADS"},
+    {"campaign_key": "Y", "effective_status": "ACTIVE", "objective": "LEADS"},
+]
+AD_CAMPAIGN = [{"ad_key": k, "campaign_key": "X" if k.startswith("a") else "Y"}
+               for k in ("a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8",
+                         "b1", "b2", "c1", "c2")]
+
 UNTAGGED = {"total_spend": 60163, "tagged_spend": 0, "untagged_ads": 245,
             "untagged_spend": 60163, "stale_tag_ads": 0, "stale_tag_spend": 0}
 
@@ -106,20 +143,30 @@ def _pack(monkeypatch, rows=None, formats=None):
     formats = FORMATS if formats is None else formats
 
     async def fake_overview(slug, days, until, level="ad", limit=200):
+        by_level = {"ad": rows, "campaign": CAMPAIGN_ROWS,
+                    "ad_group": GROUP_ROWS}
         return {"verb": "overview", "brand": slug, "brand_id": "B",
                 "since": "2026-08-25", "until": "2026-09-21", "days": days,
                 "settled_through": "2026-09-18", "unsettled_days": 3,
-                "rows": rows, "row_count": len(rows)}
+                "rows": by_level[level], "row_count": len(by_level[level])}
 
     async def fake_fatigue(slug, days, until, min_spend, unconfident):
-        return {"rows": [{"entity_name": "Become an Agent",
+        return {"rows": [{"ad_key": "a1", "entity_name": "Become an Agent",
                           "optimization_goal": "LEAD_GENERATION", "score": 2,
                           "confident": True, "spend_recent": 1436.05}]}
 
     async def fake_fetch_all(sql, params=()):
         # creative_pack calls facet_performance once per dimension now, so the
         # stub answers by SQL rather than by call order.
-        return formats if "facet_performance" in sql else COPY
+        if "facet_performance" in sql:
+            return formats
+        if "from ads.ad_group" in sql:
+            return GROUP_META
+        if "from ads.campaign" in sql:
+            return CAMPAIGN_META
+        if "from ads.ad " in sql:
+            return AD_CAMPAIGN
+        return COPY
 
     async def fake_fetch_one(sql, params=()):
         # creative_pack asks two coverage questions now. Answer by SQL rather
@@ -461,3 +508,89 @@ def test_every_pack_section_reaches_the_model(monkeypatch):
     assert not missing, (
         f"the pack carries {sorted(missing)} and the publisher does not send "
         f"it. Either send it or stop building it.")
+
+
+# ---------------------------------------------------------------------------
+# The campaign triage.
+# ---------------------------------------------------------------------------
+
+def test_every_campaign_gets_a_card(monkeypatch):
+    pack = _pack(monkeypatch)
+    assert [c["campaign"] for c in pack["campaigns"]] == ["Campaign X",
+                                                          "Campaign Y"]
+
+
+def test_a_campaign_spanning_two_goals_carries_no_cpa(monkeypatch):
+    """window_metrics withholds the goal at campaign level; a campaign CPA
+    across LEAD_GENERATION and OFFSITE_CONVERSIONS mixes two events."""
+    pack = _pack(monkeypatch)
+    x, y = pack["campaigns"]
+    assert x["optimization_goals"] == ["LEAD_GENERATION"]
+    assert x["cpa"] == 21.9
+    assert len(y["optimization_goals"]) == 3
+    assert y["cpa"] is None
+
+
+def test_ad_groups_are_ranked_only_within_their_goal(monkeypatch):
+    pack = _pack(monkeypatch)
+    groups = {g["ad_group"]: g for c in pack["campaigns"]
+              for g in c["ad_groups"]}
+    assert groups["X cheap"]["cpa_rank_in_goal"] == 1
+    assert groups["X dear"]["cpa_rank_in_goal"] == 3
+    assert groups["X cheap"]["ad_groups_ranked_in_goal"] == 3
+    # Alone in its goal: dearer than every lead group, and still rank 1.
+    assert groups["Y offsite"]["cpa_rank_in_goal"] == 1
+    assert groups["Y offsite"]["ad_groups_ranked_in_goal"] == 1
+    assert groups["Y views"]["cpa_rank_in_goal"] is None
+
+
+def test_a_card_carries_its_copy_and_its_tiring_ads(monkeypatch):
+    pack = _pack(monkeypatch)
+    x = pack["campaigns"][0]
+    assert x["leading_ads"] and x["leading_ads"][0]["headline"]
+    assert len(x["leading_ads"][0]["body"]) <= creative.CAMPAIGN_BODY_CHARS + 1
+    assert [t["ad"] for t in x["tiring_ads"]] == ["Become an Agent"]
+    assert "_key" not in x
+
+
+def test_the_triage_keeps_every_campaign_and_checks_the_rating():
+    camps = [{"campaign": "A", "spend": 10}, {"campaign": "B", "spend": 5},
+             {"campaign": "C", "spend": 1}]
+    reply = [{"campaign": "A", "rating": "RED", "why": "dear",
+              "changes": ["x", ""]},
+             {"campaign": "B", "rating": "purple", "why": "?"},
+             {"campaign": "Z", "rating": "green", "why": "not asked"}]
+    t = creative.triage_from(reply, camps)
+    assert [r["campaign"] for r in t] == ["A", "B", "C"]
+    assert [r["rating"] for r in t] == ["red", None, None]
+    assert t[0]["changes"] == ["x"]
+    assert "did not rate" in t[2]["why"]
+    # The figures come from the pack, never the reply.
+    assert t[0]["spend"] == 10
+
+
+def test_the_campaign_list_is_never_compacted(monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "suggest_script2", ROOT / "scripts" / "suggest.py")
+    suggest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(suggest)
+    pack = _pack(monkeypatch)
+    pack["campaigns"] = pack["campaigns"] * 20      # 40 campaigns
+    facts = jsonable_encoder({k: pack[k] for k in suggest.SENT_TO_THE_MODEL})
+    q = suggest.build_question(pack, facts)
+    assert q.count('"campaign":"Campaign X"') == 20
+
+
+def test_the_prompt_asks_for_all_three_ratings():
+    p = creative.SUGGESTIONS_PROMPT
+    for r in creative.RATINGS:
+        assert re.search(rf"^  {r} ", p, re.M), f"{r} is not defined"
+    assert "exactly once" in p
+
+
+def test_the_page_renders_the_cards_when_they_exist():
+    html = (ROOT / "templates" / "_triage.html").read_text(encoding="utf-8")
+    for r in ("red", "yellow", "green"):
+        assert f"'{r}'" in html, f"{r} cards are never rendered"
+    assert not re.search(r"<script|<button", html, re.I)

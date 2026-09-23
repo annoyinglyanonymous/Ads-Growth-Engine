@@ -227,6 +227,13 @@ def test_the_dashboard_is_blue_and_white():
     live = re.sub(r":root [{][^}]*[}]", "", live, count=1, flags=re.DOTALL)
     assert not banned.findall(live), banned.findall(live)
     for name in TEMPLATES:
+        # THE ONE EXCEPTION, granted by the user on 2026-09-23: the campaign
+        # triage cards on /suggestions are red / yellow / green, because that
+        # was the request ("critical in red, requires some changes in yellow
+        # and none in green"). Scoped to that partial by name. Every other
+        # template, base.html and charts.py stay under the rule.
+        if name == "_triage.html":
+            continue
         html = (ROOT / "templates" / name).read_text(encoding="utf-8")
         assert not banned.search(html), f"{name} uses {banned.search(html).group(0)}"
     assert not banned.search((ROOT / "charts.py").read_text(encoding="utf-8"))

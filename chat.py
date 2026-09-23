@@ -207,7 +207,8 @@ number somebody compares against.
 """
 
 
-async def classify(prompt: str, *, timeout: float | None = None) -> list:
+async def classify(prompt: str, *, timeout: float | None = None,
+                   system: str | None = None) -> list:
     """Ask for JSON, with NO tools at all. Returns the parsed list.
 
     WHY THIS IS NOT answer().
@@ -224,6 +225,9 @@ async def classify(prompt: str, *, timeout: float | None = None) -> list:
     sentences answers most questions" -- which is the opposite of a JSON array
     of forty rows.
 
+    `system` replaces CLASSIFY_SYSTEM for a caller whose JSON is not a
+    vocabulary label -- the campaign triage in scripts/suggest.py is the one.
+
     Raises ChatUnavailable when there is no `claude` on PATH, and ValueError
     when the reply will not parse. The caller decides whether a batch that
     would not parse is fatal; here it is only a fact.
@@ -233,11 +237,15 @@ async def classify(prompt: str, *, timeout: float | None = None) -> list:
             "The `claude` command is not on PATH, so nothing can be "
             "classified. The pack still builds: try --dry-run.")
 
+    # THE PROMPT GOES ON STDIN, not argv. Windows caps a command line at
+    # 32,767 characters, and the campaign triage in scripts/suggest.py sends
+    # one row per campaign -- ~34k on this account before anything else. `-p`
+    # with no positional prompt reads it from stdin, which has no such cap.
     cmd = [
-        "claude", "-p", prompt,
+        "claude", "-p",
         "--model", "claude-opus-5",
         "--output-format", "json",
-        "--append-system-prompt", CLASSIFY_SYSTEM,
+        "--append-system-prompt", system or CLASSIFY_SYSTEM,
         # No --allowedTools at all. The deny list stays, belt and braces, for
         # the same reason _denied() exists: the cost of the belt failing is a
         # write from something that was only ever meant to read copy.
@@ -252,6 +260,7 @@ async def classify(prompt: str, *, timeout: float | None = None) -> list:
     def _run() -> tuple[int, bytes, bytes]:
         done = subprocess.run(
             cmd, cwd=str(ROOT), env=env, capture_output=True,
+            input=prompt.encode("utf-8"),
             timeout=TIMEOUT_SECONDS if timeout is None else timeout)
         return done.returncode, done.stdout, done.stderr
 

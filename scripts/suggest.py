@@ -75,7 +75,16 @@ STALE_LOCK_AFTER = timedelta(minutes=10)
 #: Everything except the frame (brand, window, settled edge), which is
 #: interpolated into the prompt separately. A section in the pack and not here
 #: is work done and thrown away one line before it would have been used.
-SENT_TO_THE_MODEL = ("goals", "dimensions", "untagged", "tiring")
+SENT_TO_THE_MODEL = ("campaigns", "goals", "dimensions", "untagged", "tiring")
+
+#: Sent whole, never through compact(). The reply is one rating per campaign,
+#: and a campaign list cut to three rows is twenty campaigns with no card.
+NEVER_COMPACTED = ("campaigns",)
+
+#: The triage prompt's ceiling. Not creative.PROMPT_BUDGET: that one is the
+#: argv limit, and chat.classify sends its prompt on stdin, which has none.
+#: This is about cost and attention -- the other sections shrink first.
+TRIAGE_BUDGET = 48000
 
 #: The window the suggestion reads. Four weeks, matching /suggestions and the
 #: brief: long enough that a single bad day does not rewrite the advice, short
@@ -150,26 +159,31 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     # past. Named explicitly rather than `pack.keys()` so a new section has to
     # be sent deliberately, but the test below asserts none is forgotten.
     facts = {k: pack[k] for k in SENT_TO_THE_MODEL}
-    question = None
-    for keep in (8, 3, 0):
-        question = creative_mod.SUGGESTIONS_PROMPT.format(
-            brand=pack["brand"], since=pack["since"], until=pack["until"],
-            days=pack["days"], settled=pack["settled_through"],
-            unsettled=pack["unsettled_days"],
-            facts=json.dumps(creative_mod.compact(facts, keep), indent=1,
-                             ensure_ascii=False, default=str))
-        if len(question) <= creative_mod.PROMPT_BUDGET:
-            break
-    log(f"{slug}: prompt {len(question)} chars")
+    question = build_question(pack, facts)
+    log(f"{slug}: {len(pack['campaigns'])} campaign(s), prompt "
+        f"{len(question)} chars")
 
     if dry_run:
         log(f"{slug}: --dry-run, so nobody was asked")
         return 0
 
-    answer = await chat.answer(question, slug)
-    if not answer.get("ok") or not answer.get("answer"):
-        log(f"{slug}: FAILED  {answer.get('error') or 'the session returned nothing'}")
+    started = datetime.now(timezone.utc)
+    try:
+        # 24 campaigns of JSON is several minutes of writing, not one.
+        rows = await chat.classify(question, system=creative_mod.TRIAGE_SYSTEM,
+                                   timeout=600)
+    except (ValueError, chat.ChatUnavailable) as exc:
+        log(f"{slug}: FAILED  {exc}")
         return 1
+    triage = creative_mod.triage_from(rows, pack["campaigns"])
+    unrated = sum(1 for t in triage if t["rating"] is None)
+    if unrated == len(triage):
+        log(f"{slug}: FAILED  the reply rated none of the "
+            f"{len(triage)} campaign(s)")
+        return 1
+    if unrated:
+        log(f"{slug}: {unrated} campaign(s) came back unrated; published "
+            f"with them marked")
 
     doc = {
         "verb": "suggest",
@@ -180,9 +194,12 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         "days": pack["days"],
         "settled_through": str(pack["settled_through"]),
         "unsettled_days": pack["unsettled_days"],
-        "suggestion": answer["answer"],
-        "cost_usd": answer.get("cost_usd"),
-        "duration_ms": answer.get("duration_ms"),
+        # One entry per campaign, red / yellow / green. `suggestion` -- the
+        # prose this used to publish -- is no longer written; the page still
+        # reads it off older files.
+        "triage": triage,
+        "duration_ms": int((datetime.now(timezone.utc) - started)
+                           .total_seconds() * 1000),
         # The pack rides along. A suggestion without the numbers it was written
         # from cannot be checked later, and checking it later is the only way
         # anyone finds out whether these were any good.
@@ -191,10 +208,35 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(doc, indent=2, ensure_ascii=False, default=str),
                    encoding="utf-8")
-    log(f"{slug}: published {out.name} "
-        f"({len(answer['answer'])} chars, ${answer.get('cost_usd') or 0:.2f}, "
-        f"{(answer.get('duration_ms') or 0) / 1000:.0f}s)")
+    counts = {r: sum(1 for t in triage if t["rating"] == r)
+              for r in creative_mod.RATINGS}
+    log(f"{slug}: published {out.name} ({counts['red']} red, "
+        f"{counts['yellow']} yellow, {counts['green']} green, "
+        f"{doc['duration_ms'] / 1000:.0f}s)")
     return 0
+
+
+def build_question(pack: dict, facts: dict) -> str:
+    """The prompt, shrunk until it fits the command line.
+
+    Only the sections outside NEVER_COMPACTED shrink. The campaign list goes
+    whole because the reply is one rating per campaign; the per-goal ad lists
+    and the dimensions are supporting evidence and can lose their tails.
+    """
+    whole = {k: facts[k] for k in NEVER_COMPACTED if k in facts}
+    rest = {k: v for k, v in facts.items() if k not in whole}
+    question = ""
+    for keep in (8, 3, 0):
+        question = creative_mod.SUGGESTIONS_PROMPT.format(
+            brand=pack["brand"], since=pack["since"], until=pack["until"],
+            days=pack["days"], settled=pack["settled_through"],
+            unsettled=pack["unsettled_days"],
+            facts=json.dumps({**whole, **creative_mod.compact(rest, keep)},
+                             separators=(",", ":"), ensure_ascii=False,
+                             default=str))
+        if len(question) <= TRIAGE_BUDGET:
+            break
+    return question
 
 
 async def run(only: str | None, dry_run: bool, force: bool) -> int:
