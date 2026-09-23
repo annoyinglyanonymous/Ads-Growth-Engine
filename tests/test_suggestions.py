@@ -122,6 +122,11 @@ def _pack(monkeypatch, rows=None, formats=None):
         return formats if "facet_performance" in sql else COPY
 
     async def fake_fetch_one(sql, params=()):
+        # creative_pack asks two coverage questions now. Answer by SQL rather
+        # than by call order, so a reordering does not silently swap them.
+        if "facet_effective" in sql:
+            return {"ads": 243, "with_a_facet": 243, "with_a_hook": 62,
+                    "with_an_offer": 243}
         return UNTAGGED
 
     async def fake_latest_day(slug):
@@ -278,11 +283,31 @@ def test_every_creative_dimension_reaches_the_model(monkeypatch):
     assert set(pack["dimensions"]) == {"hook", "offer", "audience", "format"}
 
 
-def test_untagged_spend_is_reported(monkeypatch):
-    """Hook, offer and audience are seeded vocabularies with no tags against
-    them. The page says so rather than rendering four empty dimensions."""
+def test_the_two_coverages_are_reported_separately(monkeypatch):
+    """Conflating them cost a whole analysis.
+
+    ads.untagged_spend counts an ad as tagged when an ANGLE resolves for it.
+    ads.angle is empty here, so it reports 100% untagged however many hook and
+    offer labels exist. Handed to the model beside a full `dimensions` block,
+    it resolved the contradiction the wrong way and wrote "every ad is
+    untagged, so nothing can be said about which kind of writing carries the
+    money" -- suppressing the analysis the tagging pass exists to enable.
+    """
     pack = _pack(monkeypatch)
-    assert pack["untagged"]["untagged_spend"] == 60163
+    cov = pack["untagged"]
+    assert set(cov) == {"angle_attribution", "creative_labels"}
+    for half in cov.values():
+        assert half["means"], "a coverage number with no stated question"
+    assert "ANGLE" in cov["angle_attribution"]["means"]
+    assert "hook" in cov["creative_labels"]["means"]
+
+
+def test_the_prompt_says_which_coverage_to_read(monkeypatch):
+    """The model has to be told that a zero in one is not evidence about the
+    other, because on this database one of them is always zero."""
+    p = creative.SUGGESTIONS_PROMPT
+    assert "angle_attribution" in p and "creative_labels" in p
+    assert "NOT evidence" in p
 
 
 # ---------------------------------------------------------------------------
@@ -409,3 +434,30 @@ def test_the_rail_carries_it():
     assert "'/suggestions'" in base, "the page is unreachable from the rail"
     icons = (ROOT / "templates" / "_icons.html").read_text(encoding="utf-8")
     assert "'suggest'" in icons, "the rail glyph falls back to 'overview'"
+
+
+def test_every_pack_section_reaches_the_model(monkeypatch):
+    """A section built and then not sent is work thrown away one line before
+    it would have been used.
+
+    scripts/suggest.py picked ("goals", "formats", "untagged", "tiring") and
+    kept picking it after the pack gained `dimensions`. So hook, offer and
+    audience -- the whole point of the tagging pass -- reached the pack and
+    stopped there, and the model wrote "the hook and offer cut was not in what
+    I was given" about data sitting in the caller's own variable.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "suggest_script", ROOT / "scripts" / "suggest.py")
+    suggest = importlib.util.module_from_spec(spec)
+    import sys as _sys
+    _sys.modules["suggest_script"] = suggest
+    spec.loader.exec_module(suggest)
+
+    pack = _pack(monkeypatch)
+    frame = {"verb", "brand", "since", "until", "days", "settled_through",
+             "unsettled_days", "formats"}
+    missing = set(pack) - frame - set(suggest.SENT_TO_THE_MODEL)
+    assert not missing, (
+        f"the pack carries {sorted(missing)} and the publisher does not send "
+        f"it. Either send it or stop building it.")

@@ -70,6 +70,13 @@ LOG_DIR = PROJECT_ROOT / "logs"
 #: is a worse failure than the overlap the lock prevents.
 STALE_LOCK_AFTER = timedelta(minutes=10)
 
+#: Which sections of the creative pack reach the model.
+#:
+#: Everything except the frame (brand, window, settled edge), which is
+#: interpolated into the prompt separately. A section in the pack and not here
+#: is work done and thrown away one line before it would have been used.
+SENT_TO_THE_MODEL = ("goals", "dimensions", "untagged", "tiring")
+
 #: The window the suggestion reads. Four weeks, matching /suggestions and the
 #: brief: long enough that a single bad day does not rewrite the advice, short
 #: enough that it is about what the account is running now.
@@ -135,7 +142,14 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     log(f"{slug}: {len(pack['goals'])} goal(s), {ads} ad(s) of copy, "
         f"window {pack['since']} to {pack['until']}")
 
-    facts = {k: pack[k] for k in ("goals", "formats", "untagged", "tiring")}
+    # `dimensions`, not `formats`. They overlap -- format is one of the four --
+    # but picking the old key sent the model the ad-builder cut and withheld
+    # hook, offer and audience, which are the ones that make this a creative
+    # analysis. It said so: "the hook and offer cut was not in what I was
+    # given", while the pack had it and the publisher dropped it on the way
+    # past. Named explicitly rather than `pack.keys()` so a new section has to
+    # be sent deliberately, but the test below asserts none is forgotten.
+    facts = {k: pack[k] for k in SENT_TO_THE_MODEL}
     question = None
     for keep in (8, 3, 0):
         question = creative_mod.SUGGESTIONS_PROMPT.format(

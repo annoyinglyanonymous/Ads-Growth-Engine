@@ -157,7 +157,38 @@ async def vocabulary() -> tuple[list[dict], list[dict]]:
     return hooks, offers
 
 
-async def needs_tagging(slug: str, limit: int | None) -> list[dict]:
+def dedupe(ads: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
+    """One representative per distinct wording, and the map back to the rest.
+
+    THE AUDIT FINDING THIS EXISTS FOR. 135 of the first run's 243 ads shared
+    byte-identical headline and body with at least one other -- the account
+    re-runs the same copy under different creative names. Labelling each ad
+    separately asked the model the same question up to seven times, and it
+    answered differently: 20 of 48 duplicate groups disagreed on hook, audience
+    or confidence, across 30% of tagged spend. "Sales stall when you're buried
+    in servicing." came back `stat`/`none` on one ad and `story`/`call` on
+    another.
+
+    No prompt can fix that; it is variance, and asking once is the only way to
+    remove it. Labelling the wording rather than the ad also removes 56% of the
+    model calls, which is the same saving arriving as a side effect.
+
+    Keyed on copy_hash, which ads.ad_copy already computes as the md5 of every
+    field:ordinal:text in order -- so two ads share a key only if their copy is
+    identical, not merely similar.
+    """
+    groups: dict[str, list[dict]] = {}
+    for ad in ads:
+        groups.setdefault(ad["copy_hash"], []).append(ad)
+    # The first by ad_key, so a re-run picks the same representative and the
+    # rationale quotes the same ad as last time.
+    reps = [sorted(g, key=lambda a: str(a["ad_key"]))[0]
+            for g in groups.values()]
+    return sorted(reps, key=lambda a: str(a["ad_key"])), groups
+
+
+async def needs_tagging(slug: str, limit: int | None,
+                        retag: bool = False) -> list[dict]:
     """Ads that have spent, carry copy, and have no facet for that copy.
 
     Keyed on (ad_key, copy_hash), which is what makes the pass cheap after its
@@ -177,13 +208,34 @@ async def needs_tagging(slug: str, limit: int | None) -> list[dict]:
                         where f.ad_key = c.ad_key
                           and f.day >= (select max(day) - %s
                                           from ads.fact_ad_day))
-           and not exists (select 1 from ads.ad_facet fa
-                            where fa.ad_key = c.ad_key
-                              and fa.copy_hash = c.copy_hash)
+           and (%s or not exists (select 1 from ads.ad_facet fa
+                                   where fa.ad_key = c.ad_key
+                                     and fa.copy_hash = c.copy_hash))
          order by c.ad_key
         """,
-        (slug, WINDOW_DAYS - 1))
+        (slug, WINDOW_DAYS - 1, retag))
     return rows[:limit] if limit else rows
+
+
+#: The closed audience list, replacing "taken from the copy itself".
+#:
+#: Free text produced 31 values for what the audit found to be 6 audiences --
+#: "agency owners" and "p&c agency owners" split one audience roughly in half,
+#: and appeared WITHIN identical copy. Every per-audience number was fragmented
+#: across two to nine synonyms, which is worse than no audience at all: it
+#: looks like a finding.
+AUDIENCES = ("p&c agency owners", "agency sellers", "captive agents",
+             "insurance salespeople", "licensed insurance producers",
+             "franchise buyers")
+
+#: How much of a long body to show, at each end.
+HEAD, TAIL = 420, 220
+
+
+def _head_and_tail(body: str) -> str:
+    if len(body) <= HEAD + TAIL:
+        return body
+    return f"{body[:HEAD]} [...] {body[-TAIL:]}"
 
 
 def build_prompt(slug: str, hooks: list[dict], offers: list[dict],
@@ -197,12 +249,23 @@ def build_prompt(slug: str, hooks: list[dict], offers: list[dict],
             "ad_key": str(a["ad_key"]),
             "name": a.get("name"),
             "headline": a.get("first_headline"),
-            "body": (a.get("first_body") or "")[:400],
+            # HEAD AND TAIL, not the first 400 characters.
+            #
+            # Three ads were labelled `offer: none` because the ask sat past
+            # the cut -- and the model said so in its own rationale ("the
+            # truncated body makes no ask beyond the CTA"), while the unseen
+            # tail read "Book the call and we'll build the roadmap." A body
+            # that gets cut loses its close, which is exactly the part that
+            # carries the offer.
+            "body": _head_and_tail(a.get("first_body") or ""),
             "cta_button": a.get("cta"),
         }, ensure_ascii=False))
 
     return f"""\
 Label each of these {slug} ads by what its copy ARGUES.
+
+Each entry is one distinct WORDING, which may run under several ad names. You
+are labelling the words.
 
 HOOK -- how the first line opens. Exactly one of:
 {_vocab(hooks)}
@@ -210,16 +273,45 @@ HOOK -- how the first line opens. Exactly one of:
 OFFER -- what the copy asks the reader to do. Exactly one of:
 {_vocab(offers)}
 
-AUDIENCE -- who the copy addresses, in three words or fewer, lowercase, taken
-from the copy itself ("captive agents", "p&c agency owners", "agency sellers").
-null if the copy does not name or clearly imply one.
+Two things those definitions do not settle, and both went wrong on the first
+run:
 
-CONFIDENCE -- "stated" when the copy says it outright, "inferred" when you are
-reading it from tone or context.
+  `stat` needs a FIGURE in the opening -- a number, a percentage, an amount, a
+  year, a count. "31 years", "over 11 acquisitions", "$2-3M". A general
+  assertion, an opinion, or a sentence containing "should" is NOT a stat. Of 91
+  ads labelled `stat` last time, four opened with a number.
+
+  `callout` needs the first line to NAME the audience -- "captive agents",
+  "P&C agency owners". Addressing the reader as "you" is not naming them.
+
+  `demo` and `testimonial` describe what the creative SHOWS and whose voice it
+  speaks in, and you are given text only. Use `demo` only where the copy itself
+  walks through the product working; a list of features is not a demo. Use
+  `testimonial` only where the copy is written in a customer's first person.
+
+Judge the hook from the FIRST sentence of the body, or from the headline when
+there is no body. If none of the eight fits that sentence, return null -- a
+missing hook is a gap that can be seen, a wrong one is a number somebody
+compares against.
+
+AUDIENCE -- exactly one of:
+{chr(10).join("  " + a for a in AUDIENCES)}
+null when the copy addresses none of them clearly. Do not invent a value, do
+not add a qualifier, and do not translate: Spanish copy addressing agency
+owners is still "p&c agency owners". A noun phrase lifted from the copy
+("business builders", "book of business") is not an audience.
+
+CONFIDENCE -- about the AUDIENCE and the OFFER, not the hook. "stated" only
+when the copy contains the audience words and the offer literally ("As a P&C
+agency owner", "Book a free consultation"). If you are reading either from
+"your agency", from "you", or from tone, it is "inferred". When in doubt,
+"inferred". migrations/004 is explicit that "the agent writes 'inferred' for
+anything it decides".
 
 RATIONALE -- one short sentence quoting the words that decided it. This is
 stored and read back by a person checking your work, so quote rather than
-describe.
+describe. If you write "opens", the words you quote must be the literal first
+words of the headline or body; otherwise say "later in the body".
 
 Judge the COPY, not the ad's name. The names here carry formats and people
 ("Static", "UGC", "David", "GIF"), not arguments.
@@ -320,9 +412,10 @@ def clean(row: dict, allowed_hooks: set, allowed_offers: set,
     return payload, None
 
 
-async def run_brand(slug: str, dry_run: bool, limit: int | None) -> int:
+async def run_brand(slug: str, dry_run: bool, limit: int | None,
+                    retag: bool = False) -> int:
     hooks, offers = await vocabulary()
-    ads = await needs_tagging(slug, limit)
+    ads = await needs_tagging(slug, limit, retag)
     if not ads:
         log(f"{slug}: every ad that has spent already carries a tag for its "
             f"current copy -- nothing to do")
@@ -330,19 +423,29 @@ async def run_brand(slug: str, dry_run: bool, limit: int | None) -> int:
 
     for a in ads:
         a["brand"] = slug
-    planned = plan_batches(slug, hooks, offers, ads)
-    log(f"{slug}: {len(ads)} ad(s) need a tag, {len(planned)} batch(es) "
-        f"(cap {BATCH}, sized to fit {PROMPT_BUDGET} chars)")
+
+    # One question per distinct wording. The answer is fanned back out to every
+    # ad that shares it, so ads with identical copy cannot end up with
+    # different labels -- which 20 of 48 duplicate groups did on the first run.
+    wordings, by_hash = dedupe(ads)
+    planned = plan_batches(slug, hooks, offers, wordings)
+    log(f"{slug}: {len(ads)} ad(s) need a tag, {len(wordings)} distinct "
+        f"wording(s), {len(planned)} batch(es) (cap {BATCH}, sized to fit "
+        f"{PROMPT_BUDGET} chars)")
 
     allowed_hooks = {h["slug"] for h in hooks}
     allowed_offers = {o["slug"] for o in offers}
-    by_key = {str(a["ad_key"]): a for a in ads}
+    by_key = {str(a["ad_key"]): a for a in wordings}
 
     proposals: list[dict] = []
     dropped: list[dict] = []
     failed_batches = 0
 
-    for n, batch in enumerate(plan_batches(slug, hooks, offers, ads), start=1):
+    # `planned`, not a second call on `ads`. Re-planning from the full ad
+    # list here asked the model about all 243 -- duplicates included -- and
+    # then fanned each answer out again, which is both the cost the dedupe
+    # exists to avoid and the inconsistency it exists to prevent.
+    for n, batch in enumerate(planned, start=1):
         prompt = build_prompt(slug, hooks, offers, batch)
         if dry_run:
             log(f"{slug}: batch {n}: {len(batch)} ad(s), "
@@ -361,10 +464,14 @@ async def run_brand(slug: str, dry_run: bool, limit: int | None) -> int:
         for row in rows if isinstance(rows, list) else []:
             payload, why = clean(row if isinstance(row, dict) else {},
                                  allowed_hooks, allowed_offers, by_key)
-            if payload:
-                proposals.append(payload)
-            else:
+            if not payload:
                 dropped.append({"row": row, "why": why})
+                continue
+            # The label belongs to the WORDING, so every ad carrying that
+            # wording gets it -- with its own ad_key, and the same copy_hash
+            # by definition.
+            for twin in by_hash.get(payload["copy_hash"], []):
+                proposals.append({**payload, "ad_key": str(twin["ad_key"])})
         log(f"{slug}: batch {n}: {len(rows)} returned, "
             f"{len(proposals)} usable so far")
 
@@ -419,7 +526,8 @@ async def run_brand(slug: str, dry_run: bool, limit: int | None) -> int:
     return 1 if (errored or failed_batches) else 0
 
 
-async def run(only: str | None, dry_run: bool, limit: int | None) -> int:
+async def run(only: str | None, dry_run: bool, limit: int | None,
+              retag: bool = False) -> int:
     await db.open_read()
     try:
         slugs = await brands(only)
@@ -430,7 +538,8 @@ async def run(only: str | None, dry_run: bool, limit: int | None) -> int:
         worst = 0
         for slug in slugs:
             try:
-                worst = max(worst, await run_brand(slug, dry_run, limit))
+                worst = max(worst, await run_brand(slug, dry_run, limit,
+                                                   retag))
             except UnknownBrand as exc:
                 log(f"{slug}: {exc}")
                 worst = 1
@@ -447,20 +556,25 @@ def main() -> int:
     p.add_argument("--brand")
     p.add_argument("--dry-run", action="store_true",
                    help="select the ads and build the batches; ask nobody")
+    p.add_argument("--retag", action="store_true",
+                   help="relabel ads that already carry a tag for their "
+                        "current copy. For replacing a pass filed under an "
+                        "earlier prompt; a person's tag is still never "
+                        "overwritten, record.py refuses that")
     p.add_argument("--limit", type=int, default=None,
                    help="tag at most this many ads, to see what it does "
                         "before paying for all of them")
     a = p.parse_args()
 
     if a.dry_run:
-        return asyncio.run(run(a.brand, True, a.limit))
+        return asyncio.run(run(a.brand, True, a.limit, a.retag))
 
     if not take_lock():
         return 2
 
     log(f"tagging starting ({a.brand or 'all brands'})")
     try:
-        code = asyncio.run(run(a.brand, False, a.limit))
+        code = asyncio.run(run(a.brand, False, a.limit, a.retag))
     except Exception as exc:
         log(f"tagging ABORTED  {type(exc).__name__}: {exc}")
         code = 1

@@ -214,3 +214,71 @@ def test_the_pass_names_its_exit_codes():
     src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
     for code in ("0  filed", "1  something failed", "2  a run was already"):
         assert code in src, f"exit code {code!r} is undocumented"
+
+
+# ---------------------------------------------------------------------------
+# One question per distinct wording.
+# ---------------------------------------------------------------------------
+
+def test_identical_copy_is_asked_about_once():
+    """56% of this account's ads share byte-identical copy, and labelling each
+    separately asked the model the same question up to seven times -- which it
+    answered differently on 20 of 48 groups, across 30% of tagged spend. No
+    prompt fixes variance; asking once does."""
+    ads = [{"ad_key": f"{i:08d}-1111-1111-1111-111111111111",
+            "copy_hash": "same" if i < 5 else f"h{i}"} for i in range(8)]
+    wordings, by_hash = tag.dedupe(ads)
+    assert len(wordings) == 4, "five identical ads should ask one question"
+    assert len(by_hash["same"]) == 5, "the other four must still get the label"
+
+
+def test_the_representative_is_stable_across_runs():
+    """A re-run should quote the same ad in its rationale, not a different one
+    of the five that happen to share the words."""
+    ads = [{"ad_key": k, "copy_hash": "same"} for k in ("ccc", "aaa", "bbb")]
+    first, _ = tag.dedupe(ads)
+    second, _ = tag.dedupe(list(reversed(ads)))
+    assert first[0]["ad_key"] == second[0]["ad_key"] == "aaa"
+
+
+def test_the_batches_that_run_are_the_deduped_ones():
+    """The loop must iterate the plan built from distinct wordings. Planning
+    once for the log and again from the full ad list ran 7 batches where 5 were
+    planned, paid for every duplicate, and re-introduced the inconsistency."""
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    body = src.split("async def run_brand", 1)[1]
+    assert "for n, batch in enumerate(planned" in body
+    assert "plan_batches(slug, hooks, offers, ads)" not in body, (
+        "the loop re-plans from the full ad list, undoing the dedupe")
+
+
+def test_a_long_body_keeps_its_close():
+    """Three ads were labelled `offer: none` because the ask sat past a 400
+    character cut -- the model said so in its own rationale, while the unseen
+    tail read "Book the call and we'll build the roadmap.\""""
+    body = "A" * 400 + "MIDDLE" * 100 + "Book the call and we'll build the roadmap."
+    out = tag._head_and_tail(body)
+    assert out.startswith("A" * 100)
+    assert "Book the call" in out, "the close was cut off again"
+    assert "[...]" in out
+    assert len(out) < len(body)
+
+
+def test_a_short_body_is_untouched():
+    assert tag._head_and_tail("short copy") == "short copy"
+
+
+def test_the_audience_vocabulary_is_closed():
+    """Free text produced 31 values for 6 audiences -- "agency owners" and
+    "p&c agency owners" split one audience roughly in half, and appeared within
+    identical copy."""
+    assert len(tag.AUDIENCES) == 6
+    assert "p&c agency owners" in tag.AUDIENCES
+    hooks = [{"slug": "stat", "definition": "d"}]
+    offers = [{"slug": "none", "definition": "d"}]
+    prompt = tag.build_prompt("renegade", hooks, offers, [
+        {"ad_key": "k", "name": "n", "first_headline": "h",
+         "first_body": "b", "cta": None}])
+    for a in tag.AUDIENCES:
+        assert a in prompt, f"{a!r} never reaches the model"
+    assert "Do not invent a value" in prompt

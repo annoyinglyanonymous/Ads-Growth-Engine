@@ -239,12 +239,54 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
                          f"with less spend, not shown"})
     formats = dimensions["format"]
 
-    untagged = await fetch_one(
+    # TWO DIFFERENT COVERAGES, and conflating them cost a whole analysis.
+    #
+    # ads.untagged_spend counts an ad as tagged when facet_effective resolves
+    # an ANGLE for it (013:575, `fe.angle_id is not null`). ads.angle is empty
+    # on this database, so every one of the 243 facets scripts/tag.py filed
+    # carries a null angle and the function correctly reports 100% untagged.
+    #
+    # The pack used to hand that straight to the model beside a `dimensions`
+    # block full of real hook and offer numbers. The model resolved the
+    # contradiction the wrong way and wrote "every ad is untagged, so nothing
+    # can be said about which kind of writing carries the money" -- suppressing
+    # the analysis the tagging pass existed to enable.
+    #
+    # So both are reported, each saying which question it answers.
+    angle_coverage = await fetch_one(
         """
         select total_spend, tagged_spend, untagged_ads, untagged_spend,
                stale_tag_ads, stale_tag_spend
           from ads.untagged_spend(%s::uuid, %s, %s)
         """, (d["brand_id"], d["since"], d["until"]))
+
+    facet_coverage = await fetch_one(
+        """
+        select count(*)::int                                     as ads,
+               count(*) filter (where fe.ad_key is not null)::int as with_a_facet,
+               count(*) filter (where fe.hook is not null)::int   as with_a_hook,
+               count(*) filter (where fe.offer is not null)::int  as with_an_offer
+          from (select distinct f.ad_key
+                  from ads.fact_ad_day f
+                 where f.brand_id = %s::uuid
+                   and f.day between %s and %s) spent
+          left join ads.facet_effective fe on fe.ad_key = spent.ad_key
+        """, (d["brand_id"], d["since"], d["until"]))
+
+    untagged = {
+        "angle_attribution": {
+            **(angle_coverage or {}),
+            "means": "spend whose ad resolves to an ANGLE. ads.angle is empty "
+                     "on this brand, so this is 0 by construction and says "
+                     "nothing about hook, offer or audience.",
+        },
+        "creative_labels": {
+            **(facet_coverage or {}),
+            "means": "ads that have spent and carry a hook/offer/audience "
+                     "label. This is what the `dimensions` block is built "
+                     "from.",
+        },
+    }
 
     fatigue = await metrics.fatigue(brand, days, until, 100.0, False)
 
@@ -337,6 +379,13 @@ cheaper cost-per-result under a different goal is not a cheaper result.
 Only the CURRENT wording of each ad is stored. An ad edited since it ran carries
 today's words against older spend, so do not claim a specific line CAUSED a
 result. Say what the winning ads have in common and what is worth trying.
+
+`untagged` reports TWO coverages and they are not the same question.
+`angle_attribution` is about angles, which this brand has none of, so it reads
+0 and always will -- it is NOT evidence that the hook, offer and audience
+labels are missing. `creative_labels` is the one that says whether the
+`dimensions` block has anything behind it. Read that one before deciding
+whether you can talk about kinds of writing.
 
 WRITE IT LIKE THIS
 
