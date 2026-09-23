@@ -50,6 +50,9 @@ SUGGESTION_DIR = ROOT / "suggestions"
 #: rather than about the writing, which is the one thing this page is for.
 PER_GOAL = 3
 
+#: Rows per creative dimension in the pack. Ten, by spend.
+DIMENSION_ROWS = 10
+
 #: The rate every goal here is ranked on. One metric, because the ads inside a
 #: single optimization goal ARE comparable on it -- that is what makes the
 #: grouping worth doing.
@@ -181,13 +184,60 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # that already knows a dimension is not rankable when its rows ran under
     # more than one optimization goal, and `comparable_on_cost` is that answer.
     # Passing it through unchanged is how the model learns what it may not say.
-    formats = await fetch_all(
-        """
-        select value, ads_run, spend, conversions, rates,
-               optimization_goals, optimization_goal_count,
-               comparable_on_cost, spend_sufficient, rank_within_goal
-          from ads.facet_performance(%s::uuid, %s, %s, 'format')
-        """, (d["brand_id"], d["since"], d["until"]))
+    #
+    # FOUR DIMENSIONS, where this used to read one. hook, offer and audience
+    # returned a single NULL bucket until scripts/tag.py filled ads.ad_facet,
+    # so sending them was sending nothing. They are the dimensions that make
+    # this a creative analysis rather than a list of ads: "callout hooks carry
+    # $19,070 across 60 ads" is a statement about the writing, where "dynamic
+    # format carries $14,856" is a statement about the ad builder.
+    #
+    # `angle` and `family` are still empty -- ads.angle has no rows -- so they
+    # are left out rather than sent as a NULL bucket that costs prompt budget
+    # to say nothing.
+    dimensions = {}
+    for dim in ("hook", "offer", "audience", "format"):
+        rows = await fetch_all(
+            """
+            select value, ads_run, spend, conversions, rates,
+                   optimization_goals, optimization_goal_count,
+                   comparable_on_cost, spend_sufficient, rank_within_goal
+              from ads.facet_performance(%s::uuid, %s, %s, %s)
+             order by spend desc nulls last
+            """, (d["brand_id"], d["since"], d["until"], dim))
+        # Capped by SPEND, which the ORDER BY has already applied.
+        #
+        # `audience` is the reason. hook and offer are closed vocabularies --
+        # eight and seven values -- but audience is free text, and a labelling
+        # pass reading two hundred ads produces "agency owners", "p&c agency
+        # owners" and "insurance agency owners" for what a reader would call
+        # one audience. Thirty-one values came back, with a long tail carrying
+        # almost no money, and sending all of them pushed the pack from 16k to
+        # 31k characters -- past the budget, which would have made compact()
+        # cut the per-ad COPY instead. The copy is the material; the tail of
+        # the audience list is not.
+        # TRIMMED PER ROW, not just per dimension. A facet_performance row is
+        # ~500 characters, and ~380 of them are eight rates where the model
+        # reads one, plus the full optimization_goals array where the COUNT is
+        # what decides whether a comparison is allowed. Four dimensions of
+        # untrimmed rows took the pack from 16k to 31k -- past the budget, so
+        # compact() would have cut the per-ad COPY instead. The copy is the
+        # material; seven unread rates are not.
+        dimensions[dim] = [{
+            "value": r["value"],
+            "ads_run": r["ads_run"],
+            "spend": r["spend"],
+            "conversions": r["conversions"],
+            "cpa": (r["rates"] or {}).get("cpa"),
+            "link_ctr": (r["rates"] or {}).get("link_ctr"),
+            "optimization_goal_count": r["optimization_goal_count"],
+            "comparable_on_cost": r["comparable_on_cost"],
+        } for r in rows[:DIMENSION_ROWS]]
+        if len(rows) > DIMENSION_ROWS:
+            dimensions[dim].append({
+                "value": f"... {len(rows) - DIMENSION_ROWS} more {dim} value(s) "
+                         f"with less spend, not shown"})
+    formats = dimensions["format"]
 
     untagged = await fetch_one(
         """
@@ -205,6 +255,7 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
         "unsettled_days": d["unsettled_days"],
         "goals": goals,
         "formats": formats,
+        "dimensions": dimensions,
         "untagged": untagged,
         "tiring": [{"ad": r.get("entity_name"),
                     "optimization_goal": r.get("optimization_goal"),
@@ -259,6 +310,13 @@ WHAT IS RUNNING, grouped by optimization goal, with the copy and what it cost:
 
 {facts}
 
+`dimensions` is the same spend cut four ways -- by the HOOK the copy opens
+with, the OFFER it asks for, the AUDIENCE it addresses, and the ad FORMAT.
+Those labels were read off the copy itself, so they are the account's own
+patterns rather than a taxonomy imposed on it. Use them to say which KIND of
+writing carries the money and which has barely been tried, which is a thing no
+list of individual ads can tell you.
+
 WHAT YOU MAY AND MAY NOT COMPARE
 
 Ads inside ONE optimization goal are comparable on cost per result. Ads under
@@ -269,9 +327,12 @@ are not measuring the same event. Name the goal you are talking about.
 Where a goal has `rankable_on_cost: false`, nothing under it converted, so
 there is no cost ranking to read. Its ads are there for their copy only.
 
-The `formats` block carries `comparable_on_cost`. Where that is false, the
-formats ran under different goals and you may NOT say one format beats
-another -- say they have not been compared on equal terms, and move on.
+Every row in `dimensions` carries `comparable_on_cost`. Where it is false --
+which is most of them -- those rows ran under two or more optimization goals
+and you may NOT say one hook, offer, audience or format beats another on cost.
+Say what carries the spend and what is barely funded, which the counts support,
+and say plainly that the cost comparison is not available on equal terms. A
+cheaper cost-per-result under a different goal is not a cheaper result.
 
 Only the CURRENT wording of each ad is stored. An ad edited since it ran carries
 today's words against older spend, so do not claim a specific line CAUSED a

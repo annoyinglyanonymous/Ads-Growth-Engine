@@ -187,6 +187,105 @@ so in one line.
 """
 
 
+#: What a classification pass is told. Deliberately not SYSTEM: that one is
+#: written for a person reading sentences in a browser and forbids the only
+#: output shape this needs.
+CLASSIFY_SYSTEM = """\
+You are labelling advertising copy against a fixed vocabulary. You return JSON
+and nothing else.
+
+No preamble, no explanation, no markdown fence, no trailing commentary. The
+first character of your reply is [ and the last is ]. A reply that is not
+parseable JSON is discarded and the work is wasted.
+
+Use only the values you are given. Inventing a value outside the vocabulary
+makes the row unfilable, and the row is dropped.
+
+Where the copy does not support a label, say null rather than guessing. A null
+is a usable answer; a wrong label is worse than none, because it becomes a
+number somebody compares against.
+"""
+
+
+async def classify(prompt: str, *, timeout: float | None = None) -> list:
+    """Ask for JSON, with NO tools at all. Returns the parsed list.
+
+    WHY THIS IS NOT answer().
+
+    `answer` grants Bash for the read verbs, because a question about the
+    account needs to go and look. A classification pass needs nothing: it is
+    handed the copy and asked to label it, so every tool is a grant with no
+    purpose, and a grant with no purpose is the one that gets used for
+    something nobody intended. `--allowedTools` is empty here and the deny list
+    is still applied on top.
+
+    It also cannot use SYSTEM. That prompt is written for somebody reading
+    sentences in a browser -- "plain sentences, no markdown, two or three
+    sentences answers most questions" -- which is the opposite of a JSON array
+    of forty rows.
+
+    Raises ChatUnavailable when there is no `claude` on PATH, and ValueError
+    when the reply will not parse. The caller decides whether a batch that
+    would not parse is fatal; here it is only a fact.
+    """
+    if not available():
+        raise ChatUnavailable(
+            "The `claude` command is not on PATH, so nothing can be "
+            "classified. The pack still builds: try --dry-run.")
+
+    cmd = [
+        "claude", "-p", prompt,
+        "--model", "claude-opus-5",
+        "--output-format", "json",
+        "--append-system-prompt", CLASSIFY_SYSTEM,
+        # No --allowedTools at all. The deny list stays, belt and braces, for
+        # the same reason _denied() exists: the cost of the belt failing is a
+        # write from something that was only ever meant to read copy.
+        "--disallowedTools", *_denied(),
+        "--max-turns", "1",
+    ]
+
+    env = {**os.environ}
+    if _VENV_BIN.is_dir():
+        env["PATH"] = str(_VENV_BIN) + os.pathsep + env.get("PATH", "")
+
+    def _run() -> tuple[int, bytes, bytes]:
+        done = subprocess.run(
+            cmd, cwd=str(ROOT), env=env, capture_output=True,
+            timeout=TIMEOUT_SECONDS if timeout is None else timeout)
+        return done.returncode, done.stdout, done.stderr
+
+    code, out, err = await asyncio.to_thread(_run)
+    text = (out or b"").decode("utf-8", "replace").strip()
+
+    payload = None
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        pass
+    if not isinstance(payload, dict):
+        detail = (err or b"").decode("utf-8", "replace").strip().splitlines()
+        raise ValueError(f"the session returned no JSON envelope (exit {code})"
+                         + (f": {detail[0][:160]}" if detail else ""))
+    if payload.get("is_error") or "result" not in payload:
+        raise ValueError(f"the session failed: {payload.get('subtype')} after "
+                         f"{payload.get('num_turns')} turn(s)")
+
+    reply = (payload.get("result") or "").strip()
+    # A fence survives an instruction not to use one often enough to be worth
+    # stripping rather than failing on.
+    if reply.startswith("```"):
+        reply = reply.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        rows = json.loads(reply)
+    except ValueError as exc:
+        raise ValueError(f"the reply was not JSON: {exc}. First 160 chars: "
+                         f"{reply[:160]!r}") from None
+    if not isinstance(rows, list):
+        raise ValueError(f"expected a JSON array, got {type(rows).__name__}")
+    return rows
+
+
 class ChatUnavailable(RuntimeError):
     """No Claude Code on PATH, so this endpoint cannot work at all."""
 

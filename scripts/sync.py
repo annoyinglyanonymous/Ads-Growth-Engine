@@ -41,6 +41,15 @@ Unscoped is still the default, and the scheduled task still runs both.
 
 WHAT RUNS AFTER IT
 
+A tagging pass, then a suggestion -- in that order, because the suggestion is
+better when the tags are current. scripts/tag.py labels what each new or
+rewritten ad ARGUES, which is what makes hook, offer and audience countable;
+without it the creative analysis can only talk about ads one at a time.
+
+The first tagging run pays for every ad that has spent. After that it selects
+on (ad_key, copy_hash) having no facet, so an ordinary run sees only ads that
+are new or whose copy changed -- usually none, and it exits in seconds.
+
 A suggestion, unless --no-suggest. `scripts/suggest.py` reads the copy that was
 just imported and publishes what is worth writing next, so the answer is on the
 page before anybody opens it -- a suggestion somebody has to remember to ask for
@@ -207,8 +216,8 @@ def main() -> int:
                         "daily numbers; they use different Graph edges, so one "
                         "being broken is not a reason to skip the other.")
     p.add_argument("--no-suggest", action="store_true",
-                   help="import only; do not publish a creative suggestion "
-                        "afterwards")
+                   help="import only; do not tag or publish a creative "
+                        "suggestion afterwards")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
 
@@ -233,6 +242,10 @@ def main() -> int:
     # settled. suggest.py takes its own lock, and running it inside this one
     # would mean a slow model call kept the next scheduled PULL out.
     if code == 0 and not a.no_suggest:
+        # Tags first: the suggestion reads hook/offer/audience, and reading
+        # them BEFORE this run's new ads are labelled would describe the
+        # account as it was one import ago.
+        _run_after("tag.py", a.brand, ["--brand"] if a.brand else [])
         _suggest(a.brand)
     elif a.no_suggest:
         log("skipping the suggestion (--no-suggest)")
@@ -242,6 +255,31 @@ def main() -> int:
 
     log(f"sync finished, exit {code}")
     return code
+
+
+def _run_after(script: str, brand: str | None, _unused=None) -> None:
+    """Run a follow-on script. Never changes this script's exit code.
+
+    Same reasoning as _suggest below and the same trade: the import either
+    happened or it did not, and that is what a scheduler branches on. A
+    tagging pass that failed afterwards is a different fact, logged here and
+    again in its own log.
+    """
+    cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / script)]
+    if brand:
+        cmd += ["--brand", brand]
+    try:
+        done = subprocess.run(cmd, cwd=str(PROJECT_ROOT), timeout=1800)
+    except subprocess.TimeoutExpired:
+        log(f"{script}: timed out after 1800s; the import is unaffected")
+        return
+    except OSError as exc:
+        log(f"{script}: could not start ({type(exc).__name__}: {exc}); "
+            f"the import is unaffected")
+        return
+    log(f"{script}: exit {done.returncode}"
+        + ("" if done.returncode == 0 else " -- see its own log. The import "
+                                           "itself succeeded."))
 
 
 def _suggest(brand: str | None) -> None:

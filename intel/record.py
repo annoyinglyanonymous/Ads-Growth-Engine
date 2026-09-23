@@ -65,6 +65,26 @@ async def record(kind: str, path: str, identity: str) -> dict:
         raise ShapeError(f"{path} must contain a JSON object, not a "
                          f"{type(payload).__name__}.")
 
+    return await record_payload(kind, payload, identity)
+
+
+async def record_payload(kind: str, payload: dict, identity: str) -> dict:
+    """The same write, from a dict already in hand. Validated identically.
+
+    `record` above still takes a PATH and still should: a person filing one
+    proposal should leave the thing they filed on disk, because "a payload that
+    arrived down a pipe leaves nothing to inspect when the row turns out to be
+    wrong".
+
+    A PASS is the case that reasoning does not cover. scripts/tag.py proposes
+    two hundred facets in one run; writing two hundred single-row files to read
+    them straight back would be ceremony, not evidence. It writes ONE file with
+    every proposal and every dropped row, then files from memory -- so there is
+    more on disk to look at afterwards, not less.
+
+    Same `validate`, same shapes, same three kinds. Nothing here is a shortcut
+    past the registry; it is the registry with the file step lifted out.
+    """
     validate(kind, payload)
     brand_id = await _brand_id(payload["brand"])
 

@@ -117,6 +117,8 @@ def _pack(monkeypatch, rows=None, formats=None):
                           "confident": True, "spend_recent": 1436.05}]}
 
     async def fake_fetch_all(sql, params=()):
+        # creative_pack calls facet_performance once per dimension now, so the
+        # stub answers by SQL rather than by call order.
         return formats if "facet_performance" in sql else COPY
 
     async def fake_fetch_one(sql, params=()):
@@ -241,16 +243,39 @@ def test_the_copy_rides_along(monkeypatch):
 # What the pack must not hide.
 # ---------------------------------------------------------------------------
 
-def test_a_formats_refusal_is_passed_through_not_dropped(monkeypatch):
+def test_a_refusal_to_rank_is_passed_through_not_dropped(monkeypatch):
     """`comparable_on_cost: false` is ads.facet_performance declining to rank
     two things measured differently. Dropping those rows would leave the model
-    with a format table it believes is rankable."""
+    with a table it believes is rankable.
+
+    The row is TRIMMED but the refusal survives. `optimization_goals` -- the
+    array of goal names and their spend -- is no longer carried: it is ~200 of
+    a ~500-character row, and what gates the comparison is the COUNT. "Ran
+    under 4 optimization goals" is the whole argument for not comparing; which
+    four they were does not change it, and four dimensions of untrimmed rows
+    pushed the pack past its budget, where compact() would have cut the per-ad
+    copy instead.
+    """
     pack = _pack(monkeypatch)
-    assert len(pack["formats"]) == len(FORMATS)
-    for f in pack["formats"]:
-        assert f["comparable_on_cost"] is False
-        assert f["optimization_goals"], "the evidence for declining is missing"
-        assert f["rank_within_goal"] is None
+    for dim, rows in pack["dimensions"].items():
+        for f in rows:
+            if f.get("comparable_on_cost") is None:
+                continue          # the "... n more" tail row
+            assert f["comparable_on_cost"] is False
+            assert f["optimization_goal_count"] > 1, (
+                f"{dim}: the reason for declining to rank is missing")
+    assert "optimization_goals" not in pack["dimensions"]["format"][0], (
+        "the goal-name array is back; it costs 200 chars a row and the count "
+        "is what gates the comparison")
+
+
+def test_every_creative_dimension_reaches_the_model(monkeypatch):
+    """hook, offer and audience returned one NULL bucket until scripts/tag.py
+    filled ads.ad_facet. They are the dimensions that make this a creative
+    analysis rather than a list of ads, so a pack carrying only `format` is a
+    pack that can only talk about the ad builder."""
+    pack = _pack(monkeypatch)
+    assert set(pack["dimensions"]) == {"hook", "offer", "audience", "format"}
 
 
 def test_untagged_spend_is_reported(monkeypatch):
