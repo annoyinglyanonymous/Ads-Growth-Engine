@@ -411,12 +411,12 @@ def test_a_failed_suggestion_does_not_fail_the_import():
     branches on. Folding a model call's failure into the pull's exit code would
     have somebody re-running a pull that worked."""
     src = (ROOT / "scripts" / "sync.py").read_text(encoding="utf-8")
-    assert "_suggest(a.brand)" in src
-    # _suggest returns None: there is no path by which it reaches `code`.
-    body = src.split("def _suggest(", 1)[1]
-    assert "return None" not in body.split("\ndef ", 1)[0] or True
-    assert "-> None:" in src.split("def _suggest(", 1)[1][:60], (
-        "_suggest must not return a code, or somebody will wire it to one")
+    assert '_run_after("suggest.py"' in src
+    # _run_after returns None: there is no path by which any follow-on
+    # reaches `code`. It used to be three near-identical functions and is
+    # one now, so this covers the tagging pass and the brief as well.
+    assert "-> None:" in src.split("def _run_after(", 1)[1][:400], (
+        "_run_after must not return a code, or somebody will wire it to one")
 
 
 def test_the_suggestion_is_published_after_the_lock_is_released():
@@ -424,7 +424,7 @@ def test_the_suggestion_is_published_after_the_lock_is_released():
     inside sync's lock would keep the next scheduled PULL out."""
     src = (ROOT / "scripts" / "sync.py").read_text(encoding="utf-8")
     unlink = src.find("LOCK.unlink(missing_ok=True)")
-    call = src.find("_suggest(a.brand)")
+    call = src.find('_run_after("suggest.py"')
     assert unlink != -1 and call != -1
     assert unlink < call, "the suggestion runs while sync still holds its lock"
 

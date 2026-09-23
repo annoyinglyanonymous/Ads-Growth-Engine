@@ -56,6 +56,15 @@ page before anybody opens it -- a suggestion somebody has to remember to ask for
 is a suggestion nobody asks for, which is this file's own argument about the
 pull, one layer up.
 
+Then the brief, unless --no-brief. `scripts/brief.py` is weekly and gated on
+`ads.settled_through()`, so on six days in seven it looks at the week, sees it
+has not settled, exits 3 and costs nothing -- which is why it can sit on a
+twice-daily job rather than needing a second scheduled task nobody registered.
+Exit 3 is logged as the ordinary thing it is, not as a failure.
+
+--no-suggest skips both. It has only ever meant "do not make model calls after
+the pull", and the brief now makes one.
+
 It runs as a SEPARATE PROCESS and its outcome does NOT change this one's exit
 code. The import either happened or it did not, and that is what a scheduler
 needs to branch on; a model call that failed afterwards is a different fact, and
@@ -94,7 +103,6 @@ import identity  # noqa: E402
 from db_meta import fetch_all, pool  # noqa: E402
 from meta_ads import pull as meta_pull  # noqa: E402
 
-SUGGEST = PROJECT_ROOT / "scripts" / "suggest.py"
 
 LOCK = PROJECT_ROOT / ".sync.lock"
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -215,6 +223,8 @@ def main() -> int:
                         "structure is the ad list and its copy, insights the "
                         "daily numbers; they use different Graph edges, so one "
                         "being broken is not a reason to skip the other.")
+    p.add_argument("--no-brief", action="store_true",
+                   help="skip the weekly brief; the suggestion still runs")
     p.add_argument("--no-suggest", action="store_true",
                    help="import only; do not tag or publish a creative "
                         "suggestion afterwards")
@@ -242,72 +252,64 @@ def main() -> int:
     # settled. suggest.py takes its own lock, and running it inside this one
     # would mean a slow model call kept the next scheduled PULL out.
     if code == 0 and not a.no_suggest:
-        # Tags first: the suggestion reads hook/offer/audience, and reading
-        # them BEFORE this run's new ads are labelled would describe the
-        # account as it was one import ago.
-        _run_after("tag.py", a.brand, ["--brand"] if a.brand else [])
-        _suggest(a.brand)
+        # Tags first: the suggestion and the brief both read hook/offer/
+        # audience, and reading them BEFORE this run's new ads are labelled
+        # would describe the account as it was one import ago.
+        _run_after("tag.py", a.brand)
+        _run_after("suggest.py", a.brand, extra=("--force",), timeout=600,
+                   benign={3: "nothing to publish for"})
+        if a.no_brief:
+            log("skipping the brief (--no-brief)")
+        else:
+            _run_after("brief.py", a.brand, timeout=900, benign={
+                3: "this week has not settled yet, so there is nothing to "
+                   "publish; it will go out on the first run after it does"})
     elif a.no_suggest:
-        log("skipping the suggestion (--no-suggest)")
+        log("skipping the follow-on analysis (--no-suggest)")
     else:
-        log("not suggesting: the import did not succeed, and a suggestion "
+        log("not analysing: the import did not succeed, and an analysis "
             "written from a failed import describes numbers that did not land")
 
     log(f"sync finished, exit {code}")
     return code
 
 
-def _run_after(script: str, brand: str | None, _unused=None) -> None:
+def _run_after(script: str, brand: str | None, *, extra: tuple = (),
+               timeout: int = 1800, benign: dict | None = None) -> None:
     """Run a follow-on script. Never changes this script's exit code.
 
-    Same reasoning as _suggest below and the same trade: the import either
-    happened or it did not, and that is what a scheduler branches on. A
-    tagging pass that failed afterwards is a different fact, logged here and
-    again in its own log.
+    The import either happened or it did not, and that is what a scheduler
+    branches on. A tagging pass that failed afterwards is a different fact,
+    logged here and again in its own log.
+
+    `benign` maps an exit code to what it actually means, because two of these
+    scripts use a non-zero code for a perfectly ordinary outcome and logging
+    those as failures is how a log stops being read. suggest.py exits 3 when a
+    brand spent nothing; brief.py exits 3 on the six mornings a week when the
+    week has not settled yet. sys.executable, not `python`: a scheduled task
+    inherits no PATH worth trusting, and sync.bat already went to the trouble
+    of finding the venv -- spending that only to call a bare `python` would
+    undo it.
     """
-    cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / script)]
+    cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / script), *extra]
     if brand:
         cmd += ["--brand", brand]
     try:
-        done = subprocess.run(cmd, cwd=str(PROJECT_ROOT), timeout=1800)
+        done = subprocess.run(cmd, cwd=str(PROJECT_ROOT), timeout=timeout)
     except subprocess.TimeoutExpired:
-        log(f"{script}: timed out after 1800s; the import is unaffected")
+        log(f"{script}: timed out after {timeout}s; the import is unaffected")
         return
     except OSError as exc:
         log(f"{script}: could not start ({type(exc).__name__}: {exc}); "
             f"the import is unaffected")
         return
-    log(f"{script}: exit {done.returncode}"
-        + ("" if done.returncode == 0 else " -- see its own log. The import "
-                                           "itself succeeded."))
-
-
-def _suggest(brand: str | None) -> None:
-    """Publish a creative suggestion. Never changes this script's exit code.
-
-    sys.executable, not `python`: a scheduled task inherits no PATH worth
-    trusting, and sync.bat already went to the trouble of finding the venv --
-    spending that only to call a bare `python` would undo it.
-    """
-    cmd = [sys.executable, str(SUGGEST), "--force"]
-    if brand:
-        cmd += ["--brand", brand]
-    try:
-        done = subprocess.run(cmd, cwd=str(PROJECT_ROOT), timeout=600)
-    except subprocess.TimeoutExpired:
-        log("suggest: timed out after 600s; the import is unaffected")
-        return
-    except OSError as exc:
-        log(f"suggest: could not start ({type(exc).__name__}: {exc}); "
-            f"the import is unaffected")
-        return
     if done.returncode == 0:
-        log("suggest: published")
-    elif done.returncode == 3:
-        log("suggest: nothing to publish for")
+        log(f"{script}: done")
+    elif benign and done.returncode in benign:
+        log(f"{script}: {benign[done.returncode]}")
     else:
-        log(f"suggest: exit {done.returncode} -- see logs/suggest.log. "
-            f"The import itself succeeded.")
+        log(f"{script}: exit {done.returncode} -- see its own log. The import "
+            f"itself succeeded.")
 
 
 if __name__ == "__main__":

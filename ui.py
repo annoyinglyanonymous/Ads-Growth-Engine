@@ -525,65 +525,6 @@ conclusion, say that instead of reaching for one.
 """
 
 
-BRIEF_SUMMARY_PROMPT = """\
-You are explaining this brand's Meta ads for the window below to the person who
-owns the business. They will not read the tables. They want to know what
-happened, why, and what is worth doing about it -- in their words, not the
-dashboard's.
-
-Brand: {brand}
-Window: {since} to {until} ({days} days). Settled through {settled}; the last
-{unsettled} day(s) can still move as Meta restates conversions.
-
-THE FACTS, already read from the verbs (row lists shortened -- run a verb only
-if you need something that is not here):
-
-{facts}
-
-WHAT THE RULES ALREADY FOUND -- build on these, do not repeat them back:
-
-{readings}
-
-WRITE IT LIKE THIS
-
-Eight to ten plain sentences in one or two paragraphs. No headings, no bullet
-points, no markdown, no opening line about what you are about to do and no
-closing offer.
-
-Lead with the result: what was spent, what it produced, what each result cost,
-and whether each of those is up or down against the window before -- if the
-facts carry the prior window, say the direction in words ("up from", "down
-from") and quote both figures; if they do not, say this is one window with
-nothing to compare it to.
-
-Then say why the cost per result moved, naming the one or two ads that drove
-most of it by their names as given. Put rate effect and mix effect into plain
-words every time: the rate effect is the ads themselves getting cheaper or
-dearer, the mix effect is money shifting toward cheaper or dearer ads. Do not
-use either term without its plain phrase beside it.
-
-Then what is tiring: the one or two ads worth refreshing first, and what the
-symptom is in ordinary language -- "costs more per thousand views than a
-fortnight ago", "fewer of the people who see it click" -- never the field
-name. Say whether the spend behind that reading is enough to trust.
-
-If parts of the brief are empty because nothing has been tagged or filed, say
-so once, in one sentence, and name what filing them would unlock. Then move on.
-
-Close with what is worth looking at next -- two or three concrete things,
-taken from the readings and from waiting_on_you. Offer them as things to look
-at, not as decisions: nothing here approves, pauses or concludes anything.
-
-VOCABULARY
-
-Say "cost per lead" (or "cost per conversion" if the goal is not leads) and put
-"CPA" in brackets the first time only. Say "cost per thousand views" for CPM,
-"the share of people who clicked" for link CTR, "how often the same person saw
-it in a day" for daily frequency. Refer to ads by their names. Quote figures
-exactly as they appear in the facts; do not round, total, average, or work out
-a percentage that is not already there. If conversions in the last few days
-are part of a decline, say in one clause that those days are not final.
-"""
 
 
 @router.post("/brief/summary.json")
@@ -603,26 +544,13 @@ async def brief_summary(brand: str = "renegade", days: int = 28,
     except (NotConfigured, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
 
-    # gaps is the standing roadmap, not this window; waiting_on_you is small
-    # and is the answer to "so what do I do", so it rides along with facts.
-    payload = {"facts": d.get("facts"), "waiting_on_you": d.get("waiting_on_you"),
-               "degraded": d.get("degraded")}
-    readings = [r["says"] for r in d.get("readings") or []]
-
-    question = None
-    for keep in (8, 3, 0):
-        question = BRIEF_SUMMARY_PROMPT.format(
-            brand=d.get("brand") or brand, since=d.get("since"),
-            until=d.get("until"), days=d.get("days") or days,
-            settled=d.get("settled_through"), unsettled=d.get("unsettled_days"),
-            facts=json.dumps(jsonable_encoder(creative_mod.compact(payload, keep)),
-                             indent=1, ensure_ascii=False),
-            readings=json.dumps(readings, indent=1, ensure_ascii=False))
-        if len(question) <= creative_mod.PROMPT_BUDGET:
-            break
-
+    # The pack, the budget ladder and the prompt all moved to
+    # intel/brief.summarise(), because scripts/brief.py publishes this same
+    # document on a schedule and could not reach a prompt that lived in a
+    # request handler. Two copies of a prompt drift, and the one that drifts
+    # silently is the one nobody opens.
     try:
-        out = await chat.answer(question, brand)
+        out = await brief_mod.summarise(d, brand)
     except chat.ChatUnavailable as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     return JSONResponse(jsonable_encoder(out))
