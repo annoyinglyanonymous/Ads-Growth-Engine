@@ -143,3 +143,87 @@ def test_there_is_one_follow_on_runner():
     one that quietly forgot the venv, or the timeout, or the exit code."""
     assert "def _suggest(" not in SYNC
     assert SYNC.count("def _run_after(") == 1
+
+
+# ---------------------------------------------------------------------------
+# Figures are written the way a person writes them.
+# ---------------------------------------------------------------------------
+
+def test_the_pack_is_formatted_before_the_model_sees_it():
+    """The 2026-09-20 brief opened "You spent 15747.79 ... at 41.4416 each".
+    Telling the model to round instead would argue with the same prompt's
+    "quote figures exactly as they appear", and would disagree with the tiles:
+    charts.money drops cents above a thousand, so the card says $15,748 while
+    a model told to write dollars-and-cents says $15,747.79."""
+    body = INTEL_BRIEF.split("async def summarise", 1)[1]
+    assert "prose_mod.for_prose(payload)" in body
+    assert body.index("for_prose") < body.index("BRIEF_SUMMARY_PROMPT.format")
+
+
+def test_the_archive_keeps_full_precision():
+    """Only the COPY handed over is formatted. A brief whose numbers were
+    rounded for reading is one nobody can check afterwards, and checking them
+    afterwards is the only way anyone finds out whether they were any good."""
+    body = INTEL_BRIEF.split("async def summarise", 1)[1]
+    assert 'doc["facts"] = ' not in body, "summarise() must not rewrite the doc"
+    assert "payload = prose_mod.for_prose(payload)" in body
+
+
+def test_money_and_percent_are_named_not_guessed():
+    """cpa_change is dollars and attributable_share is a percentage, and no
+    substring match on "change" or "share" gets that right."""
+    from intel import prose
+    assert "cpa_change" in prose.MONEY
+    assert "attributable_share" in prose.PERCENT
+    assert "rate_effect" in prose.MONEY and "mix_effect" in prose.MONEY
+    assert not prose.MONEY & prose.PERCENT, "a key cannot be both"
+
+
+def test_formatting_leaves_counts_and_text_alone():
+    from intel import prose
+    out = prose.for_prose({"spend": "15747.79", "cpa": 41.4416,
+                           "link_ctr": 0.3271, "conversions": 380,
+                           "ads_run": 26, "name": "Static | Drown",
+                           "comparable_on_cost": False})
+    assert out["spend"] == "$15,748"
+    assert out["cpa"] == "$41.44"
+    assert out["link_ctr"] == "0.33%"
+    assert out["conversions"] == 380 and out["ads_run"] == 26
+    assert out["name"] == "Static | Drown"
+    assert out["comparable_on_cost"] is False, "a bool is not a number"
+
+
+def test_formatting_survives_the_archive_round_trip():
+    """A pack that has been through json.dumps(default=str) carries
+    "15747.79" rather than Decimal("15747.79")."""
+    from decimal import Decimal
+    from intel import prose
+    assert prose.for_prose({"spend": Decimal("15747.79")})["spend"] == "$15,748"
+    assert prose.for_prose({"spend": "15747.79"})["spend"] == "$15,748"
+
+
+# ---------------------------------------------------------------------------
+# Health: a failure a later success answered is not a problem.
+# ---------------------------------------------------------------------------
+
+def test_health_ignores_failures_a_later_success_answered():
+    """The structure pull failed nine times over 21-22 September and succeeded
+    on the 23rd. `intel status` still said healthy: false, and the brief opened
+    with "the ad-list pull has now failed ten times"."""
+    src = (ROOT / "intel" / "health.py").read_text(encoding="utf-8")
+    assert "unresolved" in src
+    sql = src.split("unresolved = await fetch_all", 1)[1][:900]
+    assert "not exists" in sql
+    assert "ok.kind       = p.kind" in sql, (
+        "structure and insights fail independently; a successful insights "
+        "pull says nothing about whether the ad list imported")
+    assert "ok.started_at > p.started_at" in sql
+
+
+def test_the_history_is_still_reported():
+    """recent_failures stays as it was -- the fix narrows what `healthy` is
+    computed from, it does not hide the history."""
+    src = (ROOT / "intel" / "health.py").read_text(encoding="utf-8")
+    assert '"recent_failures": failures,' in src
+    assert '"unresolved_failures": unresolved,' in src
+    assert "if unresolved:" in src, "the verdict must read the narrowed list"

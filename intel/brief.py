@@ -55,6 +55,7 @@ from db import fetch_all, fetch_one
 
 from . import angles as angles_mod
 from . import creative as creative_mod
+from . import prose as prose_mod
 from . import experiments as exp_mod
 from . import gaps as gaps_mod
 from . import health, metrics, readings
@@ -397,6 +398,11 @@ at, not as decisions: nothing here approves, pauses or concludes anything.
 
 VOCABULARY
 
+Every figure in the facts is ALREADY WRITTEN THE WAY IT SHOULD APPEAR -- money
+as $15,748 or $41.44, rates as 0.33%. Copy them across exactly as they are.
+Do not strip the $ or the %, do not re-round, and do not turn "$41.44" back
+into a bare number. A figure with no unit on it is a count.
+
 Say "cost per lead" (or "cost per conversion" if the goal is not leads) and put
 "CPA" in brackets the first time only. Say "cost per thousand views" for CPM,
 "the share of people who clicked" for link CTR, "how often the same person saw
@@ -424,6 +430,13 @@ async def summarise(doc: dict, slug: str | None = None) -> dict:
     payload = {"facts": doc.get("facts"),
                "waiting_on_you": doc.get("waiting_on_you"),
                "degraded": doc.get("degraded")}
+
+    # Formatted before the model sees it, by the same charts.money the tiles
+    # call, so the sentence and the card cannot drift apart. intel/prose.py
+    # carries the argument. The COPY is formatted; doc["facts"] keeps full
+    # precision, because a brief whose numbers were rounded for reading is one
+    # nobody can check afterwards.
+    payload = prose_mod.for_prose(payload)
     readings = [r["says"] for r in doc.get("readings") or []]
 
     question = None
