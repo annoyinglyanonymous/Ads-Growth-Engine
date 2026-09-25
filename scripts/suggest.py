@@ -79,12 +79,12 @@ SENT_TO_THE_MODEL = ("campaigns", "goals", "dimensions", "untagged", "tiring")
 
 #: Sent whole, never through compact(). The reply is one rating per campaign,
 #: and a campaign list cut to three rows is twenty campaigns with no card.
-NEVER_COMPACTED = ("campaigns",)
+NEVER_COMPACTED = ("campaigns", "previous_problems", "changes_since_last_review")
 
 #: The triage prompt's ceiling. Not creative.PROMPT_BUDGET: that one is the
 #: argv limit, and chat.classify sends its prompt on stdin, which has none.
 #: This is about cost and attention -- the other sections shrink first.
-TRIAGE_BUDGET = 48000
+TRIAGE_BUDGET = 64000
 
 #: The window the suggestion reads. Four weeks, matching /suggestions and the
 #: brief: long enough that a single bad day does not rewrite the advice, short
@@ -159,7 +159,33 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     # past. Named explicitly rather than `pack.keys()` so a new section has to
     # be sent deliberately, but the test below asserts none is forgotten.
     facts = {k: pack[k] for k in SENT_TO_THE_MODEL}
-    question = build_question(pack, facts)
+
+    # The last review, so each of its problems can be carried, resolved or
+    # reported as no longer mentioned. "Changed" is judged on the campaign
+    # facts the model reads, not the window end: a structure pull can change
+    # an ad's wording without moving the insights window.
+    prev = creative_mod.previous_suggestion(slug, date.today())
+    previous = creative_mod.previous_problems(prev)
+    # What actually moved, computed rather than judged: the only evidence a
+    # resolution may cite (creative.changes_since explains why).
+    snap = await creative_mod.snapshot(
+        slug, [c["campaign"] for c in pack["campaigns"]])
+    changes = creative_mod.changes_since(
+        prev, json.loads(json.dumps(pack["campaigns"], default=str)), snap)
+    data_changed = not prev or bool(changes)
+    facts["changes_since_last_review"] = changes
+    facts["previous_problems"] = creative_mod.for_the_prompt(previous)
+    note = creative_mod.previous_note(prev, data_changed)
+    if prev:
+        by = [ch["by"] for v in changes.values() for ch in v]
+        log(f"{slug}: comparing against {prev['file']} "
+            f"({sum(len(v) for v in previous.values())} problem(s)); "
+            f"{by.count('you')} change(s) to the account, "
+            f"{by.count('numbers')} in the numbers"
+            + ("" if prev.get("snapshot") is not None else
+               "; no snapshot in it, so wording is compared on leading ads only"))
+
+    question = build_question(pack, facts, note)
     log(f"{slug}: {len(pack['campaigns'])} campaign(s), prompt "
         f"{len(question)} chars")
 
@@ -175,7 +201,9 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     except (ValueError, chat.ChatUnavailable) as exc:
         log(f"{slug}: FAILED  {exc}")
         return 1
-    triage = creative_mod.triage_from(rows, pack["campaigns"])
+    triage = creative_mod.triage_from(rows, pack["campaigns"], previous,
+                                      data_changed, date.today(),
+                                      changes if prev else None)
     unrated = sum(1 for t in triage if t["rating"] is None)
     if unrated == len(triage):
         log(f"{slug}: FAILED  the reply rated none of the "
@@ -198,6 +226,11 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         # prose this used to publish -- is no longer written; the page still
         # reads it off older files.
         "triage": triage,
+        "previous_file": prev.get("file") if prev else None,
+        "data_changed": data_changed,
+        # The account as it stood, so the next run can tell which ads'
+        # wording or status moved. Not sent to the model.
+        "snapshot": snap,
         "duration_ms": int((datetime.now(timezone.utc) - started)
                            .total_seconds() * 1000),
         # The pack rides along. A suggestion without the numbers it was written
@@ -213,10 +246,16 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     log(f"{slug}: published {out.name} ({counts['red']} red, "
         f"{counts['yellow']} yellow, {counts['green']} green, "
         f"{doc['duration_ms'] / 1000:.0f}s)")
+    if prev:
+        n = {k: sum(len(t[k]) for t in triage) for k in ("resolved", "dropped")}
+        still = sum(1 for t in triage for p in t["problems"]
+                    if p["status"] == "still_open")
+        log(f"{slug}: since {prev['file']}: {n['resolved']} resolved, "
+            f"{still} still open, {n['dropped']} no longer mentioned")
     return 0
 
 
-def build_question(pack: dict, facts: dict) -> str:
+def build_question(pack: dict, facts: dict, previous_note: str = "") -> str:
     """The prompt, shrunk until it fits the command line.
 
     Only the sections outside NEVER_COMPACTED shrink. The campaign list goes
@@ -231,6 +270,7 @@ def build_question(pack: dict, facts: dict) -> str:
             brand=pack["brand"], since=pack["since"], until=pack["until"],
             days=pack["days"], settled=pack["settled_through"],
             unsettled=pack["unsettled_days"],
+            previous_note=previous_note or creative_mod.previous_note(None, True),
             facts=json.dumps({**whole, **creative_mod.compact(rest, keep)},
                              separators=(",", ":"), ensure_ascii=False,
                              default=str))

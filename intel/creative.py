@@ -596,19 +596,63 @@ the order `campaigns` lists them:
 [
   {{"campaign": "<the campaign name exactly as given>",
     "rating": "red" | "yellow" | "green",
-    "why": "<one or two plain sentences: the evidence, citing figures that
-             appear in the facts above, and naming the goal it was judged in>",
-    "changes": ["<a concrete thing worth trying>", "..."]}}
+    "why": "<one plain sentence: the verdict, naming the goal it was judged
+             in and the one figure that decided it>",
+    "problems": [
+      {{"problem": "<what is wrong, in plain words, with the evidence: the
+                    ad or ad group it is on and the figures that show it>",
+        "fix": "<how to fix it: the concrete change worth trying, written so
+                somebody could make it today>",
+        "continues": "<the id of the previous problem this is, or null>"}}
+    ],
+    "resolved": [
+      {{"id": "<the id of a previous problem for THIS campaign>",
+        "change": "<the id of the entry in changes_since_last_review for THIS
+                   campaign that shows it gone>",
+        "evidence": "<in plain words, how that change settles the problem>"}}
+    ]}}
 ]
 
-`changes`: two or three for red, one to three for yellow, [] for green. Each
-one specific enough to act on today: a first line to cut, in quotation marks;
-a replacement hook written out in full; an offer to state plainly; an
-ad group whose copy is worth refreshing because it is tiring. Quote the actual
-copy you are reacting to, and name ads as they are named in the account.
+WHAT THE LAST REVIEW SAID. {previous_note}
 
-Every figure you write must appear in the facts above. Do not add, divide or
-average anything.
+`previous_problems` maps each campaign to the problems that review raised,
+each with an `id`. Account for every one of them, for its own campaign:
+
+  - Still there? Raise it again in `problems` and put its id in `continues`.
+    Rewrite it against today's figures; keep the id. Same underlying problem
+    means same id, even if you would now word it differently.
+  - Gone? List its id under `resolved`, citing in `change` the entry in
+    `changes_since_last_review` that shows it -- and only for its own
+    campaign. That list was computed by comparing the account then and now,
+    and it is the ONLY evidence a resolution may rest on.
+    No evidence, no resolution. A wording problem is resolved only by a "wording changed"
+    entry for that ad; a spend leader changing does not change what an ad
+    says. A campaign with no entries resolves nothing.
+  - A problem you would not raise today but cannot show is gone: leave it
+    out of both. The page shows it as no longer mentioned, not as fixed.
+
+A problem not in `previous_problems` gets "continues": null.
+
+`resolved` is [] when nothing was resolved, and always [] when there was no
+previous review.
+
+`problems`: two or three for red, one to three for yellow, [] for green. One
+problem per entry, and every problem carries its own fix -- a problem with no
+fix is a complaint, and a fix with no problem is a guess.
+
+A good fix is specific enough to act on today: a first line to cut, in
+quotation marks, with the replacement written out in full; an offer to state
+plainly, with the wording; an ad that is tiring, with what to refresh it
+against. Quote the actual copy you are reacting to, and name ads as they are
+named in the account.
+
+Write for somebody reading a card, not a spreadsheet. Money to the cent as it
+would be printed ("$97.08", not "97.0816"), rates to two decimals ("1.04%
+link CTR"), ranks as "11th of 11". No line breaks and no "\\n" inside a
+string.
+
+Every figure you write must appear in the facts above, rounded only for
+printing. Do not add, divide or average anything.
 
 Suggest, never instruct. "Worth trying" and "the cheaper ad groups in this
 goal tend to", never "pause this", "kill that", "this is your winner" or
@@ -678,7 +722,274 @@ optimization goals.
 """
 
 
-def triage_from(rows: list, campaigns: list) -> list:
+def _clean(text) -> str:
+    """One line of card text. The model quotes ad bodies, and a body with a
+    paragraph break arrives as a literal backslash-n more often than not."""
+    if not text:
+        return ""
+    s = str(text).replace("\\n", " ").replace("\n", " ")
+    return " ".join(s.split())
+
+
+def _problems(r: dict) -> list:
+    """[{problem, fix}], from the reply's `problems`.
+
+    Falls back to `changes`, the flat list the first version of the prompt
+    asked for, so a file published before this change still renders -- as
+    fixes with no stated problem, which is what it was.
+    """
+    out = []
+    if isinstance(r.get("problems"), list):
+        for p in r["problems"]:
+            if isinstance(p, dict):
+                problem, fix = _clean(p.get("problem")), _clean(p.get("fix"))
+                if problem or fix:
+                    out.append({"problem": problem or None, "fix": fix or None})
+    elif isinstance(r.get("changes"), list):
+        out = [{"problem": None, "fix": _clean(x)}
+               for x in r["changes"] if _clean(x)]
+    return out
+
+
+# ------------------------------------------------------------ the last run --
+# WHAT HAPPENED TO YESTERDAY'S PROBLEMS.
+#
+# Every run is written from scratch, so without this a fixed problem simply
+# stops being mentioned -- and so does a problem the model merely decided not
+# to raise this time, which on the same data happens (two campaigns went from
+# green to yellow between two runs over an identical window). The reader
+# cannot tell those apart, and "it disappeared" is not "it was fixed".
+#
+# So each problem carries an id and the date it was first raised, the next run
+# is handed the last run's problems, and every one of them ends up in exactly
+# one of three places: still open (same id, same first-raised date), resolved
+# (with the evidence the model cites), or no longer mentioned (neither --
+# shown as such, never as fixed).
+
+def previous_suggestion(slug: str, before: date) -> dict | None:
+    """The newest published suggestion dated BEFORE `before`, or None.
+
+    Before, not on: re-running today's publish must compare against
+    yesterday's, not against the file it is about to overwrite.
+    """
+    try:
+        files = sorted(f for f in SUGGESTION_DIR.glob(f"*-{slug}.json")
+                       if f.name[:10] < before.isoformat())
+    except OSError:
+        return None
+    for f in reversed(files):
+        try:
+            doc = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if doc.get("triage"):
+            doc["file"] = f.name
+            return doc
+    return None
+
+
+def previous_problems(doc: dict | None) -> dict:
+    """campaign name -> [{id, problem, fix, open_since}] from a published file.
+
+    A file written before problems had ids gets them assigned here, from its
+    own date and position, so the chain can start from it. Its `open_since`
+    is its publish date: the earliest the problem is known to have existed.
+    """
+    if not doc:
+        return {}
+    day = str(doc.get("published_at") or doc.get("file") or "")[:10]
+    tag = day[5:7] + day[8:10]
+    out: dict = {}
+    for ci, t in enumerate(doc.get("triage") or []):
+        items = t.get("problems")
+        if items is None:
+            items = [{"problem": None, "fix": x} for x in t.get("changes") or []]
+        rows = []
+        for pi, p in enumerate(items):
+            if not isinstance(p, dict) or not (p.get("problem") or p.get("fix")):
+                continue
+            rows.append({
+                "id": p.get("id") or f"p{tag}-{ci}-{pi}",
+                # An old file stored fixes only; the fix is then the nearest
+                # thing to a statement of the problem there is.
+                "problem": p.get("problem") or p.get("fix"),
+                "fix": p.get("fix"),
+                "open_since": p.get("open_since") or day,
+            })
+        if rows:
+            out[t.get("campaign")] = rows
+    return out
+
+
+def previous_note(prev: dict | None, data_changed: bool) -> str:
+    """The sentence the prompt carries about the last review."""
+    if not prev:
+        return ("There is no previous review, so `previous_problems` is empty: "
+                "every problem is new and `resolved` is always [].")
+    note = (f"The last review was published {str(prev.get('published_at'))[:10]}"
+            f" against the window ending {prev.get('until')}.")
+    if not data_changed:
+        note += (" The facts have NOT changed since then, so nothing can have "
+                 "been resolved: carry forward every previous problem that "
+                 "still applies, and leave `resolved` empty.")
+    return note
+
+
+# ------------------------------------------------------- what changed since --
+# A RESOLUTION HAS TO POINT AT SOMETHING THAT ACTUALLY CHANGED.
+#
+# Left to itself the model resolved three problems on the first run of the
+# carry-forward, and two were wrong: one because a different ad had become a
+# spend leader (the shared wording was still running), one because it misread
+# wording that had not changed at all. The import had re-read no ad copy that
+# day, so no wording problem could honestly have been fixed.
+#
+# So the changes are computed here, by comparing the last review's stored
+# facts with today's, and a resolution is only accepted if it cites one of
+# them for its own campaign. Each change says who made it:
+#
+#   you      the account was changed -- wording, an ad paused or switched on,
+#            an ad added or gone, the campaign's status
+#   numbers  nothing was touched; the figures moved -- a tiring ad no longer
+#            tiring, an ad group's rank in its goal, a new spend leader
+#
+# The page keeps the two apart, because "fixed" and "no longer showing" are
+# different claims and only the first one is a result of somebody's work.
+
+#: Cap per campaign. A campaign with forty changed ads gets the first twelve;
+#: the model needs enough to match against, not the full audit.
+CHANGES_PER_CAMPAIGN = 12
+
+
+async def snapshot(brand: str, campaign_names: list) -> dict:
+    """campaign name -> {ad_key: {ad, copy_hash, status}}, as the account is now.
+
+    Stored in the published file so the NEXT run can see which ads' wording or
+    status moved. copy_hash is ads.ad_copy's own md5 over every text field, so
+    a changed headline, body or button changes it; a hash of None is an ad the
+    import has never read copy for.
+    """
+    if not campaign_names:
+        return {}
+    b = await context.brand(brand)
+    rows = await fetch_all(
+        """
+        select c.name as campaign, a.ad_key, a.name as ad,
+               a.effective_status as status, cp.copy_hash
+          from ads.ad a
+          join ads.campaign c   on c.campaign_key = a.campaign_key
+          left join ads.ad_copy cp on cp.ad_key = a.ad_key
+         where c.brand_id = %s and c.name = any(%s::text[])
+        """, (b["id"], list(campaign_names)))
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r["campaign"], {})[str(r["ad_key"])] = {
+            "ad": r["ad"], "status": r["status"], "copy_hash": r["copy_hash"]}
+    return out
+
+
+def _rank(g: dict) -> str | None:
+    r, n = g.get("cpa_rank_in_goal"), g.get("ad_groups_ranked_in_goal")
+    return f"{r} of {n}" if r and n else None
+
+
+def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
+    """campaign name -> [{id, by, what}]: what moved since the last review.
+
+    `prev` is the last published file: its `pack.campaigns` (the facts it was
+    written from) and, when it has one, its `snapshot`. A file from before
+    snapshots existed is compared on its leading ads' wording only, and the
+    change says so.
+    """
+    if not prev:
+        return {}
+    before = {c.get("campaign"): c
+              for c in (prev.get("pack") or {}).get("campaigns") or []}
+    prev_snap = prev.get("snapshot")
+    out: dict = {}
+    for c in campaigns:
+        name = c.get("campaign")
+        was = before.get(name)
+        items: list = []
+
+        def add(by: str, what: str) -> None:
+            items.append({"id": f"c{len(items) + 1}", "by": by, "what": what})
+
+        if was is None:
+            out[name] = [{"id": "c1", "by": "numbers",
+                          "what": "not in the last review's window"}]
+            continue
+
+        if (was.get("status") or None) != (c.get("status") or None):
+            add("you", f"campaign status {was.get('status')} -> {c.get('status')}")
+
+        if prev_snap is not None:
+            old, new = prev_snap.get(name) or {}, snap.get(name) or {}
+            for k, a in new.items():
+                o = old.get(k)
+                if o is None:
+                    add("you", f'ad added: "{a["ad"]}"')
+                    continue
+                if o.get("copy_hash") and a.get("copy_hash") \
+                        and o["copy_hash"] != a["copy_hash"]:
+                    add("you", f'wording changed on "{a["ad"]}"')
+                if (o.get("status") == "ACTIVE") != (a.get("status") == "ACTIVE"):
+                    add("you", f'"{a["ad"]}" {o.get("status")} -> {a.get("status")}')
+            for k, o in old.items():
+                if k not in new:
+                    add("you", f'ad gone from the campaign: "{o["ad"]}"')
+        else:
+            # No snapshot in the last file: the leading ads' copy is all there
+            # is to compare, and only for ads that lead in both.
+            old = {a.get("ad"): a for a in was.get("leading_ads") or []}
+            for a in c.get("leading_ads") or []:
+                o = old.get(a.get("ad"))
+                if not o:
+                    continue
+                for f in ("headline", "body", "cta_button"):
+                    if (o.get(f) or "") != (a.get(f) or ""):
+                        add("you", f'{f} changed on "{a.get("ad")}" (compared '
+                                   f'on the leading ads only)')
+
+        t_old = {t.get("ad") for t in was.get("tiring_ads") or []}
+        t_new = {t.get("ad") for t in c.get("tiring_ads") or []}
+        for ad in sorted(t_old - t_new):
+            add("numbers", f'"{ad}" no longer tiring')
+        for ad in sorted(t_new - t_old):
+            add("numbers", f'"{ad}" now tiring')
+
+        g_old = {g.get("ad_group"): g for g in was.get("ad_groups") or []}
+        for g in c.get("ad_groups") or []:
+            o = g_old.get(g.get("ad_group"))
+            if o and _rank(o) != _rank(g):
+                add("numbers", f'ad group "{g.get("ad_group")}" rank in '
+                               f'{g.get("optimization_goal")}: {_rank(o)} -> {_rank(g)}')
+
+        lead_old = [a.get("ad") for a in was.get("leading_ads") or []]
+        lead_new = [a.get("ad") for a in c.get("leading_ads") or []]
+        if set(lead_old) != set(lead_new):
+            add("numbers", f"spend leaders {lead_old} -> {lead_new}")
+
+        if items:
+            # The account's own changes first, so the cap never cuts one of
+            # them for a rank that moved.
+            items.sort(key=lambda x: x["by"] != "you")
+            for i, x in enumerate(items[:CHANGES_PER_CAMPAIGN], 1):
+                x["id"] = f"c{i}"
+            out[name] = items[:CHANGES_PER_CAMPAIGN]
+    return out
+
+
+def for_the_prompt(previous: dict) -> dict:
+    """previous_problems trimmed to what the model needs to match against."""
+    return {name: [{"id": p["id"], "problem": (p["problem"] or "")[:300]}
+                   for p in rows]
+            for name, rows in previous.items()}
+
+
+def triage_from(rows: list, campaigns: list, previous: dict | None = None,
+                data_changed: bool = True, today: date | None = None,
+                changes: dict | None = None) -> list:
     """The model's reply, checked against the campaigns it was asked about.
 
     Returns one entry per campaign in `campaigns`, in that order. A campaign
@@ -689,23 +1000,94 @@ def triage_from(rows: list, campaigns: list) -> list:
     The campaign's own figures are attached from the PACK, never from the
     reply, so the numbers on a card are the function's and not the model's
     retelling of them.
+
+    THE LAST RUN'S PROBLEMS are accounted for here, not trusted to the reply:
+
+      - `continues` is honoured only for an id the SAME campaign had. Anything
+        else is a new problem, whatever the reply claimed.
+      - `resolved` is honoured only for such an id, only with evidence, and
+        never when `data_changed` is false -- the same facts cannot show a
+        problem gone. A refused resolution falls to "no longer mentioned".
+      - With `changes` (changes_since), a resolution must also cite the id
+        of a change listed for ITS campaign. It is then labelled by who made
+        that change -- "you" (the account was edited) or "numbers" (the
+        figures moved) -- and a campaign with no changes resolves nothing.
+      - A previous problem neither continued nor resolved is kept as
+        `dropped`, so the page can say it was not confirmed fixed.
     """
+    previous = previous or {}
+    today = today or date.today()
+    tag = f"{today:%m%d}"
     by_name: dict = {}
     for r in rows:
         if isinstance(r, dict) and r.get("campaign"):
             by_name.setdefault(str(r["campaign"]).strip(), r)
 
     out = []
-    for c in campaigns:
-        r = by_name.get(str(c.get("campaign") or "").strip()) or {}
+    for ci, c in enumerate(campaigns):
+        name = c.get("campaign")
+        r = by_name.get(str(name or "").strip()) or {}
         rating = str(r.get("rating") or "").strip().lower()
-        changes = r.get("changes") if isinstance(r.get("changes"), list) else []
+        before = {p["id"]: p for p in previous.get(name) or []}
+        used: set = set()
+
+        problems = []
+        raw = r.get("problems") if isinstance(r.get("problems"), list) else []
+        for pi, (p, clean) in enumerate(zip(
+                [x for x in raw if isinstance(x, dict)
+                 and (_clean(x.get("problem")) or _clean(x.get("fix")))],
+                _problems(r))):
+            prior = before.get(str(p.get("continues") or "").strip())
+            if prior and prior["id"] not in used:
+                used.add(prior["id"])
+                problems.append({**clean, "id": prior["id"],
+                                 "status": "still_open",
+                                 "open_since": prior["open_since"]})
+            else:
+                problems.append({**clean, "id": f"p{tag}-{ci}-{pi}",
+                                 "status": "new",
+                                 "open_since": today.isoformat()})
+        if not raw:
+            # An old-shape reply: fixes only, nothing to chain.
+            problems = [{**p, "id": f"p{tag}-{ci}-{pi}", "status": "new",
+                         "open_since": today.isoformat()}
+                        for pi, p in enumerate(_problems(r))]
+
+        resolved = []
+        if data_changed:
+            for x in r.get("resolved") if isinstance(r.get("resolved"), list) else []:
+                if not isinstance(x, dict):
+                    continue
+                prior = before.get(str(x.get("id") or "").strip())
+                evidence = _clean(x.get("evidence"))
+                if not (prior and evidence and prior["id"] not in used):
+                    continue
+                change = None
+                if changes is not None:
+                    listed = {ch["id"]: ch for ch in changes.get(name) or []}
+                    change = listed.get(str(x.get("change") or "").strip())
+                    if change is None:
+                        continue      # no real change behind it: dropped
+                used.add(prior["id"])
+                resolved.append({"id": prior["id"],
+                                 "problem": prior["problem"],
+                                 "open_since": prior["open_since"],
+                                 "evidence": evidence,
+                                 "by": change["by"] if change else None,
+                                 "change": change["what"] if change else None})
+
+        dropped = [{"id": p["id"], "problem": p["problem"],
+                    "open_since": p["open_since"]}
+                   for pid, p in before.items() if pid not in used]
+
         out.append({
-            "campaign": c.get("campaign"),
+            "campaign": name,
             "rating": rating if rating in RATINGS else None,
-            "why": (str(r.get("why")).strip() if r.get("why") else
+            "why": (_clean(r.get("why")) or
                     "The reply did not rate this campaign."),
-            "changes": [str(x).strip() for x in changes if str(x).strip()],
+            "problems": problems,
+            "resolved": resolved,
+            "dropped": dropped,
             "status": c.get("status"),
             "optimization_goals": c.get("optimization_goals"),
             "spend": c.get("spend"),

@@ -563,7 +563,8 @@ def test_the_triage_keeps_every_campaign_and_checks_the_rating():
     t = creative.triage_from(reply, camps)
     assert [r["campaign"] for r in t] == ["A", "B", "C"]
     assert [r["rating"] for r in t] == ["red", None, None]
-    assert t[0]["changes"] == ["x"]
+    # The old flat `changes` still reads, as fixes with no stated problem.
+    assert [(x["problem"], x["fix"]) for x in t[0]["problems"]] == [(None, "x")]
     assert "did not rate" in t[2]["why"]
     # The figures come from the pack, never the reply.
     assert t[0]["spend"] == 10
@@ -594,3 +595,229 @@ def test_the_page_renders_the_cards_when_they_exist():
     for r in ("red", "yellow", "green"):
         assert f"'{r}'" in html, f"{r} cards are never rendered"
     assert not re.search(r"<script|<button", html, re.I)
+
+
+def test_every_problem_carries_its_fix():
+    camps = [{"campaign": "A"}]
+    reply = [{"campaign": "A", "rating": "red",
+              "why": "dear.\n\nVery dear.",
+              "problems": [
+                  {"problem": "Opens on \"As a P&C agency owner,\n\nBut\"",
+                   "fix": "Lead with the offer."},
+                  {"problem": "", "fix": ""},
+                  "not a dict"]}]
+    t = creative.triage_from(reply, camps)[0]
+    assert t["why"] == "dear. Very dear.", "a literal \n reached the card"
+    assert [(x["problem"], x["fix"]) for x in t["problems"]] == [
+        ('Opens on "As a P&C agency owner, But"', "Lead with the offer.")]
+
+
+def test_the_prompt_pairs_each_problem_with_a_fix():
+    p = creative.SUGGESTIONS_PROMPT
+    assert '"problem"' in p and '"fix"' in p
+    assert "every problem carries its own fix" in p
+
+
+def test_the_groups_fold_without_a_script():
+    """Twenty-four open cards is a wall. Each group is a <details> that
+    opens on a click, which needs no script and no button."""
+    html = (ROOT / "templates" / "_triage.html").read_text(encoding="utf-8")
+    assert '<details class="tgroup' in html and "<summary>" in html
+    assert "<details open" not in html, "a group starts open"
+    assert "How to fix it" in html
+
+
+# ---------------------------------------------------------------------------
+# What happened to the last review's problems.
+# ---------------------------------------------------------------------------
+
+from datetime import date as _date
+
+PREV = {"A": [{"id": "p0923-0-0", "problem": "No headline on the lead ad",
+               "fix": "Add one", "open_since": "2026-09-22"},
+              {"id": "p0923-0-1", "problem": "Ten ads with no conversions",
+               "fix": "Narrow", "open_since": "2026-09-23"},
+              {"id": "p0923-0-2", "problem": "Rocket opener",
+               "fix": "Cut it", "open_since": "2026-09-23"}],
+        "B": [{"id": "p0923-1-0", "problem": "B's own problem",
+               "fix": "x", "open_since": "2026-09-23"}]}
+
+
+def _reply(**over):
+    r = {"campaign": "A", "rating": "red", "why": "w",
+         "problems": [{"problem": "Still ten ads with nothing", "fix": "Narrow",
+                       "continues": "p0923-0-1"},
+                      {"problem": "Brand new thing", "fix": "Do y",
+                       "continues": None}],
+         "resolved": [{"id": "p0923-0-0",
+                       "evidence": "the ad now carries the headline 'Free Estimate'"}]}
+    r.update(over)
+    return [r]
+
+
+def _t(reply, changed=True):
+    return creative.triage_from(reply, [{"campaign": "A"}, {"campaign": "B"}],
+                                PREV, changed, _date(2026, 9, 24))
+
+
+def test_a_continuing_problem_keeps_its_id_and_first_date():
+    a = _t(_reply())[0]
+    still = [p for p in a["problems"] if p["status"] == "still_open"]
+    assert [(p["id"], p["open_since"]) for p in still] == [("p0923-0-1",
+                                                           "2026-09-23")]
+    new = [p for p in a["problems"] if p["status"] == "new"]
+    assert new[0]["open_since"] == "2026-09-24"
+    assert new[0]["id"] not in {p["id"] for rows in PREV.values() for p in rows}
+
+
+def test_a_resolution_needs_evidence_and_is_reported():
+    a = _t(_reply())[0]
+    assert [x["id"] for x in a["resolved"]] == ["p0923-0-0"]
+    assert a["resolved"][0]["problem"] == "No headline on the lead ad"
+    no_evidence = _t(_reply(resolved=[{"id": "p0923-0-0", "evidence": ""}]))[0]
+    assert no_evidence["resolved"] == []
+    assert "p0923-0-0" in [x["id"] for x in no_evidence["dropped"]]
+
+
+def test_a_silently_dropped_problem_is_not_called_fixed():
+    """The failure this exists for: a problem the model simply stopped
+    raising must read as 'no longer mentioned', never as resolved."""
+    a = _t(_reply())[0]
+    assert [x["id"] for x in a["dropped"]] == ["p0923-0-2"]
+
+
+def test_nothing_resolves_when_the_data_did_not_change():
+    a = _t(_reply(), changed=False)[0]
+    assert a["resolved"] == []
+    assert "p0923-0-0" in [x["id"] for x in a["dropped"]]
+
+
+def test_an_id_from_another_campaign_is_a_new_problem():
+    a = _t(_reply(problems=[{"problem": "p", "fix": "f",
+                             "continues": "p0923-1-0"}],
+                  resolved=[{"id": "p0923-1-0", "evidence": "gone"}]))[0]
+    assert a["problems"][0]["status"] == "new"
+    assert a["resolved"] == []
+    b = _t(_reply())[1]
+    assert [x["id"] for x in b["dropped"]] == ["p0923-1-0"], (
+        "B was not in the reply, so its problem is unaccounted for")
+
+
+def test_an_id_cannot_be_both_continued_and_resolved():
+    a = _t(_reply(resolved=[{"id": "p0923-0-1", "evidence": "gone"}]))[0]
+    assert a["resolved"] == []
+    assert [p["id"] for p in a["problems"]
+            if p["status"] == "still_open"] == ["p0923-0-1"]
+
+
+def test_an_old_file_starts_the_chain():
+    """The first files stored fixes only and no ids. They are given ids from
+    their own date, so the next run has something to carry forward."""
+    old = {"published_at": "2026-09-23T11:35:50+00:00",
+           "triage": [{"campaign": "A", "changes": ["Cut the rocket line"]},
+                      {"campaign": "B", "problems": []}]}
+    prev = creative.previous_problems(old)
+    assert prev == {"A": [{"id": "p0923-0-0", "problem": "Cut the rocket line",
+                           "fix": "Cut the rocket line",
+                           "open_since": "2026-09-23"}]}
+
+
+def test_the_previous_review_is_the_one_before_today(tmp_path, monkeypatch):
+    monkeypatch.setattr(creative, "SUGGESTION_DIR", tmp_path)
+    for day in ("2026-09-22", "2026-09-23", "2026-09-24"):
+        (tmp_path / f"{day}-renegade.json").write_text(
+            json.dumps({"triage": [{"campaign": day}]}), encoding="utf-8")
+    prev = creative.previous_suggestion("renegade", _date(2026, 9, 24))
+    assert prev["file"] == "2026-09-23-renegade.json"
+
+
+def test_the_prompt_says_how_to_account_for_the_last_review():
+    p = creative.SUGGESTIONS_PROMPT
+    for word in ('"continues"', '"resolved"', '"evidence"',
+                 "No evidence, no resolution", "{previous_note}"):
+        assert word in p, word
+    assert "NOT changed" in creative.previous_note({"until": "x"}, False)
+
+
+# ---------------------------------------------------------------------------
+# A resolution has to point at something that actually changed.
+# ---------------------------------------------------------------------------
+
+def _camp(name, lead, tiring=(), rank=(3, 11), status="ACTIVE"):
+    return {"campaign": name, "status": status,
+            "leading_ads": [{"ad": a, "headline": h, "body": b,
+                             "cta_button": "LEARN_MORE"} for a, h, b in lead],
+            "tiring_ads": [{"ad": t} for t in tiring],
+            "ad_groups": [{"ad_group": "G", "optimization_goal": "LEAD_GENERATION",
+                           "cpa_rank_in_goal": rank[0],
+                           "ad_groups_ranked_in_goal": rank[1]}]}
+
+
+def test_changes_are_split_into_yours_and_the_numbers():
+    prev = {"pack": {"campaigns": [_camp("A", [("X", "h", "b"), ("Y", "h", "b")],
+                                         tiring=["X"])]},
+            "snapshot": {"A": {"k1": {"ad": "X", "copy_hash": "aaa", "status": "ACTIVE"},
+                               "k2": {"ad": "Y", "copy_hash": "bbb", "status": "ACTIVE"}}}}
+    now = [_camp("A", [("X", "h", "b"), ("Z", "h", "b")], rank=(8, 11))]
+    snap = {"A": {"k1": {"ad": "X", "copy_hash": "ccc", "status": "ACTIVE"},
+                  "k2": {"ad": "Y", "copy_hash": "bbb", "status": "PAUSED"},
+                  "k3": {"ad": "Z", "copy_hash": "ddd", "status": "ACTIVE"}}}
+    ch = creative.changes_since(prev, now, snap)["A"]
+    you = [c["what"] for c in ch if c["by"] == "you"]
+    nums = [c["what"] for c in ch if c["by"] == "numbers"]
+    assert 'wording changed on "X"' in you
+    assert '"Y" ACTIVE -> PAUSED' in you
+    assert 'ad added: "Z"' in you
+    assert '"X" no longer tiring' in nums
+    assert any("3 of 11 -> 8 of 11" in w for w in nums)
+    assert any(w.startswith("spend leaders") for w in nums)
+    assert [c["id"] for c in ch] == [f"c{i}" for i in range(1, len(ch) + 1)]
+    assert ch[0]["by"] == "you", "the account's own changes come first"
+
+
+def test_nothing_changed_means_no_changes():
+    c = _camp("A", [("X", "h", "b")])
+    prev = {"pack": {"campaigns": [c]},
+            "snapshot": {"A": {"k1": {"ad": "X", "copy_hash": "a", "status": "ACTIVE"}}}}
+    assert creative.changes_since(prev, [c], prev["snapshot"]) == {}
+
+
+def test_without_a_snapshot_wording_is_compared_on_the_leading_ads():
+    prev = {"pack": {"campaigns": [_camp("A", [("X", "old", "b")])]}}
+    ch = creative.changes_since(prev, [_camp("A", [("X", "new", "b")])], {})
+    assert ch["A"][0]["by"] == "you"
+    assert "leading ads only" in ch["A"][0]["what"]
+
+
+def test_a_resolution_must_cite_a_listed_change_for_its_campaign():
+    """The failure this exists for. On the first carry-forward run the model
+    resolved 'the leading ads share a body' because a different ad became a
+    spend leader, and 'state the offer' against wording that had not changed.
+    Neither cited a real change, so neither may stand."""
+    changes = {"A": [{"id": "c1", "by": "numbers", "what": '"X" no longer tiring'},
+                     {"id": "c2", "by": "you", "what": 'wording changed on "X"'}],
+               "B": [{"id": "c1", "by": "you", "what": "something in B"}]}
+    reply = _reply(problems=[], resolved=[
+        {"id": "p0923-0-0", "change": "c2", "evidence": "headline added"},
+        {"id": "p0923-0-1", "change": "c1", "evidence": "not tiring"},
+        {"id": "p0923-0-2", "change": "c9", "evidence": "trust me"}])
+    a = creative.triage_from(reply, [{"campaign": "A"}, {"campaign": "B"}],
+                             PREV, True, _date(2026, 9, 24), changes)[0]
+    got = {x["id"]: x["by"] for x in a["resolved"]}
+    assert got == {"p0923-0-0": "you", "p0923-0-1": "numbers"}
+    assert [x["id"] for x in a["dropped"]] == ["p0923-0-2"]
+
+
+def test_a_campaign_with_no_changes_resolves_nothing():
+    reply = _reply(problems=[], resolved=[
+        {"id": "p0923-0-0", "change": "c1", "evidence": "gone"}])
+    a = creative.triage_from(reply, [{"campaign": "A"}], PREV, True,
+                             _date(2026, 9, 24), {})[0]
+    assert a["resolved"] == []
+
+
+def test_the_prompt_makes_the_change_list_the_only_evidence():
+    p = creative.SUGGESTIONS_PROMPT
+    assert "changes_since_last_review" in p
+    assert "ONLY evidence" in p
+    assert "a spend leader changing does not change what an ad" in p
