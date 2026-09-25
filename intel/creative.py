@@ -68,6 +68,88 @@ CAMPAIGN_ADS = 2
 CAMPAIGN_BODY_CHARS = 160
 
 
+# ------------------------------------------------------------ rating rule --
+# WHICH RATINGS THE NUMBERS ALLOW, decided here and not by the model.
+#
+# Left to the model alone, two runs over the SAME window disagreed: two green
+# campaigns went yellow and several moved between yellow and red, with nothing
+# in the account changed. A rating somebody acts on cannot depend on which run
+# they happened to open. So the numbers set the bounds, the model chooses
+# within them and writes the reasons, and a rating outside the bounds is
+# moved to the nearest allowed one -- and the card says it was.
+#
+# Thresholds, not rates: ranks are orderings ads.window_metrics' figures
+# already produced, and spend and conversions are compared, never combined.
+
+#: Green needs this many conversions behind it; fewer is noise.
+GREEN_MIN_CONVERSIONS = 20
+#: An ad group spending less than this is never grounds for red on its own.
+RED_MIN_SPEND = 500.0
+#: At or over this, an ad group in the dearest third of its goal IS red.
+STRONG_RED_SPEND = 1000.0
+
+
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def rating_rule(c: dict) -> dict:
+    """{"allowed": [...], "reasons": [...]} for one campaign of the pack."""
+    red, strong, green_blockers = [], [], []
+    ranked = [g for g in c.get("ad_groups") or []
+              if g.get("cpa_rank_in_goal") and g.get("ad_groups_ranked_in_goal")]
+    for g in c.get("ad_groups") or []:
+        spend = _num(g.get("spend"))
+        r, n = g.get("cpa_rank_in_goal"), g.get("ad_groups_ranked_in_goal")
+        name = g.get("ad_group")
+        if r and n:
+            third = max(1, n // 3)
+            if r > n - third and spend >= RED_MIN_SPEND:
+                why = (f'"{name}" is {r} of {n} in {g.get("optimization_goal")} '
+                       f"on ${spend:,.2f}")
+                (strong if spend >= STRONG_RED_SPEND else red).append(why)
+            if r > third:
+                green_blockers.append(f'"{name}" is {r} of {n}, not in the '
+                                      f"cheapest third of its goal")
+        elif n and not g.get("conversions") and spend >= RED_MIN_SPEND:
+            # Its goal converts elsewhere (n counts the ad groups that did);
+            # this one spent and did not.
+            strong.append(f'"{name}" spent ${spend:,.2f} with no conversions '
+                          f"under a goal that converts elsewhere")
+    lead = {a.get("ad") for a in c.get("leading_ads") or []}
+    tiring = [t.get("ad") for t in c.get("tiring_ads") or []]
+    if any(t in lead for t in tiring):
+        red.append("an ad carrying its spend is tiring")
+    if tiring:
+        green_blockers.append(f"{len(tiring)} ad(s) tiring")
+    if (c.get("conversions") or 0) < GREEN_MIN_CONVERSIONS:
+        green_blockers.append(f"fewer than {GREEN_MIN_CONVERSIONS} conversions")
+    if not ranked:
+        green_blockers.append("no ad group with a cost ranking")
+
+    if strong:
+        return {"allowed": ["red"], "reasons": strong + red}
+    allowed = ["yellow"]
+    if red:
+        allowed.insert(0, "red")
+    if not green_blockers:
+        allowed.append("green")
+    return {"allowed": allowed,
+            "reasons": red + ([] if not green_blockers or "green" in allowed
+                              else ["not green: " + "; ".join(green_blockers)])}
+
+
+def clamp_rating(rating: str | None, rule: dict | None) -> str | None:
+    """The model's rating if the rule allows it, else the nearest allowed."""
+    allowed = (rule or {}).get("allowed") or list(RATINGS)
+    if rating in allowed or rating is None:
+        return rating
+    return "yellow" if "yellow" in allowed else allowed[0]
+
+
 async def _ad_campaigns(ad_keys: list[str]) -> dict:
     """ad_key -> campaign_key, for the ads asked about."""
     if not ad_keys:
@@ -463,6 +545,7 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
                                     "symptoms_of_5": r.get("score")})
     for c in campaigns:
         del c["_key"]
+        c["rating_rule"] = rating_rule(c)
 
     return {
         "verb": "creative_pack",
@@ -575,6 +658,13 @@ labels are missing. `creative_labels` is the one that says whether the
 `dimensions` block has anything behind it.
 
 THE RATING. One per campaign, every campaign in `campaigns`, exactly once.
+
+Each campaign carries `rating_rule`, computed from its ranks, spend,
+conversions and fatigue before you were asked. `allowed` lists the ratings its
+numbers permit and `reasons` says why. Choose within `allowed` -- a rating
+outside it is changed to the nearest allowed one and the card says so. When
+`allowed` is only ["red"], the numbers have already decided; write the
+problems. Within the allowed set, use the definitions below.
 
   red     Critical: look at this first. It is spending and its ad groups sit
           at the expensive end of their goal, or it spent with no conversions
@@ -1080,9 +1170,15 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
                     "open_since": p["open_since"]}
                    for pid, p in before.items() if pid not in used]
 
+        asked = rating if rating in RATINGS else None
+        final = clamp_rating(asked, c.get("rating_rule"))
         out.append({
             "campaign": name,
-            "rating": rating if rating in RATINGS else None,
+            "rating": final,
+            # Kept when the rule moved it, so the card can say whose rating
+            # this is.
+            "rating_adjusted_from": asked if final != asked else None,
+            "rating_reasons": (c.get("rating_rule") or {}).get("reasons") or [],
             "why": (_clean(r.get("why")) or
                     "The reply did not rate this campaign."),
             "problems": problems,
@@ -1095,3 +1191,112 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
             "cpa": c.get("cpa"),
         })
     return out
+
+
+# ---------------------------------------------------------- figure check --
+# EVERY FIGURE ON A CARD MUST BE ONE THE MODEL WAS GIVEN.
+#
+# The prompt says so and the model mostly obeys, but "mostly" put
+# "$2,395.75 of the campaign's spend is behind one piece of writing" on a
+# card: two ads' spend, added up by the model, a number no function returned.
+# CLAUDE.md's first rule is that every figure comes out of a function; this is
+# the mechanical half of it. A figure that appears nowhere in the facts, even
+# allowing for rounding to print, is flagged on the card rather than removed --
+# the sentence around it may still be right, and hiding the check would make
+# the card look more certain than it is.
+
+import re as _re
+
+#: $1,234.56 / 1,234 / 97.08 / 14.99% / 3rd -- the forms a card prints.
+_FIGURE = _re.compile(r"(?<![\w.])\$?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(%|st|nd|rd|th)?(?![\w])")
+
+#: Straight or curly double quotes, and curly single quotes. Straight single
+#: quotes are left alone: they are apostrophes far more often than quotes.
+_QUOTED = _re.compile(r'"[^"]*"|“[^”]*”|‘[^’]*’')
+
+_BOUND = _re.compile(r"\b(?:under|over|below|above|at least|at most|"
+                     r"less than|more than|fewer than|up to)\s+\$?[\d,]+(?:\.\d+)?%?",
+                     _re.I)
+
+#: Small whole numbers are counts and ranks that appear everywhere; checking
+#: them proves nothing and flags nothing useful.
+_FIGURE_MIN_CHECKED = 10
+
+
+def _fact_numbers(node, out: set | None = None) -> set:
+    """Every number in the facts: numeric values, numeric strings, and the
+    figures quoted inside text (ad copy says "$38M" and "31 years")."""
+    out = set() if out is None else out
+    if isinstance(node, dict):
+        for v in node.values():
+            _fact_numbers(v, out)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _fact_numbers(v, out)
+    elif isinstance(node, bool) or node is None:
+        pass
+    elif isinstance(node, (int, float)):
+        out.add(float(node))
+    else:
+        text = str(node)
+        try:
+            out.add(float(text))
+        except ValueError:
+            for m in _FIGURE.finditer(text):
+                out.add(float(m.group(1).replace(",", "") + (m.group(2) or "")))
+    return out
+
+
+def _matches(x: float, decimals: int, known: set) -> bool:
+    """Is `x`, printed to `decimals` places, some known figure rounded?"""
+    tol = 0.5 * 10 ** -decimals + 1e-9
+    return any(abs(v - x) <= tol for v in known)
+
+
+def unverified_figures(text: str, known: set) -> list[str]:
+    """The figures in `text` that no fact accounts for, as printed."""
+    bad = []
+    for m in _FIGURE.finditer(text or ""):
+        whole, frac = m.group(1).replace(",", ""), m.group(2) or ""
+        x = float(whole + frac)
+        if not frac and x < _FIGURE_MIN_CHECKED:
+            continue
+        if 1900 <= x <= 2100 and not frac:
+            continue                    # a year in a date or a campaign name
+        decimals = len(frac) - 1 if frac else 0
+        if not _matches(x, decimals, known):
+            bad.append(m.group(0))
+    return bad
+
+
+def check_figures(triage: list, facts: dict) -> int:
+    """Flag, on each card, figures its text states that the facts do not
+    contain. Returns how many were flagged. Campaign names are excluded from
+    the text checked: they are full of dates and state codes."""
+    known = _fact_numbers(facts)
+    flagged = 0
+    for t in triage:
+        texts = [t.get("why") or ""]
+        for p in t.get("problems") or []:
+            texts += [p.get("problem") or "", p.get("fix") or ""]
+        for x in t.get("resolved") or []:
+            texts.append(x.get("evidence") or "")
+        names = [t.get("campaign") or ""]
+        bad: list = []
+        for s in texts:
+            for n in names:
+                s = s.replace(n, " ")
+            # Quoted text is ad copy: either the account's own, which is in
+            # the facts already, or wording the review PROPOSES ("what the
+            # first 90 days look like"), which is a suggestion and not a claim
+            # about the data. Neither is a figure to check.
+            s = _QUOTED.sub(" ", s)
+            # "under $300", "more than 20": a threshold the sentence compares
+            # against, not a figure it claims the data holds.
+            s = _BOUND.sub(" ", s)
+            for f in unverified_figures(s, known):
+                if f not in bad:
+                    bad.append(f)
+        t["unverified_figures"] = bad
+        flagged += len(bad)
+    return flagged

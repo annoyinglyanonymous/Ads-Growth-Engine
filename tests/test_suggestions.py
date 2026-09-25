@@ -821,3 +821,113 @@ def test_the_prompt_makes_the_change_list_the_only_evidence():
     assert "changes_since_last_review" in p
     assert "ONLY evidence" in p
     assert "a spend leader changing does not change what an ad" in p
+
+
+# ---------------------------------------------------------------------------
+# The rating rule: the numbers set the bounds, the model chooses within them.
+# ---------------------------------------------------------------------------
+
+def _rc(groups, conversions=100, tiring=(), lead=("L",)):
+    return {"campaign": "C", "conversions": conversions,
+            "ad_groups": [{"ad_group": f"G{i}", "optimization_goal": "LEAD_GENERATION",
+                           "spend": sp, "conversions": cv,
+                           "cpa_rank_in_goal": r, "ad_groups_ranked_in_goal": n}
+                          for i, (sp, cv, r, n) in enumerate(groups)],
+            "leading_ads": [{"ad": a} for a in lead],
+            "tiring_ads": [{"ad": t} for t in tiring]}
+
+
+def test_dear_and_well_funded_is_red_whatever_the_model_says():
+    rule = creative.rating_rule(_rc([(3542, 60, 11, 11)]))
+    assert rule["allowed"] == ["red"]
+    assert creative.clamp_rating("yellow", rule) == "red"
+
+
+def test_green_needs_the_cheap_third_enough_conversions_and_nothing_tiring():
+    ok = creative.rating_rule(_rc([(2233, 135, 1, 11)]))
+    assert "green" in ok["allowed"]
+    assert "green" not in creative.rating_rule(
+        _rc([(2233, 135, 1, 11)], conversions=6))["allowed"]
+    assert "green" not in creative.rating_rule(
+        _rc([(2233, 135, 1, 11)], tiring=["X"]))["allowed"]
+    assert "green" not in creative.rating_rule(
+        _rc([(2233, 135, 6, 11)]))["allowed"]
+    assert creative.clamp_rating("green", creative.rating_rule(
+        _rc([(2233, 135, 6, 11)]))) == "yellow"
+
+
+def test_a_few_dollars_at_the_dear_end_is_not_red():
+    rule = creative.rating_rule(_rc([(120, 2, 11, 11)]))
+    assert "red" not in rule["allowed"]
+    assert creative.clamp_rating("red", rule) == "yellow"
+
+
+def test_spending_with_nothing_where_the_goal_converts_is_red():
+    rule = creative.rating_rule(_rc([(836, 0, None, 5)], conversions=0))
+    assert rule["allowed"] == ["red"]
+
+
+def test_a_goal_that_never_converts_is_not_red_on_cost():
+    """THRUPLAY: nothing in the goal converted, so there is no ranking at all
+    (ad_groups_ranked_in_goal is None) and no cost grounds for red."""
+    rule = creative.rating_rule(_rc([(733, 0, None, None)], conversions=0))
+    assert rule["allowed"] == ["yellow"]
+
+
+def test_the_card_says_when_the_rule_moved_a_rating():
+    camps = [{"campaign": "A", "rating_rule": {"allowed": ["red"],
+                                               "reasons": ["G is 11 of 11"]}}]
+    t = creative.triage_from([{"campaign": "A", "rating": "yellow",
+                               "why": "w", "problems": []}], camps)[0]
+    assert t["rating"] == "red" and t["rating_adjusted_from"] == "yellow"
+    assert t["rating_reasons"] == ["G is 11 of 11"]
+
+
+# ---------------------------------------------------------------------------
+# Every figure on a card must be one the model was given.
+# ---------------------------------------------------------------------------
+
+def test_a_figure_the_model_added_up_is_flagged():
+    """The live case: two ads' spend, $4,878.46 + $3,946.06, printed as
+    "$8,824.52 of this campaign's spend" -- a number no function returned."""
+    facts = {"campaigns": [{"leading_ads": [{"spend": "4878.46"},
+                                            {"spend": "3946.06"}],
+                            "cpa": 26.1559, "link_ctr": 0.8596}]}
+    triage = [{"campaign": "07082025 | X", "why": "Judged at $26.16 on 0.86% link CTR.",
+               "problems": [{"problem": "so $8,824.52 of this campaign's spend "
+                                        "rides on one headline",
+                             "fix": "Refresh $4,878.46 of it first"}]}]
+    assert creative.check_figures(triage, facts) == 1
+    assert triage[0]["unverified_figures"] == ["$8,824.52"]
+
+
+def test_rounding_to_print_is_not_flagged():
+    known = creative._fact_numbers({"a": 97.0816, "b": "11351.64", "c": 14.9922})
+    assert creative.unverified_figures(
+        "$97.08 and $11,351.64 at 14.99% and $11,352 spent", known) == []
+
+
+def test_figures_quoted_in_ad_copy_count_as_given():
+    known = creative._fact_numbers({"body": "$38M in premium volume, 31 years"})
+    assert creative.unverified_figures('"$38M" after 31 years', known) == []
+
+
+def test_small_counts_and_campaign_dates_are_not_checked():
+    triage = [{"campaign": "22052026 | Agent | FLGATX", "why":
+               "22052026 | Agent | FLGATX has 3 ads, 2 tiring, in 2026.",
+               "problems": []}]
+    assert creative.check_figures(triage, {}) == 0
+
+
+def test_figures_in_proposed_ad_copy_are_not_checked():
+    """A fix that proposes new wording -- "what the first 90 days look like"
+    -- is a suggestion, not a claim about the data."""
+    triage = [{"campaign": "A", "why": "w", "problems": [
+        {"problem": "p", "fix": 'Try "the first 90 days, and $300 back"'}]}]
+    assert creative.check_figures(triage, {}) == 0
+
+
+def test_a_threshold_is_not_a_claimed_figure():
+    triage = [{"campaign": "A", "why": "6 conversions and under $300, fewer "
+               "than 20 conversions, more than 15%", "problems": []}]
+    assert creative.check_figures(triage, {}) == 0

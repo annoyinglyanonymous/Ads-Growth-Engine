@@ -652,7 +652,7 @@ async def last_successful_pull(account_id: str, kind: str) -> dict | None:
     window to the 30-day default on every pull.
     """
     return await fetch_one(
-        "select since, until, finished_at from public.meta_pulls "
+        "select since, until, started_at, finished_at from public.meta_pulls "
         "where account_id = %s and kind = %s and status = 'ok' "
         "order by until desc nulls last, finished_at desc limit 1",
         (account_id, kind))

@@ -20,8 +20,11 @@ with two accounts must still get the working one.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import psycopg
 
 from meta_ads import client as client_mod
 from meta_ads import parse, store
@@ -123,7 +126,14 @@ async def _pull_structure(graph: GraphClient, account: dict, *,
             adsets, brand_id=brand_id, account_id=act_id)
 
         watermark = await store.last_successful_pull(act_id, "structure")
-        updated_since = watermark["finished_at"] if watermark else None
+        # STARTED, not finished. A structure run takes minutes, and an ad
+        # edited between its start and its finish was listed before the edit
+        # and has an updated_time before `finished_at` -- so a watermark at the
+        # finish skips that edit on every later run, and the warehouse keeps
+        # the old wording for good. Re-reading the few ads edited during the
+        # run is the cost of never losing one.
+        updated_since = (watermark.get("started_at") or watermark["finished_at"]
+                         if watermark else None)
 
         # PASS ONE, cheap: every ad, id and status only, no creative. This is
         # what keeps a paused ad from sitting in the warehouse marked ACTIVE
@@ -243,6 +253,12 @@ async def _pull_insights(graph: GraphClient, account: dict, *,
         raise
 
 
+#: A phase that loses its database connection is run again this many times in
+#: all, after a pause long enough for a pooler restart to finish.
+DB_ATTEMPTS = 2
+DB_RETRY_WAIT_SECONDS = 15
+
+
 async def run_pull(*, brand_slug: str, started_by: str,
                    since: date | None = None,
                    until: date | None = None,
@@ -302,16 +318,38 @@ async def run_pull(*, brand_slug: str, started_by: str,
             ):
                 if phase not in phases:
                     continue
-                try:
-                    summary[phase] = await run()
-                except TokenInvalid:
-                    # Still raised, still for client.py's reason: every account
-                    # and every phase fails a dead token identically, so
-                    # carrying on only spends time learning that again.
-                    raise
-                except MetaError as exc:
-                    summary["ok"] = False
-                    errors.append(f"{phase}: {type(exc).__name__}: {exc}")
+                for attempt in range(1, DB_ATTEMPTS + 1):
+                    try:
+                        summary[phase] = await run()
+                        break
+                    except TokenInvalid:
+                        # Still raised, still for client.py's reason: every
+                        # account and every phase fails a dead token
+                        # identically, so carrying on only spends time
+                        # learning that again.
+                        raise
+                    except MetaError as exc:
+                        summary["ok"] = False
+                        errors.append(f"{phase}: {type(exc).__name__}: {exc}")
+                        break
+                    except psycopg.OperationalError as exc:
+                        # THE DATABASE, NOT META. Supabase dropped the
+                        # connection mid-phase on 2026-09-22 and 2026-09-25,
+                        # both times a structure run gone long. This used to
+                        # propagate out of run_pull, so a blip in structure
+                        # cost the brand its INSIGHTS too -- a different edge
+                        # and table that never got asked. Every write here is
+                        # an upsert or an update, so running the phase again is
+                        # safe; the pool's connection check discards the dead
+                        # socket and lends a fresh one.
+                        if attempt < DB_ATTEMPTS:
+                            await asyncio.sleep(DB_RETRY_WAIT_SECONDS)
+                            continue
+                        summary["ok"] = False
+                        errors.append(
+                            f"{phase}: database connection lost "
+                            f"{DB_ATTEMPTS} times: {type(exc).__name__}: "
+                            f"{str(exc).splitlines()[0] if str(exc) else ''}")
 
             # Kept as one string so existing readers -- scripts/sync.py's log
             # line, __main__'s JSON -- still show something, but named by phase

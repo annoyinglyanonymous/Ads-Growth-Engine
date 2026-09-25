@@ -19,6 +19,7 @@ gets its own throwaway brand, created and dropped per test.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -396,3 +397,87 @@ def test_the_importer_and_settled_through_agree_on_the_restatement_horizon():
         f"INSIGHTS_RESTATEMENT_DAYS is {INSIGHTS_RESTATEMENT_DAYS}. The "
         f"importer must re-read at least what the metrics layer calls "
         f"unsettled.")
+
+
+def test_the_structure_watermark_is_where_the_last_run_started():
+    """An ad edited DURING a structure run has an updated_time before the run
+    finished. Watermarking at the finish skips it forever; at the start it is
+    read again next time."""
+    src = (Path(__file__).resolve().parent.parent / "meta_ads" / "pull.py"
+           ).read_text(encoding="utf-8")
+    body = src.split("async def _pull_structure", 1)[1].split("\nasync def ", 1)[0]
+    assert 'watermark.get("started_at")' in body
+    store_src = (Path(__file__).resolve().parent.parent / "meta_ads" / "store.py"
+                 ).read_text(encoding="utf-8")
+    fn = store_src.split("async def last_successful_pull", 1)[1][:2000]
+    assert "started_at" in fn
+
+
+def _stub_run(monkeypatch, structure, insights):
+    """run_pull with every dependency stubbed: no database, no Meta."""
+    import asyncio as _a
+
+    class GC:
+        version = "v0"
+
+        @staticmethod
+        def from_settings():
+            return GC()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def brand_id(slug):
+        return "B"
+
+    async def accounts_for(bid, active_only=True):
+        return [{"act_id": "act_1"}]
+
+    monkeypatch.setattr(meta_pull, "GraphClient", GC)
+    monkeypatch.setattr(meta_pull, "_brand_id", brand_id)
+    monkeypatch.setattr(meta_pull.store, "accounts_for", accounts_for)
+    monkeypatch.setattr(meta_pull, "_pull_structure", structure)
+    monkeypatch.setattr(meta_pull, "_pull_insights", insights)
+    monkeypatch.setattr(meta_pull, "DB_RETRY_WAIT_SECONDS", 0)
+    return _a.run(meta_pull.run_pull(brand_slug="x", started_by="t"))
+
+
+def test_a_dropped_database_connection_is_retried(monkeypatch):
+    import psycopg
+    calls = {"structure": 0}
+
+    async def structure(*a, **k):
+        calls["structure"] += 1
+        if calls["structure"] == 1:
+            raise psycopg.OperationalError("server closed the connection")
+        return {"ads": 3}
+
+    async def insights(*a, **k):
+        return {"rows": 10}
+
+    [s] = _stub_run(monkeypatch, structure, insights)
+    assert calls["structure"] == 2
+    assert s["ok"] and s["structure"] == {"ads": 3} and s["insights"] == {"rows": 10}
+
+
+def test_a_structure_that_keeps_losing_the_database_still_imports_numbers(
+        monkeypatch):
+    """What happened on 2026-09-25: the structure phase lost its connection
+    and the exception left run_pull, so insights -- a different edge -- was
+    never attempted and the day's numbers did not land."""
+    import psycopg
+
+    async def structure(*a, **k):
+        raise psycopg.OperationalError("server closed the connection\nmore")
+
+    async def insights(*a, **k):
+        return {"rows": 10}
+
+    [s] = _stub_run(monkeypatch, structure, insights)
+    assert s["ok"] is False
+    assert s["insights"] == {"rows": 10}
+    assert "database connection lost 2 times" in s["error"]
+    assert "\n" not in s["error"]

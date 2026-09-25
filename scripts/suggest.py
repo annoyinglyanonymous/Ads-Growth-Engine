@@ -204,6 +204,13 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     triage = creative_mod.triage_from(rows, pack["campaigns"], previous,
                                       data_changed, date.today(),
                                       changes if prev else None)
+    flagged = creative_mod.check_figures(triage, facts)
+    if flagged:
+        log(f"{slug}: {flagged} figure(s) on the cards appear nowhere in the "
+            f"facts; flagged on their cards")
+    moved = [t for t in triage if t.get("rating_adjusted_from")]
+    if moved:
+        log(f"{slug}: {len(moved)} rating(s) moved by the rating rule")
     unrated = sum(1 for t in triage if t["rating"] is None)
     if unrated == len(triage):
         log(f"{slug}: FAILED  the reply rated none of the "

@@ -85,6 +85,9 @@
     background:var(--accent-soft); }
   .tcard .fix .lbl { color:var(--accent); }
 
+  .tcard .note { font-size:12px; color:var(--muted); background:var(--surface-3);
+    border-radius:var(--radius-sm); padding:6px 9px; margin:0 0 10px; }
+  .tcard .note.warn { color:var(--warn); background:var(--warn-bg); }
   .since { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
     font-size:12.5px; color:var(--muted); margin:0 0 12px; }
   .since b { color:var(--ink-2); }
@@ -157,6 +160,16 @@
             {{ c.status | lower }}{% endif %}
         </div>
         <p class="verdict">{{ c.why | replace('\\n', ' ') }}</p>
+        {% if c.rating_adjusted_from %}
+          <div class="note">The review rated this {{ c.rating_adjusted_from }};
+            the numbers put it here{% if c.rating_reasons %}:
+            {{ c.rating_reasons | join('; ') }}{% endif %}.</div>
+        {% endif %}
+        {% if c.unverified_figures %}
+          <div class="note warn">Not found in the data:
+            {{ c.unverified_figures | join(', ') }}. Probably worked out by the
+            review rather than read from the numbers; check before relying on it.</div>
+        {% endif %}
         {% if items %}
           <ol>
           {% for p in items %}
