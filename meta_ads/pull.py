@@ -138,8 +138,8 @@ async def _pull_structure(graph: GraphClient, account: dict, *,
         # PASS ONE, cheap: every ad, id and status only, no creative. This is
         # what keeps a paused ad from sitting in the warehouse marked ACTIVE
         # forever now that the heavy pass below only asks for live ones. It is
-        # also the pass that would tell us the account's true ad count, which
-        # nothing has ever established -- no structure pull has completed.
+        # also the pass that gives the account's true ad count (944 on
+        # 2026-09-25), which the old single-pass crawl never lived to report.
         statuses = [row async for row in graph.ads(
             act_id, fields=client_mod.AD_STATUS_FIELDS)]
         counts["statuses"] = await store.set_ad_statuses(statuses)

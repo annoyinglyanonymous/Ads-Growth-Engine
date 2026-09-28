@@ -28,7 +28,7 @@ concluding that something is broken.
    • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
 
-  ledger: ads.schema_migrations, files 001…014
+  ledger: ads.schema_migrations, files 001…015, all applied
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are
@@ -201,16 +201,27 @@ longer exists. `/ad/<key>` reads `ads.ad_facet` rather than
 `ads.facet_effective` for this reason: the effective view drops a stale tag by
 construction, which would make the warning impossible to show.
 
-**The structure phase has never succeeded on `act_153704749222533`.** Its
-`/ads` edge dies five to nine minutes into pagination, on code 1 ("reduce the
-amount of data") and code 2 ("an unexpected error") in roughly equal measure.
-The 711 ads exist only because `_pull_structure` upserts each ad as it
-paginates, so the failed runs left their rows behind — which is also why
-`first_seen_at` on every ad is 2026-09-20 or later rather than the ad's real
-age. Because `updated_since` comes from the last *successful* structure pull,
-every attempt re-crawls the whole account. Page-size reduction has fired exactly
-once, in a run that was then interrupted, so it is untested rather than
-known-insufficient.
+**`"ads": 0, "texts": 0` on a structure run is not a failure.** The structure
+phase on `act_153704749222533` now succeeds (`intel status` reports
+`last_structure_ok`), because `_pull_structure` is two passes. Pass one is cheap:
+every ad, id and status only, no creative — that is the `statuses` count (944),
+and it is what keeps a paused ad from sitting in the warehouse marked ACTIVE.
+Pass two fetches creatives only for `ACTIVE_ENOUGH` ads (ACTIVE, WITH_ISSUES,
+DISAPPROVED) with `updated_since` set to the *started* time of the last
+successful structure run. So `"ads": 0` means no live ad was edited since the
+last run, and the copy in the warehouse is still current.
+
+The history still shows in the data. For its first days the unrestricted crawl
+died five to nine minutes into `/ads` pagination (Meta codes 1 and 2), and the
+ads exist because each one was upserted as it paginated, so the failed runs
+left their rows behind — which is why `first_seen_at` on every ad is 2026-09-20
+or later rather than the ad's real age.
+
+**A dropped database connection costs one phase one retry, not the brand.**
+Supabase closed the connection mid-structure on 2026-09-22 and 2026-09-25.
+`run_pull` now catches `psycopg.OperationalError` per phase, waits, and runs
+that phase again (`DB_ATTEMPTS = 2`; every write is an upsert, so a re-run is
+safe), and insights still runs when structure fails.
 
 ## Running it
 
@@ -248,7 +259,8 @@ fails in under a second, and the cost is not the wasted call: `run_pull`
 isolates per account so the import still succeeds, but the run exits 1, `intel
 status` reports `healthy: false`, and the dashboard's import card goes amber on
 behalf of an account nobody reads. A scheduled task that reports failure on
-every run is a task nobody checks. Deactivate it.
+every run is a task nobody checks. Deactivate it. The test account
+`act_9105140029692` was exactly this, and is deactivated (`active: false`).
 
 ## Warehoused vs live
 
@@ -266,10 +278,13 @@ The cost is staleness. Three things manage it:
   clock, so the importer no longer asks for a day that has not started.
 - **The scheduled pull** — `scripts\sync.py`, twice daily via Task Scheduler.
   Before it existed, the staleness window was not 24 hours, it was "whenever
-  anyone remembered", which is worse because it is invisible. **It is not
-  registered yet**, so today that window is still "whenever anyone remembered".
-  Register it: `powershell -ExecutionPolicy Bypass -File
-  scripts\register_sync_task.ps1`.
+  anyone remembered", which is worse because it is invisible. It is registered
+  as the Windows task `GrowthEngine-MetaSync`, daily at 1:45 AM and 1:45 PM,
+  running `scripts\sync.bat`. Its logon mode is **Interactive only**, so it
+  runs only while this PC is on and the user is logged in — which is why
+  `logs/sync.log` has nothing between 25 and 28 Sep. A gap in that log is the
+  machine, not the importer. Check it with `schtasks /query /tn
+  GrowthEngine-MetaSync /v /fo list`.
 - **The Refresh button**, which shortens that window without closing it: a
   button somebody has to think to press is still "whenever anyone remembered".
 
@@ -304,9 +319,10 @@ before it does anything, and the endpoint checks that same lock before it
 spawns, so the button cannot race the scheduler or itself.
 
 The button is scoped to `--phase insights` because insights is one Graph call
-over a ~4-day window, while the structure phase has never once succeeded. A
-button wired to the phase that always fails is a button that looks broken.
-Unscoped is still the default for the scheduled run.
+over a ~4-day window, while the structure phase takes minutes (it was scoped
+when structure had never once succeeded, and a button wired to the phase that
+always fails is a button that looks broken). Unscoped is still the default for
+the scheduled run.
 
 ## The ad page asks a model
 
@@ -322,3 +338,34 @@ the better part of a minute, and a GET that spends is one browser prefetch away
 from spending on its own. `chat.py` shells out to `claude -p` and imports no
 provider library; the allowlist in `chat.READ_VERBS` is the security model, and
 `record` and `live` are deliberately absent from it.
+
+## /suggestions is a campaign triage, written after each import
+
+Nobody presses anything. `scripts/sync.py` runs `scripts/suggest.py --force`
+after a successful import (`_run_after`, alongside `tag.py` and `brief.py`),
+because a suggestion somebody has to remember to ask for is one nobody asks
+for. A failed import skips it: an analysis of numbers that did not land is
+worse than none.
+
+It builds `intel/creative.py`'s pack, whose `campaigns` section carries each
+campaign's ad groups, leading and tiring ads and a `rating_rule`, and asks a
+model through `chat.classify` (no tools, prompt on stdin) for one rating per
+campaign — red, yellow or green — with problem + fix pairs. The model does not
+have the last word on the colour: `rating_rule` states which ratings the
+campaign's figures allow, and `clamp_rating` moves the reply to the nearest
+allowed one and records `rating_adjusted_from`.
+
+Problems carry ids across runs, so each one from the last review comes back
+still open, resolved, or no longer mentioned. A resolution is accepted only if
+it cites a change from `changes_since`, which is computed, not judged: what
+moved between the last file's `snapshot` (per-ad `copy_hash` and status) and
+today, labelled `"you"` (the account was edited) or `"numbers"` (the figures
+moved). One with no real change behind it is dropped, and the page says it was
+not confirmed fixed. `check_figures` then flags, on its card, any figure the
+card states that the facts do not contain.
+
+Output is `suggestions/YYYY-MM-DD-<brand>.json` — one per brand per day,
+gitignored, with the pack it was written from stored beside it so it can be
+checked later. `templates/_triage.html` is the one template allowed red, amber
+and green: a user-granted exception, scoped by name in
+`tests/test_charts_and_templates.py`. Everything else stays under the rule.
