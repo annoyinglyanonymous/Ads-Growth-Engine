@@ -165,6 +165,41 @@ This is a decision, not a task. Do not add a verb, a flag or an endpoint that
 performs it, and do not run it on somebody's behalf — the column is called
 `approved_by` and it has to be true.
 
+## Starting and concluding an experiment
+
+The same stance as an angle, for the same reason. `intel record --kind
+experiment` files a proposal with no `started_on`, and `ads.experiment_result`
+(005) refuses to compute anything for it: an unlaunched experiment has no
+window, and zeros would read as "we tested it and nothing happened". The
+comments that say `started_on` "is set in the UI" mean the sibling app that is
+not in use — there is no UI for it here, and no verb.
+
+A launch is a thing that happened in Ads Manager, so the person who launched
+it records it, once the new ad is live and carries its arm's `utm_content`:
+
+```sql
+update ads.experiment
+   set started_on = date '<YYYY-MM-DD, the day the new ad went live>'
+ where brand_id = (select id from ads.brand where slug = 'renegade')
+   and name     = '<experiment name, as intel experiments lists it>'
+   and started_on is null;
+```
+
+`and started_on is null` does for a launch what `and status = 'proposed'`
+does for an angle: without it the statement quietly moves the window of a
+test that is already being read.
+
+Concluding is the one write an agent may never make
+(`experiment_conclusion_attributed`): `conclusion`, `concluded_by` and
+`concluded_at` are set together, by a person, after reading
+`python -m intel experiment --brand renegade --name "<name>"`.
+
+`minimum_effect_pct` and `minimum_spend_per_arm` are fixed when a proposal is
+filed. The five filed on 2026-09-28 from the campaign triage carry 20% and
+$500 per arm, which an agent chose to satisfy the shape; if those are not the
+bar you want, re-file under a new name rather than editing — nothing edits a
+filed proposal.
+
 ## Things that will bite you
 
 **The last three days are not final.** Meta restates attributed conversions.

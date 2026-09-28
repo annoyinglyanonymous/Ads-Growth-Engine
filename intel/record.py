@@ -203,9 +203,10 @@ async def _experiment(brand_id: str, d: dict, identity: str) -> dict:
             arms.append((await cur.fetchone())["label"])
 
     return {"kind": "experiment", "written": True, **row, "arms": arms,
-            "next": "It is proposed, not running. started_on is set in the UI "
-                    "when the test actually goes live, and the conclusion is "
-                    "never written from here."}
+            "next": "It is proposed, not running. The person who launches it "
+                    "records started_on with the statement in CLAUDE.md "
+                    "('Starting and concluding an experiment') once the new ad "
+                    "is live; the conclusion is never written from here."}
 
 
 async def close() -> None:
