@@ -319,3 +319,54 @@ def test_the_prompt_names_no_hook_the_database_might_not_have():
     for added in ("problem", "affirmation", "imperative"):
         assert f"`{added}`" not in guidance, (
             f"{added} is named in the prompt but may not be in ads.hook yet")
+
+
+# ---------------------------------------------------------------------------
+# Angles: only signed ones, and the tags filed before any were signed come
+# back round once.
+# ---------------------------------------------------------------------------
+
+ANGLES = {"captive-ceiling", "direct-buyer"}
+
+
+def test_a_signed_angle_is_filed_with_the_tag():
+    row = {"ad_key": AD["ad_key"], "hook": "callout", "offer": "call",
+           "angle": "captive-ceiling", "audience": "captive agents",
+           "confidence": "inferred", "rationale": 'Opens "Own the book".'}
+    payload, why = tag.clean(row, HOOKS, OFFERS, BY_KEY, ANGLES)
+    assert why is None and payload["angle_slug"] == "captive-ceiling"
+
+
+def test_an_unsigned_angle_is_dropped_but_the_rest_is_kept():
+    """A proposed or invented angle must not reach record.py -- it would be
+    refused and take the hook, offer and audience down with it."""
+    row = {"ad_key": AD["ad_key"], "hook": "callout", "offer": "call",
+           "angle": "made-up-angle", "audience": "captive agents",
+           "confidence": "inferred", "rationale": 'Opens "Own the book".'}
+    payload, why = tag.clean(row, HOOKS, OFFERS, BY_KEY, ANGLES)
+    assert why is None
+    assert "angle_slug" not in payload and payload["hook"] == "callout"
+
+
+def test_the_prompt_offers_angles_only_when_some_are_signed():
+    hooks = [{"slug": h, "definition": "d"} for h in sorted(HOOKS)]
+    offers = [{"slug": o, "definition": "d"} for o in sorted(OFFERS)]
+    ad = {**AD, "name": "n", "cta": None}
+    without = tag.build_prompt("renegade", hooks, offers, [ad])
+    assert "ANGLE --" not in without and '"angle"' not in without
+    angles = [{"slug": "captive-ceiling", "name": "Captive ceiling",
+               "definition": "A captive agent is capped. NOT: the valuation."}]
+    with_ = tag.build_prompt("renegade", hooks, offers, [ad], angles)
+    assert "ANGLE --" in with_ and "captive-ceiling: A captive agent" in with_
+    assert '"angle":' in with_
+
+
+def test_tags_filed_before_any_angle_was_signed_come_back_round():
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    body = src.split("async def needs_tagging", 1)[1].split("\nasync def ", 1)[0]
+    assert "fa.angle_id is null" in body
+    assert "fa.source <> 'operator'" in body, "a person's tag must be left alone"
+    run = src.split("async def run_brand", 1)[1]
+    assert "active_angles(slug)" in run
+    fn = src.split("async def active_angles", 1)[1][:900]
+    assert "a.status = 'active'" in fn, "only signed angles may be offered"

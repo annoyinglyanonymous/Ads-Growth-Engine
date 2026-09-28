@@ -157,6 +157,23 @@ async def vocabulary() -> tuple[list[dict], list[dict]]:
     return hooks, offers
 
 
+async def active_angles(slug: str) -> list[dict]:
+    """The brand's ACTIVE angles, with their definitions.
+
+    Active only. A proposed angle has not been signed (angle_active_is_signed),
+    and tagging ads against it would fill the numbers for an argument nobody
+    has agreed the account makes. Retired ones are refused by record.py anyway.
+    """
+    return await db.fetch_all(
+        """
+        select a.slug, a.name, a.definition
+          from ads.angle a
+          join ads.brand b on b.id = a.brand_id
+         where b.slug = %s and a.status = 'active'
+         order by a.slug
+        """, (slug,))
+
+
 def dedupe(ads: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
     """One representative per distinct wording, and the map back to the rest.
 
@@ -188,13 +205,20 @@ def dedupe(ads: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
 
 
 async def needs_tagging(slug: str, limit: int | None,
-                        retag: bool = False) -> list[dict]:
+                        retag: bool = False,
+                        angles_active: bool = False) -> list[dict]:
     """Ads that have spent, carry copy, and have no facet for that copy.
 
     Keyed on (ad_key, copy_hash), which is what makes the pass cheap after its
     first run AND correct when copy changes: rewrite an ad and its old tag
     stops matching, so it comes back round to be relabelled. A tag that
     survived a rewrite would describe an ad that no longer exists.
+
+    ONE MORE WAY BACK IN: a tag with no angle, once the brand has active
+    angles. The first passes ran while the bank was empty, so every facet they
+    filed carries a null angle -- and without this they would never be asked
+    again, and every angle number would stay empty however many angles were
+    signed. A tag a PERSON filed is left alone, angle or not.
     """
     rows = await db.fetch_all(
         """
@@ -208,12 +232,18 @@ async def needs_tagging(slug: str, limit: int | None,
                         where f.ad_key = c.ad_key
                           and f.day >= (select max(day) - %s
                                           from ads.fact_ad_day))
-           and (%s or not exists (select 1 from ads.ad_facet fa
-                                   where fa.ad_key = c.ad_key
-                                     and fa.copy_hash = c.copy_hash))
+           and (%s
+                or not exists (select 1 from ads.ad_facet fa
+                                where fa.ad_key = c.ad_key
+                                  and fa.copy_hash = c.copy_hash)
+                or (%s and exists (select 1 from ads.ad_facet fa
+                                    where fa.ad_key = c.ad_key
+                                      and fa.copy_hash = c.copy_hash
+                                      and fa.angle_id is null
+                                      and fa.source <> 'operator')))
          order by c.ad_key
         """,
-        (slug, WINDOW_DAYS - 1, retag))
+        (slug, WINDOW_DAYS - 1, retag, angles_active))
     return rows[:limit] if limit else rows
 
 
@@ -239,9 +269,26 @@ def _head_and_tail(body: str) -> str:
 
 
 def build_prompt(slug: str, hooks: list[dict], offers: list[dict],
-                 ads: list[dict]) -> str:
+                 ads: list[dict], angles: list[dict] | None = None) -> str:
     def _vocab(rows):
         return "\n".join(f"  {r['slug']}: {r['definition']}" for r in rows)
+
+    angle_block = ""
+    angle_example = ""
+    if angles:
+        angle_example = '"angle":"<one of the angles above, or null>",'
+        angle_block = f"""
+ANGLE -- the ARGUMENT the copy makes: the reason it gives the reader to act.
+Exactly one of these signed angles, or null:
+{_vocab(angles)}
+
+An angle is not the hook (how the first line opens) and not the offer (what
+it asks for). Judge it from the whole copy. Each definition above says what
+the angle is NOT; use that to separate close neighbours. If the copy makes
+none of these arguments, or two equally, return null -- a missing angle is a
+gap that can be seen, a wrong one moves money between two arguments on the
+page.
+"""
 
     lines = []
     for a in ads:
@@ -297,6 +344,7 @@ there is no body. If none of the hooks above fits that sentence, return null
 missing hook is a gap that can be seen, a wrong one is a number somebody
 compares against.
 
+{angle_block}
 AUDIENCE -- exactly one of:
 {chr(10).join("  " + a for a in AUDIENCES)}
 null when the copy addresses none of them clearly. Do not invent a value, do
@@ -321,7 +369,7 @@ Judge the COPY, not the ad's name. The names here carry formats and people
 
 Return a JSON array with one object per ad, every ad_key exactly as given:
 
-[{{"ad_key":"...","hook":"question","offer":"valuation","audience":"p&c agency owners","confidence":"inferred","rationale":"Opens \\"do you know what it's worth?\\" and offers a free estimate."}}]
+[{{"ad_key":"...","hook":"question","offer":"valuation",{angle_example}"audience":"p&c agency owners","confidence":"inferred","rationale":"Opens \\"do you know what it's worth?\\" and offers a free estimate."}}]
 
 THE ADS
 
@@ -330,7 +378,8 @@ THE ADS
 
 
 def plan_batches(slug: str, hooks: list[dict], offers: list[dict],
-                 ads: list[dict]) -> list[list[dict]]:
+                 ads: list[dict],
+                 angles: list[dict] | None = None) -> list[list[dict]]:
     """Split the ads into batches that each FIT, rather than each count 40.
 
     Measured, not estimated. build_prompt is called on the candidate batch and
@@ -348,7 +397,8 @@ def plan_batches(slug: str, hooks: list[dict], offers: list[dict],
     for ad in ads:
         trial = current + [ad]
         if len(trial) <= BATCH and (
-                len(build_prompt(slug, hooks, offers, trial)) <= PROMPT_BUDGET
+                len(build_prompt(slug, hooks, offers, trial, angles))
+                <= PROMPT_BUDGET
                 or not current):
             current = trial
             continue
@@ -360,7 +410,8 @@ def plan_batches(slug: str, hooks: list[dict], offers: list[dict],
 
 
 def clean(row: dict, allowed_hooks: set, allowed_offers: set,
-          by_key: dict) -> tuple[dict | None, str | None]:
+          by_key: dict,
+          allowed_angles: set | None = None) -> tuple[dict | None, str | None]:
     """One returned row -> a filable payload, or a reason it was dropped.
 
     Every value is checked against the seeded vocabulary before it goes near
@@ -380,6 +431,13 @@ def clean(row: dict, allowed_hooks: set, allowed_offers: set,
     if offer and offer not in allowed_offers:
         return None, f"offer {offer!r} is not in ads.offer"
 
+    # An angle outside the signed set is DROPPED, not the row: the hook,
+    # offer and audience may still be right, and record.py would refuse an
+    # unknown slug and take them down with it.
+    angle = row.get("angle") or None
+    if angle and angle not in (allowed_angles or set()):
+        angle = None
+
     confidence = row.get("confidence")
     if confidence not in ("stated", "inferred"):
         return None, f"confidence {confidence!r} is not stated|inferred"
@@ -388,7 +446,7 @@ def clean(row: dict, allowed_hooks: set, allowed_offers: set,
     if not rationale:
         return None, "no rationale, and an unexplained tag cannot be checked"
 
-    if not (hook or offer or row.get("audience")):
+    if not (hook or offer or angle or row.get("audience")):
         # A facet with no angle, no hook, no offer and no audience describes
         # nothing. Filing it would only make the ad stop appearing in this
         # pass's own selection next time.
@@ -405,6 +463,7 @@ def clean(row: dict, allowed_hooks: set, allowed_offers: set,
         "rationale": rationale[:500],
     }
     for field, value in (("hook", hook), ("offer", offer),
+                         ("angle_slug", angle),
                          ("audience", row.get("audience"))):
         if value:
             payload[field] = str(value).strip()[:80]
@@ -418,7 +477,8 @@ def clean(row: dict, allowed_hooks: set, allowed_offers: set,
 async def run_brand(slug: str, dry_run: bool, limit: int | None,
                     retag: bool = False) -> int:
     hooks, offers = await vocabulary()
-    ads = await needs_tagging(slug, limit, retag)
+    angles = await active_angles(slug)
+    ads = await needs_tagging(slug, limit, retag, bool(angles))
     if not ads:
         log(f"{slug}: every ad that has spent already carries a tag for its "
             f"current copy -- nothing to do")
@@ -431,13 +491,14 @@ async def run_brand(slug: str, dry_run: bool, limit: int | None,
     # ad that shares it, so ads with identical copy cannot end up with
     # different labels -- which 20 of 48 duplicate groups did on the first run.
     wordings, by_hash = dedupe(ads)
-    planned = plan_batches(slug, hooks, offers, wordings)
+    planned = plan_batches(slug, hooks, offers, wordings, angles)
     log(f"{slug}: {len(ads)} ad(s) need a tag, {len(wordings)} distinct "
         f"wording(s), {len(planned)} batch(es) (cap {BATCH}, sized to fit "
         f"{PROMPT_BUDGET} chars)")
 
     allowed_hooks = {h["slug"] for h in hooks}
     allowed_offers = {o["slug"] for o in offers}
+    allowed_angles = {a["slug"] for a in angles}
     by_key = {str(a["ad_key"]): a for a in wordings}
 
     proposals: list[dict] = []
@@ -449,7 +510,7 @@ async def run_brand(slug: str, dry_run: bool, limit: int | None,
     # then fanned each answer out again, which is both the cost the dedupe
     # exists to avoid and the inconsistency it exists to prevent.
     for n, batch in enumerate(planned, start=1):
-        prompt = build_prompt(slug, hooks, offers, batch)
+        prompt = build_prompt(slug, hooks, offers, batch, angles)
         if dry_run:
             log(f"{slug}: batch {n}: {len(batch)} ad(s), "
                 f"{len(prompt)} chars -- --dry-run, so nobody was asked")
@@ -466,7 +527,8 @@ async def run_brand(slug: str, dry_run: bool, limit: int | None,
 
         for row in rows if isinstance(rows, list) else []:
             payload, why = clean(row if isinstance(row, dict) else {},
-                                 allowed_hooks, allowed_offers, by_key)
+                                 allowed_hooks, allowed_offers, by_key,
+                                 allowed_angles)
             if not payload:
                 dropped.append({"row": row, "why": why})
                 continue
