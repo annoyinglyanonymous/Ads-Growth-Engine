@@ -133,6 +133,13 @@ AD_CAMPAIGN = [{"ad_key": k, "campaign_key": "X" if k.startswith("a") else "Y"}
                for k in ("a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8",
                          "b1", "b2", "c1", "c2")]
 
+CONCENTRATION = [
+    {"campaign_key": "X", "ads_with_spend": 8, "top_ad_spend": 4984,
+     "top_two_ads_spend": 7783, "top_ad_share_pct": 71.2,
+     "top_two_ads_share_pct": 99.0, "ads_with_no_conversions": 1,
+     "spend_on_ads_with_no_conversions": 900,
+     "share_on_ads_with_no_conversions_pct": 12.86}]
+
 UNTAGGED = {"total_spend": 60163, "tagged_spend": 0, "untagged_ads": 245,
             "untagged_spend": 60163, "stale_tag_ads": 0, "stale_tag_spend": 0}
 
@@ -160,6 +167,8 @@ def _pack(monkeypatch, rows=None, formats=None):
         # stub answers by SQL rather than by call order.
         if "facet_performance" in sql:
             return formats
+        if "campaign_concentration" in sql:
+            return CONCENTRATION
         if "from ads.ad_group" in sql:
             return GROUP_META
         if "from ads.campaign" in sql:
@@ -931,3 +940,30 @@ def test_a_threshold_is_not_a_claimed_figure():
     triage = [{"campaign": "A", "why": "6 conversions and under $300, fewer "
                "than 20 conversions, more than 15%", "problems": []}]
     assert creative.check_figures(triage, {}) == 0
+
+
+# ---------------------------------------------------------------------------
+# Totals come from ads.campaign_concentration, never from the model.
+# ---------------------------------------------------------------------------
+
+def test_a_campaign_carries_its_spend_spread_from_the_function(monkeypatch):
+    pack = _pack(monkeypatch)
+    x, y = pack["campaigns"]
+    assert x["spend_spread"]["top_two_ads_share_pct"] == 99.0
+    assert y["spend_spread"] is None, "no row for Y: nothing to invent"
+
+
+def test_no_migration_means_no_spread_not_a_crash(monkeypatch):
+    from psycopg import errors
+
+    async def missing(sql, params=()):
+        raise errors.UndefinedFunction("function ads.campaign_concentration does not exist")
+
+    monkeypatch.setattr(creative, "fetch_all", missing)
+    assert asyncio.run(creative._concentration({"brand_id": "B"})) == {}
+
+
+def test_the_prompt_says_to_put_missing_totals_into_words():
+    p = creative.SUGGESTIONS_PROMPT
+    assert "spend_spread" in p
+    assert "say it in words" in p

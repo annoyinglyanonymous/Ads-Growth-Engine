@@ -31,6 +31,8 @@ import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from psycopg import errors as _pg_errors
+
 from db import fetch_all, fetch_one
 
 from . import context, metrics
@@ -205,6 +207,8 @@ async def _campaigns(brand: str, days: int, until, ad_rows: list) -> tuple:
     ad_campaign = await _ad_campaigns(
         [str(r["entity_key"]) for r in ad_rows if r.get("entity_key")])
 
+    concentration = await _concentration(camp)
+
     # Rank every ad group among the ad groups sharing its goal.
     by_goal: dict = {}
     for r in grp_rows:
@@ -269,9 +273,38 @@ async def _campaigns(brand: str, days: int, until, ad_rows: list) -> tuple:
             } for g, m in groups[:CAMPAIGN_AD_GROUPS]],
             "more_ad_groups": max(0, len(groups) - CAMPAIGN_AD_GROUPS),
             "leading_ads": lead,
+            # How the campaign's spend is spread, from
+            # ads.campaign_concentration (016). None until that migration is
+            # applied -- and then the prompt tells the model to put a total it
+            # does not have into words rather than work it out.
+            "spend_spread": concentration.get(key),
             "tiring_ads": [],
         })
     return out, leading
+
+
+async def _concentration(camp: dict) -> dict:
+    """campaign_key -> the spend-spread figures ads.campaign_concentration
+    returns, or {} when migration 016 has not been applied.
+
+    The function is the only place these totals may come from (CLAUDE.md's
+    first rule), and until it exists the pack goes without them rather than
+    computing them here.
+    """
+    try:
+        rows = await fetch_all(
+            """
+            select campaign_key, ads_with_spend, top_ad_spend,
+                   top_two_ads_spend, top_ad_share_pct, top_two_ads_share_pct,
+                   ads_with_no_conversions, spend_on_ads_with_no_conversions,
+                   share_on_ads_with_no_conversions_pct
+              from ads.campaign_concentration(%s::uuid, %s, %s)
+            """, (camp.get("brand_id"), camp.get("since"), camp.get("until")))
+    except _pg_errors.UndefinedFunction:
+        return {}
+    return {str(r["campaign_key"]): {k: v for k, v in r.items()
+                                     if k != "campaign_key"}
+            for r in rows}
 
 
 def _rate(row: dict, name: str = RANK_RATE):
@@ -742,7 +775,12 @@ link CTR"), ranks as "11th of 11". No line breaks and no "\\n" inside a
 string.
 
 Every figure you write must appear in the facts above, rounded only for
-printing. Do not add, divide or average anything.
+printing. Do not add, divide or average anything. A campaign's `spend_spread`
+already holds its top ads' combined spend and share and what went to ads that
+converted nothing -- use those. When a total or share you want is not in the
+facts, say it in words ("almost all of its spend", "most of the money")
+instead of working it out: a figure on a card that is not in the facts is
+flagged on the card as unverified.
 
 Suggest, never instruct. "Worth trying" and "the cheaper ad groups in this
 goal tend to", never "pause this", "kill that", "this is your winner" or
