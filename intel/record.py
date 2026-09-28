@@ -155,8 +155,11 @@ async def _angle_proposal(brand_id: str, d: dict, identity: str) -> dict:
                 "why": f"an angle with slug {d['slug']!r} already exists for "
                        f"this brand. Proposing it again would not change it."}
     return {"kind": "angle_proposal", "written": True, **row,
-            "next": "It is 'proposed'. A person activates it in the UI; until "
-                    "then it is excluded from coverage and from the bank."}
+            "next": "It is 'proposed'. A person activates it by running the "
+                    "signing statement in CLAUDE.md ('Approving an angle') "
+                    "under their own name -- there is no verb or button for "
+                    "it. Until then it is excluded from coverage and from "
+                    "the bank."}
 
 
 async def _experiment(brand_id: str, d: dict, identity: str) -> dict:
