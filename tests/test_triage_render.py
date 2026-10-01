@@ -92,7 +92,21 @@ def test_the_funnel_says_which_way_each_change_went():
     assert "Share of the CPA change" in html
     assert re.search(r'chip-d primary">Post-click \(CVR\)\s*85%', html)
     assert "Evidence: <b>moderate</b>" in html
-    assert "6.5&times; its own baseline CPA" in html
+    # Spend over the prior CPA is a count of conversions it would have bought,
+    # and is worded as one; "6.5x its baseline CPA" read as an alarm.
+    assert re.search(r"would have bought\s+6\.5 conversions", html)
+    assert "its own baseline CPA" not in html
+
+
+def test_daily_frequency_shows_only_when_a_rung_has_it():
+    pub = _load("report")
+    camp = next(c for c in pub["triage"] if c.get("ladder"))
+    for w in camp["ladder"]:
+        w.pop("daily_frequency", None)
+    pub["triage"] = [camp]
+    assert "Daily freq</th>" not in _render(pub)
+    camp["ladder"][1]["daily_frequency"] = 1.12
+    assert "Daily freq</th>" in _render(pub)
 
 
 def test_the_issues_carry_their_chips_and_test_plan():

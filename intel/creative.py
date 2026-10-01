@@ -1208,8 +1208,8 @@ Every issue carries its own recommendation -- an observation with no
 recommendation is a complaint, and a recommendation with no observation is a
 guess.
 
-`not_yet`: what NOT to do yet. Start from `diagnosis.not_yet`, add your own,
-one line each.
+`not_yet`: what NOT to do yet. `diagnosis.not_yet` is already on the card;
+add only what it does not say, one line each, and do not restate its lines.
 
 REPLY WITH JSON AND NOTHING ELSE. The first character is [ and the last is ].
 No markdown fence, no preamble, no commentary. One object per campaign, in
@@ -1846,11 +1846,18 @@ def _report(r: dict, c: dict, before: dict, used: set, tag: str, ci: int,
             i.update({"id": f"i{tag}-{ci}-{pi}", "status": "new",
                       "open_since": today.isoformat()})
 
+    # One line per thing not to do. Two lines saying the same thing differ in
+    # their reason, not their subject, so they are matched on the part before
+    # the colon ("Acting on the 7-day move in this campaign"); the diagnosis's
+    # line comes first and wins.
     not_yet: list = []
+    seen: set = set()
     mine = r.get("not_yet") if isinstance(r.get("not_yet"), list) else []
     for s in [*(diag.get("not_yet") or []), *mine]:
         s = _clean(s)
-        if s and s not in not_yet:
+        key = s.split(":", 1)[0].strip().lower() if s else ""
+        if s and key not in seen:
+            seen.add(key)
             not_yet.append(s)
     headline = _clean(r.get("headline")) or _clean(r.get("why"))
     return {"headline": headline or "The reply did not rate this campaign.",

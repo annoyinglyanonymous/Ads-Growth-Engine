@@ -452,3 +452,14 @@ def test_the_module_imports_only_the_standard_library():
     for bad in ("db", "db_owner", "psycopg"):
         assert not any(n == bad or n.startswith(f"{bad}.") for n in names)
     assert names <= {"__future__"}, names
+
+
+def test_a_campaign_level_wobble_is_worded_as_this_campaign():
+    f = {"level": "campaign", "entity": "07082025 | Agent | Franchise",
+         "pattern": "post_click", "held_in": ["7v7"], "_has_14": True}
+    g = {**f, "level": "ad", "entity": "Become an Agent | Static"}
+    seeds = d.not_yet_seeds([f, g], None)
+    assert ("Acting on the 7-day move in this campaign: the 14-day "
+            "comparison does not show it yet.") in seeds
+    assert any('"Become an Agent | Static"' in s for s in seeds)
+    assert not any("07082025" in s for s in seeds)

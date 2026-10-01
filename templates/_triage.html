@@ -332,11 +332,14 @@
   {#- 1. WHAT CHANGED. Every window the pack read, newest first. The
       unsettled days are shown, and marked, because Meta restates them. -#}
   {% if c.ladder %}
+    {#- Daily frequency is measured per ad only (017), so a campaign's ladder
+        never has it: show the column only when some rung does. -#}
+    {% set has_freq = c.ladder | selectattr('daily_frequency') | list %}
     <h4 class="tsec">What changed</h4>
     <div class="table-wrap"><table>
       <thead><tr><th>Window</th><th class="num">Spend</th><th class="num">Conv</th>
         <th class="num">CPA</th><th class="num">CPM</th><th class="num">Link CTR</th>
-        <th class="num">CVR</th><th class="num">Daily freq</th></tr></thead>
+        <th class="num">CVR</th>{% if has_freq %}<th class="num">Daily freq</th>{% endif %}</tr></thead>
       <tbody>
       {% for w in c.ladder %}
         <tr{% if w.provisional %} class="prov"{% endif %}>
@@ -348,7 +351,7 @@
           <td class="num">{{ money(w.cpm) }}</td>
           <td class="num">{{ pct(w.link_ctr, 2) }}</td>
           <td class="num">{{ pct(w.cvr, 2) }}</td>
-          <td class="num">{{ num(w.daily_frequency, 2) }}</td>
+          {% if has_freq %}<td class="num">{{ num(w.daily_frequency, 2) }}</td>{% endif %}
         </tr>
       {% endfor %}
       </tbody>
@@ -390,8 +393,9 @@
     {% if f.evidence or f.spend_to_baseline_cpa is not none or f.fatigue_consistent is not none %}
       <p class="tnote">
         {%- if f.evidence %}Evidence: <b>{{ f.evidence }}</b>{% endif %}
-        {%- if f.spend_to_baseline_cpa is not none %}{% if f.evidence %} &middot; {% endif %}spent
-          {{ num(f.spend_to_baseline_cpa, 1) }}&times; its own baseline CPA{% endif %}
+        {%- if f.spend_to_baseline_cpa is not none %}{% if f.evidence %} &middot; {% endif %}this
+          week's spend would have bought {{ num(f.spend_to_baseline_cpa, 1) }} conversions
+          at the prior 7 days' cost per result{% endif %}
         {%- if f.fatigue_consistent is not none %}{% if f.evidence or f.spend_to_baseline_cpa is not none %} &middot; {% endif %}
           {%- if f.fatigue_consistent %}the fatigue pattern is consistent{% else %}no consistent fatigue pattern{% endif %}
         {%- endif %}</p>

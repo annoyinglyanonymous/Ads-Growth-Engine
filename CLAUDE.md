@@ -28,8 +28,7 @@ concluding that something is broken.
    • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
 
-  ledger: ads.schema_migrations, files 001…017
-          (001…016 applied; 017 prepared, waiting to be applied)
+  ledger: ads.schema_migrations, files 001…017, all applied
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are
@@ -384,7 +383,7 @@ with 1200s to the model call's 900), because a suggestion somebody has to
 remember to ask for is one nobody asks for. A failed import skips it: an
 analysis of numbers that did not land is worse than none.
 
-**It needs migration 017.** `intel/creative.py`'s pack reads
+**It needs migration 017** (applied 2026-10-01). `intel/creative.py`'s pack reads
 `metrics.funnel_ladder` -- one round trip over `ads.analysis_windows` and
 `ads.funnel_change`, every level, every window pair. Until 017 is applied the
 pack carries `funnel_available: false`, the /suggestions page still renders

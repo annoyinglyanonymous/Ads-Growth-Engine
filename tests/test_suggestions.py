@@ -1946,3 +1946,20 @@ def test_a_report_built_from_the_pack_renders(monkeypatch):
     assert "provisional" in html, "the unsettled rung is not marked"
     assert "Judging the copy on one week." in html
     assert not re.search(r"<script|<button", html, re.I)
+
+
+def test_not_yet_keeps_one_line_per_thing_and_the_diagnosis_wins():
+    # 2026-10-01: the card said "Acting on the 7-day move in <campaign>" from
+    # the diagnosis and "Acting on the 7-day move in this campaign" from the
+    # model -- one warning, twice. Lines are matched on what they warn about
+    # (the part before the colon), and the diagnosis's comes first.
+    seed = ("Acting on the 7-day move in this campaign: the 14-day "
+            "comparison does not show it yet.")
+    c = {"diagnosis": {"findings": [], "max_priority": "monitor",
+                       "not_yet": [seed]}}
+    r = {"issues": [], "not_yet": [
+        "Acting on the 7-day move in this campaign: it may be a wobble.",
+        "Pausing the control: it is the baseline every test reads against."]}
+    out = creative._report(r, c, {}, set(), "1001", 0, _date(2026, 10, 1))
+    assert out["not_yet"] == [
+        seed, "Pausing the control: it is the baseline every test reads against."]

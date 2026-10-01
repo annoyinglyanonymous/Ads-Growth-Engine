@@ -637,7 +637,12 @@ def not_yet_seeds(findings, conc) -> list:
     for f in findings:
         if f["held_in"] == ["7v7"] and f.get("_has_14") and f["pattern"] not in (
                 "steady", "insufficient_evidence"):
-            s = (f'Acting on the 7-day move in "{f["entity"]}": the 14-day '
+            # A campaign-level finding is "this campaign": the card is
+            # already the campaign's, and its full name read as a second,
+            # different warning beside the model's own "this campaign" line.
+            where = ("this campaign" if f.get("level") == "campaign"
+                     else f'"{f["entity"]}"')
+            s = (f"Acting on the 7-day move in {where}: the 14-day "
                  f"comparison does not show it yet.")
             if s not in out:
                 out.append(s)
