@@ -505,6 +505,88 @@ def meter(v: Number, top: Number, *, width: int = 110) -> str:
     return track + f'<span style="width:{w:.1f}px"></span></span>'
 
 
+def window_dots(points: list[tuple[str, Number, bool]], *, current: str | None = None,
+                width: int = 300, height: int = 74) -> str:
+    """One figure per window, as dots on one scale. The CPA ladder without the table.
+
+    `points` arrive in reading order -- the oldest window on the left, the
+    unsettled tail on the right -- and each is (label, value, provisional). The
+    windows overlap (the last 14 days hold the last 7), so this is a row of
+    readings, not a time series, and no line joins them. A provisional window
+    is drawn hollow: Meta can still restate it. `current` names the one window
+    a reader judges by, drawn larger and darker.
+
+    The value is printed above its dot, so the picture carries the figures and
+    no axis is needed. Fewer than two values is no picture at all.
+    """
+    vals = [(str(lab), _f(v), bool(prov)) for lab, v, prov in points]
+    shown = [v for _, v, _ in vals if v is not None]
+    if len(shown) < 2:
+        return ""
+    lo, hi = min(shown), max(shown)
+    span = (hi - lo) or 1.0
+    # Wide enough that a value centred over the first or last dot ("$130.00",
+    # "Unsettled") stays inside the viewBox rather than clipping at its edge.
+    x0, x1 = 26.0, width - 26.0
+    step = (x1 - x0) / max(1, len(vals) - 1)
+    top, bottom = 22.0, height - 22.0
+    out = [f'<line class="grid-line" x1="{x0}" y1="{bottom + 4:.1f}" x2="{x1}" y2="{bottom + 4:.1f}"/>']
+    for i, (lab, v, prov) in enumerate(vals):
+        x = x0 + i * step
+        out.append(f'<text class="axis" x="{x:.1f}" y="{height - 4}" '
+                   f'text-anchor="middle">{escape(lab)}</text>')
+        if v is None:
+            continue
+        y = bottom - (v - lo) / span * (bottom - top)
+        cur = lab == current
+        fill = "var(--surface)" if prov else ("var(--accent)" if cur else "var(--accent-hi)")
+        stroke = "var(--accent)" if cur else "var(--accent-hi)"
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{5 if cur else 4}" fill="{fill}" '
+                   f'stroke="{stroke}" stroke-width="2"><title>{escape(lab)}: '
+                   f'{escape(money(v))}{" (provisional)" if prov else ""}</title></circle>')
+        out.append(f'<text class="val" x="{x:.1f}" y="{y - 9:.1f}" '
+                   f'text-anchor="middle">{escape(money(v))}</text>')
+    aria = ", ".join(f"{lab} {money(v)}" for lab, v, _ in vals if v is not None)
+    return (f'<svg class="chart micro" viewBox="0 0 {width} {height}" role="img" '
+            f'aria-label="{escape(aria)}" data-chart="windows">{"".join(out)}</svg>')
+
+
+def paired_moves(rows: list[tuple[str, Number, Number]], *, width: int = 136) -> str:
+    """Two signed bars per metric -- the last 7 days and the last 14 -- around one zero.
+
+    The rule the triage reads by is that a 7-day move the 14-day comparison
+    does not share is a wobble, so the two are drawn together where the eye
+    can test it: a long dark bar over a short pale one is a wobble, two bars
+    the same way is a move. Every bar is navy (7 days in --accent, 14 in
+    --focus); the figure beside each is the fact. One scale across all rows,
+    for the reason effect_bars gives. A missing figure leaves its bar out.
+    """
+    vals = [(str(n), _f(a), _f(b)) for n, a, b in rows]
+    vals = [r for r in vals if r[1] is not None or r[2] is not None]
+    mags = [abs(v) for _, a, b in vals for v in (a, b) if v is not None]
+    if not vals or not mags:
+        return ""
+    top = max(mags) or 1.0
+    half = width / 2.0
+
+    def bar(v: float | None, tone: str) -> str:
+        if v is None:
+            return '<span class="pm-b"></span>'
+        w = max(1.0, half * abs(v) / top) if v else 0.0
+        side = "left" if v >= 0 else "right"
+        return (f'<span class="pm-b"><span style="{side}:{half:.1f}px; width:{w:.1f}px; '
+                f'background:var({tone})"></span></span>')
+
+    out = []
+    for name, a, b in vals:
+        out.append(
+            f'<div class="pm-row"><span class="pm-k">{escape(name)}</span>'
+            f'<span class="pm-t" style="width:{width}px">{bar(a, "--accent")}{bar(b, "--focus")}</span>'
+            f'<span class="pm-v"><b>{escape(signed_pct(a, 0)) if a is not None else "--"}</b> '
+            f'<span>{escape(signed_pct(b, 0)) if b is not None else "--"}</span></span></div>')
+    return f'<div class="pm" data-chart="paired">{"".join(out)}</div>'
+
+
 def ago(hours: Number) -> str:
     """How long ago something was written, the way a person says it.
 

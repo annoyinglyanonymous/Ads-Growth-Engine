@@ -140,6 +140,27 @@ def test_the_miniatures_are_blue_and_white():
     assert "+$17.74" in eb and "−$25.03" in eb
 
 
+def test_the_suggestion_charts_are_blue_and_white():
+    """The two charts an opened campaign draws stay in the palette too."""
+    wd = charts.window_dots([("Prior 7d", 87.14, False), ("Last 7d", 106.67, False),
+                             ("Unsettled", 130.0, True)], current="Last 7d")
+    pm = charts.paired_moves([("Link CTR", -18.3, -10.5), ("Conversion rate", -4.2, None)])
+    for svg in (wd, pm):
+        assert svg
+        assert not re.search(r"#[0-9a-fA-F]{3,6}\b", svg), svg[:200]
+        for hue in ("--good", "--bad", "--ok", "--warn", "--err"):
+            assert hue not in svg, hue
+    # The figure is printed beside its mark, and a provisional window is hollow.
+    assert "$106.67" in wd and wd.count('fill="var(--surface)"') == 1
+    assert "<b>−18%</b> <span>−10%</span>" in pm and "<span>--</span>" in pm
+
+
+def test_the_suggestion_charts_draw_nothing_rather_than_a_guess():
+    assert charts.window_dots([("Last 7d", 10.0, False)]) == ""
+    assert charts.window_dots([("Prior 7d", None, False), ("Last 7d", None, False)]) == ""
+    assert charts.paired_moves([("Link CTR", None, None)]) == ""
+
+
 def test_formatters_accept_decimal():
     # psycopg returns numeric as Decimal, and float() on it is the only place
     # money would silently lose precision.

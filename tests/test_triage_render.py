@@ -180,14 +180,29 @@ def test_v3_still_folds_and_renders_every_campaign():
 
 def test_buckets_group_in_order_act_test_monitor_no_change():
     html = _render(_load("report_v3"))
-    order = re.findall(r'<details class="tgroup (\w+)" data-bucket="(\w+)"', html)
-    assert order == [("red", "act"), ("yellow", "test"),
-                     ("none", "monitor"), ("green", "no_change")]
+    order = re.findall(r'<section class="tlist" id="(\w+)" data-bucket="(\w+)"', html)
+    assert order == [("act", "act"), ("test", "test"),
+                     ("monitor", "monitor"), ("no_change", "no_change")]
     # Inside a group, the order given (integration sorts by impact).
     act = _between(html, 'data-bucket="act"', 'data-bucket="test"')
     assert act.index('class="ttl">Campaign Delta</span>') < act.index('class="ttl">Campaign Hotel</span>')
-    # No rating group is drawn when the entries carry buckets.
+    # No rating group is drawn when the entries carry buckets, and a group is
+    # a list rather than a fold: every row is one line, so it shows.
     assert "Critical" not in html and "Needs changes" not in html
+    assert 'class="tgroup' not in html
+
+
+def test_a_long_group_folds_its_tail_behind_a_count():
+    pub = _load("report_v3")
+    base = next(c for c in pub["triage"] if c["bucket"] == "test")
+    pub["triage"] += [dict(base, campaign=f"Campaign Test {i}") for i in range(6)]
+    html = _render(pub)
+    test = _between(html, 'data-bucket="test"', 'data-bucket="monitor"')
+    # Seven test campaigns: five show, two fold behind a summary that names them.
+    more = _between(test, '<details class="tl-more">', "</summary>")
+    assert "<b>2 more</b>" in more
+    assert "Campaign Test 4" in more and "Campaign Test 5" in more
+    assert test.count('<details class="tcamp">') == 7
 
 
 def test_an_entry_without_a_bucket_still_lands_somewhere():
@@ -197,23 +212,23 @@ def test_an_entry_without_a_bucket_still_lands_somewhere():
     assert 'data-bucket="none"' in html and "Unsorted One" in html
 
 
-def test_the_folded_line_carries_bucket_summary_and_movement():
+def test_the_row_carries_the_reason_the_excess_and_the_cpa_moves():
     html = _render(_load("report_v3"))
     delta = _between(html, 'class="ttl">Campaign Delta</span>', "</summary>")
-    assert "CPA +22%. Lower conversion rate after the click appears" in delta
-    m7 = _between(delta, 'class="mv-row m7"', 'class="mv-row m14"')
-    for label, value, word in (("CPA", "+22.4%", "worse"), ("Link CTR", "−18.3%", "worse"),
-                               ("CPC", "+9.1%", "worse"), ("CVR", "−4.2%", "worse")):
-        assert re.search(rf'<span class="mv {word}"><span class="ml">{label}</span>'
-                         rf'<b>{re.escape(value)}</b><span class="mw">{word}</span>', m7), label
-    m14 = _between(delta, 'class="mv-row m14"')
-    # CVR up is better, by sign alone.
-    assert re.search(r'mv better"><span class="ml">CVR</span><b>\+1\.2%</b>', m14)
-    # Figures are kept, small, after the movement.
-    assert delta.index('class="mv-row m7"') < delta.index('class="figs v3"')
+    # The reading from the summary; the CPA figure is in the chips, the
+    # confidence in the opened panel, and the advice belongs to the issue.
+    head = _between(delta, '<span class="head">', "</span>")
+    assert "Lower conversion rate after the click appears to be the largest contributor." in head
+    for gone in ("CPA +22%", "Cut the non-converting ad.", "Medium confidence."):
+        assert gone not in head, gone
+    assert "+$310.50" in delta, "the excess cost is missing from the row"
+    # CPA up is worse, by sign alone; the arrow carries the sign.
+    assert re.search(r'<span class="cc worse"[^>]*>\s*<span class="cl">7d</span>&uarr;22%', delta)
+    assert re.search(r'<span class="cc worse"[^>]*>\s*<span class="cl">14d</span>&uarr;15%', delta)
     golf = _between(html, 'class="ttl">Campaign Golf</span>', "</summary>")
-    assert re.search(r'mv better"><span class="ml">CPA</span><b>−12\.0%</b>', golf)
-    assert "mv-row m14" not in golf, "a missing 14-day comparison drew a row"
+    assert re.search(r'<span class="cc better"[^>]*>\s*<span class="cl">7d</span>&darr;12%', golf)
+    assert ">14d<" not in golf, "a missing 14-day comparison drew a chip"
+    assert 'class="xs"' not in golf, "no impact, so no excess chip"
 
 
 def test_a_missing_summary_falls_back_to_the_headline():
@@ -224,12 +239,97 @@ def test_a_missing_summary_falls_back_to_the_headline():
     assert "Link CTR" not in fox
 
 
-def test_the_v3_sections_are_renamed_and_in_order():
+def test_an_act_row_never_carries_its_test_issues_advice():
+    """The model's one-line summary can describe the primary issue (a test)
+    while the bucket came from a secondary one (a delivery cut). The row keeps
+    the reading and drops the advice; the opened card leads with the issue
+    that put the campaign in its group."""
+    pub = _load("report_v3")
+    pub["triage"] = [{
+        "campaign": "Campaign Kilo", "bucket": "act", "rating": "yellow",
+        "summary": "CPA +56% over 7 days, +38% over 14. Lower conversion rate appears "
+                   "to be the largest contributor. Worth testing the form. Low confidence.",
+        "movement": {"7v7": {"cpa": 55.97}, "14v14": {"cpa": 38.0}},
+        "issues": [
+            {"priority": "primary", "recommendation": {"type": "test", "action": "Test the lead form."},
+             "confidence": {"level": "low"}},
+            {"priority": "secondary", "recommendation": {"type": "act", "action": "Stop delivery to Ad K2."},
+             "confidence": {"level": "medium"}}]}]
+    html = _render(pub)
+    row = _between(html, 'class="ttl">Campaign Kilo</span>', "</summary>")
+    assert "Lower conversion rate appears to be the largest contributor." in row
+    assert "Worth testing the form." not in row
+    do = _between(html, 'aria-label="What to do"', "</section>")
+    assert "Stop delivery to Ad K2." in do and "Test the lead form." not in do
+    assert ">ACT</span>" in do and "Medium confidence" in do and "1 more issue" in do
+
+
+@pytest.mark.parametrize("summary, movement, want", [
+    # The four-sentence round-2 form: only the reading survives.
+    ("CPA +22%. Lower CTR appears to be the largest contributor. Test new creative. "
+     "Medium-high confidence.", {"7v7": {"cpa": 22}},
+     "Lower CTR appears to be the largest contributor."),
+    # Evidence that is not advice stays.
+    ("CPA -34.63% over 7 days, -0.89% over 14. Higher conversion rate appears to be the "
+     "largest contributor. $477.30 on non-converting ads. Medium confidence.", {"7v7": {}},
+     "Higher conversion rate appears to be the largest contributor. $477.30 on non-converting ads."),
+    # With no chips beside it, the CPA sentence is the only place the move is.
+    ("CPA is up 4.80% on the prior 7 days. Worth watching.", None,
+     "CPA is up 4.80% on the prior 7 days."),
+    # Nothing would be left: the whole summary, not an empty row.
+    ("CPA +8%. Monitor. Low confidence.", {"7v7": {"cpa": 8}},
+     "CPA +8%. Monitor. Low confidence."),
+    # A figure inside a sentence is not a sentence boundary.
+    ("Not running: no spend in the last 7 settled days. Its 28-day figures are $518.39.",
+     {"7v7": {}}, "Not running: no spend in the last 7 settled days. Its 28-day figures are $518.39."),
+])
+def test_reason_line_cuts_and_never_rewrites(summary, movement, want):
+    c = {"summary": summary}
+    if movement is not None:
+        c["movement"] = movement
+    assert ui.reason_line(c) == want
+
+
+def test_reason_line_falls_back_to_the_headline():
+    assert ui.reason_line({"summary": "", "headline": "Too few to read."}) == "Too few to read."
+    assert ui.reason_line({}) == ""
+
+
+def test_lead_issue_is_the_one_the_bucket_came_from():
+    act2 = {"priority": "secondary", "recommendation": {"type": "act", "action": "b"}}
+    act1 = {"priority": "primary", "recommendation": {"type": "act", "action": "c"}}
+    test = {"priority": "primary", "recommendation": {"type": "test", "action": "a"}}
+    assert ui.lead_issue({"bucket": "act", "issues": [test, act2]}) is act2
+    assert ui.lead_issue({"bucket": "act", "issues": [test, act2, act1]}) is act1
+    # No issue of the bucket's type: the first issue; none at all: nothing.
+    assert ui.lead_issue({"bucket": "monitor", "issues": [test]}) is test
+    assert ui.lead_issue({"bucket": "no_change", "issues": []}) == {}
+
+
+def test_the_opened_card_draws_cpa_by_window_and_what_moved():
     html = _render(_load("report_v3"))
     delta = _between(html, 'class="ttl">Campaign Delta</span>', 'class="ttl">Campaign Hotel</span>')
-    names = ["What changed", "Where the change came from", "Where it's concentrated",
-             "Issues", "What not to do yet"]
-    at = [delta.index(f'<h4 class="tsec">{s}') for s in names]
+    moved = _between(delta, 'aria-label="How CPA moved"', "</section>")
+    assert 'data-chart="windows"' in moved
+    # One dot per rung the ladder has, the unsettled one hollow.
+    assert moved.count("<circle") == 3 and "(provisional)" in moved and "Last 7" in moved
+    assert "$106.67" in moved and "$130.00" in moved
+    assert 'data-chart="paired"' in moved
+    for label, a, b in (("Link CTR", "−18%", "−10%"), ("Cost per click", "+9%", "+4%"),
+                        ("Conversion rate", "−4%", "+1%")):
+        assert re.search(rf'{label}</span>.*?<b>{re.escape(a)}</b> <span>{re.escape(b)}</span>',
+                         moved), label
+    spend = _between(delta, 'aria-label="Where the spend went"', "</section>")
+    assert "Ad D1" in spend and "49%" in spend and "$81.82" in spend
+
+
+def test_the_detail_is_one_fold_further_and_in_order():
+    html = _render(_load("report_v3"))
+    delta = _between(html, 'class="ttl">Campaign Delta</span>', 'class="ttl">Campaign Hotel</span>')
+    marks = ['<summary>The full issues', '<summary>The numbers',
+             '<h4 class="tsec">What changed', '<h4 class="tsec">Where the change came from',
+             "<h4 class=\"tsec\">Where it's concentrated", '<summary>What not to do yet']
+    at = [delta.index(m) for m in marks]
     assert at == sorted(at)
     assert "What's causing it" not in html
     assert re.search(r'chip-d primary">Post-click \(CVR\) — appears to be the largest'
@@ -296,7 +396,7 @@ def test_a_no_change_campaign_says_so():
 @pytest.mark.parametrize("name", ["old_changes", "old_problems", "report"])
 def test_older_files_never_reach_the_v3_markup(name):
     html = _render(_load(name))
-    for v3 in ("data-bucket", 'class="mv-row', '<details class="issue">',
+    for v3 in ("data-bucket", 'class="tlist"', 'class="tpanels"', '<details class="issue">',
                "Where the change came from", 'class="otag"'):
         assert v3 not in html, v3
 
@@ -339,23 +439,50 @@ def test_the_page_puts_what_matters_and_the_scorecard_above_the_groups():
     html = _page(_load("report_v3"))
     today = html.index('aria-label="What matters today"')
     followed = html.index('aria-label="Recommendations followed up"')
-    groups = html.index('<details class="tgroup')
+    groups = html.index('<section class="tlist"')
     assert today < followed < groups
     panel = _between(html, 'aria-label="What matters today"', "</section>")
-    assert "Offsite conversions" in panel and "CPA +18.2%" in panel
-    assert "2 campaigns account for 68.4% of that rise." in panel
-    assert "Campaign Delta" in panel and "41.5% of the change" in panel
+    # A tile per goal: the move, with the arrow carrying the sign.
+    assert "Offsite conversions" in panel and "&uarr; 18.20%" in panel
+    assert "Link clicks" in panel and "&darr; 6.10%" in panel
+    assert "Moderate evidence" in panel
+    # The campaigns that account for the rise, each with its share, and the
+    # last one's cumulative share as the total -- read, never added up.
+    assert "Campaign Delta" in panel and "41.5%" in panel and "26.9%" in panel
+    assert "Together, 68.4% of the rise" in panel
+    # The goal's own sentence restates the tile and is not printed.
+    assert "on the prior 7 days; 2 campaigns account" not in panel
+    # The computed lines, with diagnose's identifiers as words.
     assert "2 have issues with low current impact." in panel
+    assert "(creative engagement)" in panel and "creative_engagement" not in panel
+    assert "The review&rsquo;s read" in panel
     assert "Most of the rise sits in two conversion campaigns" in panel
     card = _between(html, 'aria-label="Recommendations followed up"', "</section>")
-    assert re.search(r"<b>6</b><span>made</span>", card)
-    assert re.search(r"<b>3</b><span>implemented</span>", card)
-    assert re.search(r"<b>1</b><span>improved</span>", card)
-    assert re.search(r"<b>2</b><span>too early to read</span>", card)
+    assert re.search(r"<b>6</b>recommended", card)
+    assert re.search(r"<b>3</b>carried out", card)
+    assert re.search(r"<b>1</b>improved", card)
+    assert re.search(r"<b>2</b>too early to read", card)
+    assert "a reading, not a conclusion" in card
     assert "<td>Creative test</td>" in card and "<td>Delivery cut</td>" in card
     assert "Campaign Echo" in card and "improved</b> after 9 settled days" in card
+    # The bucket counts jump to their groups.
+    counts = _between(html, 'aria-label="Campaigns by action"', "</nav>")
+    for key, n in (("act", 2), ("test", 1), ("monitor", 1), ("no_change", 1)):
+        assert re.search(rf'href="#{key}">.*?<b>{n}</b>', counts, re.S), key
     read = _between(html, '<section class="ai-read"', '<section class="stage"')
     assert "<details open" not in read and not re.search(r"<script|<button", read, re.I)
+
+
+def test_a_goal_with_no_cpa_move_gets_no_tile():
+    """THRUPLAY buys views, so it has no CPA and its summary entry has no
+    lines. It used to render as an empty card."""
+    pub = _load("report_v3")
+    pub["account_summary"]["goals"].append(
+        {"goal": "THRUPLAY", "cpa_pct": None, "evidence": None,
+         "contributors": [], "lines": []})
+    panel = _between(_page(pub), 'aria-label="What matters today"', "</section>")
+    assert panel.count('class="today-goal"') == 2
+    assert "Thruplay" not in panel
 
 
 def test_the_scorecard_empty_state_and_absent_panels():
@@ -364,14 +491,24 @@ def test_the_scorecard_empty_state_and_absent_panels():
                        "scorecard": {"made": 2, "implemented": 0, "by_result": {},
                                      "by_kind": {}, "recent": []}}
     html = _page(pub)
-    assert "No recommendation has been implemented yet." in html
-    assert "2 act or test recommendation(s) made." in html
+    card = _between(html, 'aria-label="Recommendations followed up"', "</section>")
+    assert re.search(r"<b>2</b>recommended", card)
+    assert re.search(r"<b>0</b>carried out", card)
+    # Nothing carried out, so no results and nothing folded under the line.
+    assert "improved" not in card and "fu-more" not in card
     pub.pop("outcomes")
     pub.pop("account_summary")
     html = _page(pub)
     assert 'aria-label="What matters today"' not in html
     assert 'aria-label="Recommendations followed up"' not in html
-    assert '<details class="tgroup' in html
+    assert '<section class="tlist"' in html
+
+
+def test_the_evidence_folds_until_a_goal_is_chosen():
+    html = _page(_load("report_v3"))
+    assert '<details class="evidence-fold">' in html
+    opened = _page(_load("report_v3"), goal="LINK_CLICKS")
+    assert '<details class="evidence-fold" open>' in opened
 
 
 def test_an_old_file_renders_the_page_without_the_new_panels():

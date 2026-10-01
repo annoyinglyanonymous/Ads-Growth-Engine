@@ -21,6 +21,7 @@ a conclusion in growth-engine's UI, where a person is signed in and attributable
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -51,13 +52,67 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 
 # Formatting helpers, registered as globals because macro bodies do not see
 # page scope. Same device growth-engine uses for field_labels/capped.
+#: A summary sentence that restates the CPA move -- "CPA +22%.", "CPA is up
+#: 4.80% on the prior 7 days..." -- which the row's chips already show.
+_FIGURE_LEAD = re.compile(r"^CPA (is )?([+\-−\d]|up\b|down\b|fell\b|rose\b)")
+#: A summary sentence that gives advice. The advice belongs to the bucket's own
+#: issue, and the model's one-liner sometimes names a secondary issue's.
+_ADVICE = re.compile(r"^(Worth|Test|Monitor|Narrow|Cut|Pause|Stop|Shift|Move|Keep|"
+                     r"Refresh|Nothing to change)\b")
+_SENTENCE = re.compile(r".+?[.!?](?=\s|$)")
+_PRIORITY = {"primary": 0, "secondary": 1}
+
+
+def reason_line(c: dict) -> str:
+    """The part of a campaign's one-line summary its row does not already show.
+
+    A round-2 summary is four short sentences: the CPA move, the stage that
+    appears to contribute most, the advice, the confidence. On the folded row
+    the move is in the 7d / 14d chips beside it and the confidence is in the
+    opened panel, so they are dropped here. So is the advice -- not because it
+    is wrong to show, but because the summary sometimes carries a secondary
+    issue's advice ("Worth testing the form") under an Act heading, and the
+    row must not contradict its group. What is left is the reading.
+
+    A cut, never a rewrite: every word printed is the summary's own, so
+    check_figures has already seen it. When nothing would be left, the whole
+    summary is returned.
+    """
+    s = re.sub(r"\s+", " ", str(c.get("summary") or c.get("headline") or c.get("why") or "")).strip()
+    parts = [p.strip() for p in (_SENTENCE.findall(s) or [s])]
+    chips = isinstance(c.get("movement"), dict) and bool(c["movement"])
+    keep = [p for p in parts
+            if not (chips and _FIGURE_LEAD.match(p))
+            and not re.search(r"confidence\.$", p, re.I)
+            and not _ADVICE.match(p)]
+    return " ".join(keep) if keep else s
+
+
+def lead_issue(c: dict) -> dict:
+    """The issue a campaign's bucket came from: the strongest type, primary first.
+
+    creative.bucket_of sets the bucket from the strongest recommendation among
+    the issues, which need not be the primary one -- a campaign can be Act on a
+    secondary delivery cut while its primary issue is a test. The opened card
+    leads with the issue that put it in its group.
+    """
+    iss = [i for i in (c.get("issues") or []) if isinstance(i, dict)]
+    want = str(c.get("bucket") or "").lower()
+    same = [i for i in iss
+            if str(((i.get("recommendation") or {}).get("type")) or "").lower() == want]
+    same.sort(key=lambda i: _PRIORITY.get(i.get("priority"), 2))
+    return (same or iss or [{}])[0]
+
+
 templates.env.globals.update(
     money=charts.money, num=charts.num, pct=charts.pct, fmt=charts.fmt,
     signed_pct=charts.signed_pct,
     line_chart=charts.line_chart, bar_chart=charts.bar_chart,
     sparkline=charts.sparkline, column_chart=charts.column_chart,
     split_bar=charts.split_bar, effect_bars=charts.effect_bars,
+    window_dots=charts.window_dots, paired_moves=charts.paired_moves,
     words=charts.words, meter=charts.meter, ago=charts.ago,
+    reason_line=reason_line, lead_issue=lead_issue,
 )
 
 router = APIRouter(include_in_schema=False)

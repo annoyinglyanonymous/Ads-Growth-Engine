@@ -1,63 +1,59 @@
-{#- One report per campaign, from `published.triage`, in groups -- each
-    folded shut until it is clicked, and each campaign inside a group folded
-    shut too.
+{#- One report per campaign, from `published.triage`.
 
     Included by suggestions.html inside its "AI read" block, so this renders
     only the groups: no heading, no pill of its own. Reads only `published` and
-    the money/num/pct/signed_pct/words globals.
+    the globals ui.py registers (money/num/pct/signed_pct/words/meter, the
+    window_dots and paired_moves charts, reason_line and lead_issue).
 
-    FOLDED TWICE, because twenty-five open reports is a wall nobody reads. A
-    group is a <details>: the summary bar says how many campaigns it holds and
-    names them. Inside it every campaign is its own <details class="tcamp">
-    whose summary carries the bucket (or rating), the one-line summary and
-    the figures, so the group reads as a list until one campaign is opened. No
-    script and no button -- the page has neither, and tests/test_suggestions.py
-    keeps it that way.
+    No script and no button -- the page has neither, and tests/test_suggestions.py
+    keeps it that way. Everything that opens is a <details>, and nothing starts
+    open.
 
     THREE SHAPES OF ENTRY.
-    - Round 2 of the report (contracts2 D4) carries `bucket`: groups are
-      Act / Test / Monitor / No change, in that order, campaigns inside each in
-      the order given (integration sorts them by impact). The folded line adds
-      a movement strip -- CPA, link CTR, CPC and CVR, 7 days against the prior
-      7, with the 14-day comparison smaller beneath -- because the operator
-      reads movement first and raw figures second. Each issue folds too.
+    - Round 2 (contracts2 D4) carries `bucket`. Groups are Act / Test /
+      Monitor / No change, in that order, campaigns inside each in the order
+      given (creative.sort_triage: impact first). A group is NOT folded: each
+      campaign is one line, so a group reads as a list -- the reason, the
+      excess cost, the CPA move over 7 and 14 days, the spend -- and the tail
+      of a long group folds behind "N more". Opening a campaign shows three
+      panels: what to do (the issue the bucket came from, which need not be
+      the primary one), CPA by window and what moved, and where the spend
+      went. The full issues, the tables and what not to do yet are one more
+      click away, each its own fold.
     - Shape 2 without `bucket` carries `issues` (contracts C5) and groups by
-      rating, exactly as before.
+      rating into folded groups, exactly as before.
     - An older file carries `problems` (each with its fix) or plain `changes`,
       and renders through legacy(), unchanged.
     Every section is guarded on its own data, so a missing piece drops out
     alone. Neither shape invents the other.
 
     NO ARITHMETIC HERE. Every figure is the pack's (creative.triage_from
-    attaches them), never the model's, and the template only formats them.
-    "better" / "worse" beside a change is a sign comparison against a fixed
-    list of which way each metric is good; it divides nothing.
+    attaches them), never the model's, and the template only formats them. A
+    bar is drawn against a fixed 100% or against the largest value shown; no
+    share, remainder or difference is worked out. "better" / "worse" beside a
+    change is a sign comparison against a fixed list of which way each metric
+    is good; it divides nothing.
 
     RED / AMBER / GREEN, and this is the only template allowed them. The rest
     of the dashboard is blue and white (tests/test_charts_and_templates.py::
     test_the_dashboard_is_blue_and_white); the user granted this panel an
-    exception by name on 2026-09-23. Act is red, test amber, monitor neutral
-    and no change green, on the same pill and border classes the ratings use.
-    The word still carries the group too, so a reader who cannot tell the hues
-    apart loses nothing. Everything inside the report itself -- tables, chips,
-    the movement strip, the test plan -- stays navy.
+    exception by name on 2026-09-23. The rating groups of a shape-2 file use
+    it. Round 2 groups by bucket, and its groups and chips are navy: the
+    bucket is a word, and a column of amber dots on 23 of 25 rows said
+    nothing the word did not.
 
     Without buckets: red first, then yellow, then green, the order a reader
     works through it; within a group, the pack's order, which is spend. -#}
 {% set t = published.triage %}
 {% set bucketed = t | selectattr('bucket') | list %}
 {% if bucketed %}
+{#- (label, rows, bucket, how many rows show before the rest fold) -#}
 {% set groups = [
-     ('red',    'Act',         'Change something now',
-      t | selectattr('bucket', 'equalto', 'act') | list, 'act'),
-     ('yellow', 'Test',        'Worth a controlled test',
-      t | selectattr('bucket', 'equalto', 'test') | list, 'test'),
-     ('none',   'Monitor',     'Watch; nothing to change yet',
-      t | selectattr('bucket', 'equalto', 'monitor') | list, 'monitor'),
-     ('green',  'No change',   'Leave these alone',
-      t | selectattr('bucket', 'equalto', 'no_change') | list, 'no_change'),
-     ('none',   'Not sorted',  'The report did not sort these',
-      t | rejectattr('bucket', 'in', ['act', 'test', 'monitor', 'no_change']) | list, 'none'),
+     ('Act',        t | selectattr('bucket', 'equalto', 'act') | list,       'act',       99),
+     ('Test',       t | selectattr('bucket', 'equalto', 'test') | list,      'test',      5),
+     ('Monitor',    t | selectattr('bucket', 'equalto', 'monitor') | list,   'monitor',   4),
+     ('No change',  t | selectattr('bucket', 'equalto', 'no_change') | list, 'no_change', 3),
+     ('Not sorted', t | rejectattr('bucket', 'in', ['act', 'test', 'monitor', 'no_change']) | list, 'none', 99),
    ] %}
 {% else %}
 {% set groups = [
@@ -73,17 +69,13 @@
 {% endif %}
 {% set rating_label = {'red': 'Critical', 'yellow': 'Needs changes',
                        'green': 'No change'} %}
-{% set BUCKET = {'act': ('red', 'Act'), 'test': ('yellow', 'Test'),
-                 'monitor': ('none', 'Monitor'), 'no_change': ('green', 'No change')} %}
 
 {#- Which way is good, per funnel metric. Frequency has no merit of its own:
-    rising can mean fatigue or a smaller audience, so it gets no word. The
-    movement strip uses 017's own key names, so they are listed too. -#}
+    rising can mean fatigue or a smaller audience, so it gets no word. 017's
+    own key names are listed too. -#}
 {% set MERIT = {'cpm': 'lower', 'cpc': 'lower', 'cpa': 'lower',
                 'link_ctr': 'higher', 'cvr': 'higher', 'frequency': 'neutral',
                 'cost_per_link_click': 'lower', 'conversion_rate': 'higher'} %}
-{% set MOVE = [('cpa', 'CPA'), ('link_ctr', 'Link CTR'),
-               ('cost_per_link_click', 'CPC'), ('conversion_rate', 'CVR')] %}
 {% set RESULT_WORD = {'improved': 'improved', 'neutral': 'no clear change',
                       'worse': 'worse', 'too_early': 'too early to read'} %}
 {% set METRIC_LABEL = {'cpm': 'CPM', 'cpc': 'Cost per link click', 'cpa': 'CPA',
@@ -93,6 +85,10 @@
                   ('click_through', 'Click-through (CTR)'),
                   ('post_click', 'Post-click (CVR)')] %}
 {% set DOTS = {'low': 1, 'medium': 2, 'high': 3} %}
+{#- The ladder's rungs, oldest on the left, for the dot chart. -#}
+{% set WINDOWS = [('before', 'Before'), ('last_28', '28d'), ('prior_14', 'Prior 14'),
+                  ('last_14', 'Last 14'), ('prior_7', 'Prior 7'), ('last_7', 'Last 7'),
+                  ('unsettled', 'Unsettled')] %}
 
 <style>
   .tgroup { border:1px solid var(--line); border-left-width:5px;
@@ -124,7 +120,7 @@
   .tpill.green  { color:var(--ok);    background:var(--ok-bg);   border-color:var(--ok-line);   }
   .tpill.none   { color:var(--muted); background:var(--surface); border-color:var(--line);    }
 
-  /* One campaign, folded. */
+  /* One campaign, folded (shape 2 without buckets). */
   .tcamp { border:1px solid var(--line); border-radius:var(--radius);
     background:var(--surface); margin:0 0 8px; }
   .tcamp > summary { list-style:none; cursor:pointer; padding:10px 14px;
@@ -241,31 +237,6 @@
   .tcamp .quiet { margin-top:10px; font-size:12px; color:var(--muted); }
   .tcamp .quiet .lbl { color:var(--muted); }
 
-  /* Round 2: the movement strip on the folded line. Movement is what the
-     operator reads first, so the signed change is the largest type on the
-     line and the raw figures under it are the smallest. Navy only: "worse"
-     is filled, "better" outlined, and the word says which. */
-  .tcamp > summary .mvs { grid-column:2; display:flex; flex-direction:column;
-    gap:4px; margin:4px 0 2px; }
-  .mv-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
-  .mv-row .mk { font-size:10.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.05em; color:var(--muted); min-width:7.5em; }
-  .mv { display:inline-flex; align-items:baseline; gap:5px; padding:3px 10px;
-    border-radius:999px; border:1px solid var(--line-2); background:var(--surface);
-    color:var(--ink-2); white-space:nowrap; }
-  .mv .ml { font-size:11px; font-weight:600; color:var(--muted); }
-  .mv b { font-size:15px; font-weight:800; font-variant-numeric:tabular-nums; }
-  .mv .mw { font-size:10.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.04em; }
-  .mv.worse { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
-  .mv.worse .ml, .mv.worse .mw { color:var(--on-accent); }
-  .mv.better { border-color:var(--accent); color:var(--accent); }
-  .mv.better .mw { color:var(--accent); }
-  .mv-row.m14 .mv { padding:1px 8px; }
-  .mv-row.m14 .mv b { font-size:12px; font-weight:700; }
-  .mv-row.m14 .mv .ml, .mv-row.m14 .mv .mw { font-size:10px; }
-  .tcamp > summary .figs.v3 { font-size:11.5px; }
-
   /* Round 2: each issue folds to one line. */
   details.issue { padding:0; }
   details.issue > summary { list-style:none; cursor:pointer; padding:8px 12px;
@@ -288,19 +259,119 @@
   .tplan .arm .cad { font-weight:700; color:var(--ink-2); }
   .tplan .arm dl { grid-template-columns:96px 1fr; margin-top:4px; }
 
+  /* ---- Round 2: a group is a list of one-line campaigns. Navy only. ---- */
+  .tlist { border:1px solid var(--line); border-radius:var(--radius);
+    background:var(--surface); margin:0 0 12px; overflow:hidden; }
+  .tlist > header { display:flex; align-items:center; gap:10px; padding:11px 16px; }
+  .tlist > header .tl-n { font-size:12.5px; color:var(--muted); }
+  .bk { display:inline-flex; align-items:center; font-size:11.5px; font-weight:700;
+    padding:2px 10px; border-radius:999px; border:1px solid; white-space:nowrap; }
+  .bk.act       { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+  .bk.test      { background:var(--surface); color:var(--accent); border-color:var(--accent-hi); }
+  .bk.monitor, .bk.no_change { background:var(--surface-3); color:var(--muted); border-color:var(--line); }
+  .bk.none      { background:var(--surface); color:var(--accent-hi); border:1px dashed var(--focus); }
+  .tlist > header .bk-t { font-size:14px; color:var(--accent); }
+
+  .tlist .tcamp { border:0; border-top:1px solid var(--line); border-radius:0; margin:0; }
+  .tlist .tcamp > summary { display:flex; align-items:center; gap:14px; padding:10px 16px; }
+  .tlist .tcamp[open] > summary { border-bottom:1px solid var(--line); }
+  .tc-name { flex:0 1 300px; min-width:170px; display:flex; flex-direction:column; }
+  .tlist .tcamp > summary .ttl { font-size:13.5px; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; color:var(--ink); }
+  .tlist .tcamp > summary .ttl::after { content:none; }
+  .tc-sub { font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; }
+  .tlist .tcamp > summary .head { flex:1 1 auto; min-width:0; font-size:13px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tlist .tcamp[open] > summary .head { white-space:normal; }
+  .tc-figs { flex:0 0 auto; display:flex; gap:5px; align-items:center; }
+  .xs { font-size:12px; font-weight:700; color:var(--on-accent); background:var(--accent-hi);
+    border-radius:4px; padding:2px 7px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .cc { display:inline-flex; gap:4px; align-items:baseline; font-size:12px; font-weight:700;
+    color:var(--accent); background:var(--surface); border:1px solid var(--line-2);
+    border-radius:4px; padding:2px 7px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .cc.worse { background:var(--accent-soft); border-color:var(--accent-line); }
+  .cc .cl { font-weight:500; color:var(--muted); }
+  .tc-bar { flex:0 0 80px; }
+  .tc-chev { flex:0 0 auto; color:var(--subtle); transition:transform .15s; }
+  .tlist .tcamp[open] > summary .tc-chev { transform:rotate(180deg); }
+
+  .tlist .tcamp .tbody { padding:0; background:var(--surface-2); }
+  .tlist .tbody > .note { margin:12px 16px 0; }
+  .tpanels { display:flex; }
+  .tp { flex:1 1 0; min-width:0; padding:14px 18px; border-right:1px solid var(--line); }
+  .tp:last-child { border-right:0; }
+  .tp.do { flex-grow:1.3; }
+  .tp-h { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--muted); margin:0 0 6px; display:flex; align-items:center; gap:8px; }
+  .tp-h + .chart { margin-top:-2px; }
+  .tp .chart + .tp-h, .tp .pm + .tp-h { margin-top:12px; }
+  .tp-h .key { display:inline-flex; align-items:center; gap:4px; text-transform:none;
+    letter-spacing:0; font-weight:600; }
+  .tp-h .key i { display:inline-block; width:9px; height:5px; border-radius:1px; }
+  .tp-act { margin:4px 0 0; font-size:14px; font-weight:700; color:var(--ink); }
+  .tp-out { margin:6px 0 0; font-size:12.5px; color:var(--ink-2); }
+  .tp-conf { margin:10px 0 0; font-size:12px; color:var(--muted); display:flex;
+    flex-wrap:wrap; align-items:center; gap:6px 10px; }
+  .sw-row { display:flex; align-items:center; gap:8px; font-size:12px; margin-top:6px; }
+  .sw-row .n { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sw-row b { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .sw-row .c { color:var(--muted); font-variant-numeric:tabular-nums; min-width:4.5em; text-align:right; }
+  .sw-nc { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink-2); }
+  .sw-nc b { font-size:18px; color:var(--accent); font-variant-numeric:tabular-nums; margin-right:6px; }
+  .sw-nc .meter { margin-top:6px; display:block; }
+
+  .tfolds { display:flex; flex-wrap:wrap; gap:8px; padding:10px 16px; border-top:1px solid var(--line);
+    background:var(--surface); }
+  .tfold { flex:0 0 auto; }
+  .tfold[open] { flex:1 1 100%; }
+  .tfold > summary { list-style:none; cursor:pointer; display:inline-flex; align-items:center; gap:7px;
+    font-size:12.5px; font-weight:600; color:var(--ink-2); padding:6px 12px; border:1px solid var(--line-2);
+    border-radius:var(--radius-sm); background:var(--surface); }
+  .tfold > summary::-webkit-details-marker { display:none; }
+  .tfold > summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  .tfold[open] > summary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+  .tfold > summary .c { font-size:11px; font-weight:700; padding:0 6px; border-radius:999px;
+    background:var(--surface-3); color:var(--muted); }
+  .tfold-b { padding:12px 0 2px; }
+  .tlist .tfold .table-wrap { border:1px solid var(--line); border-radius:var(--radius-sm); }
+
+  .tl-more { border-top:1px solid var(--line); }
+  .tl-more > summary { list-style:none; cursor:pointer; padding:10px 16px; background:var(--surface-2);
+    font-size:12.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tl-more > summary::-webkit-details-marker { display:none; }
+  .tl-more > summary:focus-visible { outline:2px solid var(--focus); outline-offset:-2px; }
+  .tl-more > summary b { color:var(--ink-2); margin-right:6px; }
+  .tl-more[open] > summary { display:none; }
+
+  .tp .pm-k { flex-basis:92px; }
+  @media (max-width:1280px) {
+    .tpanels { flex-wrap:wrap; }
+    .tp.do { flex:1 1 100%; border-right:0; border-bottom:1px solid var(--line); }
+  }
+  @media (max-width:760px) {
+    /* nowrap: a wrapping column sizes each line to its widest child (the
+       chart's viewBox), not to the card, and the panel overflows it. */
+    .tpanels { flex-direction:column; flex-wrap:nowrap; }
+    .tp { border-right:0; border-bottom:1px solid var(--line); }
+    .tp:last-child { border-bottom:0; }
+  }
   @media (max-width:600px) {
     .tgroup .body { padding:0 8px 10px; }
     .tcamp .tbody { padding:10px; }
+    .tlist .tcamp .tbody { padding:0; }
     .tdl, .tplan dl { grid-template-columns:1fr; gap:2px 0; }
     .tdl dd { margin-bottom:6px; }
     .tplan .arms { grid-template-columns:1fr; }
     .tcamp > summary { grid-template-columns:1fr; }
-    .tcamp > summary .head, .tcamp > summary .figs,
-    .tcamp > summary .mvs { grid-column:1; }
-    .mv-row .mk { flex-basis:100%; }
-    .mv { padding:2px 8px; }
-    .mv b { font-size:13.5px; }
+    .tcamp > summary .head, .tcamp > summary .figs { grid-column:1; }
     .tplan .arm dl { grid-template-columns:1fr; }
+    .tlist .tcamp > summary { flex-wrap:wrap; gap:6px 10px; padding:10px 12px; }
+    .tc-name { flex:1 1 100%; }
+    .tlist .tcamp > summary .head { flex:1 1 100%; white-space:normal; }
+    .tc-bar, .tc-chev { display:none; }
+    .tp { padding:12px; }
+    .tfolds { padding:10px 12px; }
   }
 </style>
 
@@ -326,7 +397,7 @@
   {%- endif -%}
 {%- endmacro %}
 
-{#- The same comparison as a bare word, for the movement strip's class. -#}
+{#- The same comparison as a bare word, for a chip's class. -#}
 {% macro merit_word(metric, change) -%}
   {%- set m = MERIT.get(metric, 'neutral') -%}
   {%- if change is not none and m != 'neutral' -%}
@@ -335,19 +406,15 @@
   {%- endif -%}
 {%- endmacro %}
 
-{#- One row of the movement strip: each metric 017 gave a change for, signed,
-    with which way that is. A missing metric is left out, not shown as "--". -#}
-{% macro moverow(row, cls, label) -%}
-  {% set shown = MOVE | selectattr('0', 'in', row) | list %}
-  {% if shown %}
-  <span class="mv-row {{ cls }}"><span class="mk">{{ label }}</span>
-    {%- for key, name in shown if row[key] is not none %}
-      {%- set w = merit_word(key, row[key]) | trim %}
-      <span class="mv{% if w %} {{ w }}{% endif %}"><span class="ml">{{ name }}</span><b>{{ signed_pct(row[key]) }}</b>
-        {%- if w %}<span class="mw">{{ w }}</span>{% endif %}</span>
-    {%- endfor %}
-  </span>
-  {% endif %}
+{#- One CPA chip on the folded row: the window, which way, how far. The arrow
+    carries the sign, so the figure is printed without one. -#}
+{% macro cpa_chip(label, v) -%}
+  {%- if v is not none -%}
+    {%- set x = v | float -%}
+    {%- set w = merit_word('cpa', x) | trim -%}
+    <span class="cc{% if w %} {{ w }}{% endif %}" title="CPA, {{ label }} against the {{ label }} before: {{ signed_pct(x) }}">
+      <span class="cl">{{ label }}</span>{% if x > 0 %}&uarr;{% elif x < 0 %}&darr;{% else %}&rarr;{% endif %}{{ pct(x | abs, 0) }}</span>
+  {%- endif -%}
 {%- endmacro %}
 
 {#- What became of an act or test issue, from the outcomes ledger (D3): read
@@ -491,6 +558,13 @@
     {% endif %}
 {%- endmacro %}
 
+{#- The confidence dots and word, on one line. -#}
+{% macro conf_dots(conf) -%}
+  <span class="dots" aria-hidden="true">
+    {%- for i in range(3) %}<i class="{{ 'on' if i < DOTS.get(conf.level, 0) }}"></i>{% endfor -%}
+  </span>{{ conf.level | capitalize }} confidence
+{%- endmacro %}
+
 {#- ============================================ one issue, folded (round 2)
     The folded line is what a reader scans: priority, what the evidence
     supports, how sure, the action, and what became of it. Opening it shows
@@ -502,9 +576,7 @@
     <summary>
       <span class="plabel">{{ (p.priority or 'unranked') | capitalize }}</span>
       {% if rec.type %}<span class="rtype {{ rec.type }}">{{ rec.type | upper }}</span>{% endif %}
-      {% if conf.level %}<span class="iconf"><span class="dots" aria-hidden="true">
-        {%- for i in range(3) %}<i class="{{ 'on' if i < DOTS.get(conf.level, 0) }}"></i>{% endfor -%}
-        </span>{{ conf.level | capitalize }} confidence</span>{% endif %}
+      {% if conf.level %}<span class="iconf">{{ conf_dots(conf) }}</span>{% endif %}
       <span class="iact">{{ rec.action or p.observation or '--' }}</span>
       {% if p.outcome is mapping %}{{ outcome_tag(p.outcome) }}{% endif %}
       {% if p.incomplete %}<span class="itag">incomplete</span>{% endif %}
@@ -531,10 +603,13 @@
   </details>
 {%- endmacro %}
 
-{#- ============================================= new files: the analyst report -#}
-{% macro report(c) -%}
-  {#- 1. WHAT CHANGED. Every window the pack read, newest first. The
-      unsettled days are shown, and marked, because Meta restates them. -#}
+{#- ================================= the report's three tables, one macro each
+    Shape 2 without buckets prints them in its report; round 2 keeps them
+    behind the "The numbers" fold. -#}
+
+{#- WHAT CHANGED. Every window the pack read, newest first. The unsettled
+    days are shown, and marked, because Meta restates them. -#}
+{% macro sec_changed(c) -%}
   {% if c.ladder %}
     {#- Daily frequency is measured per ad only (017), so a campaign's ladder
         never has it: show the column only when some rung does. -#}
@@ -564,11 +639,12 @@
       <p class="tnote">Provisional: Meta can still restate the last three days.</p>
     {% endif %}
   {% endif %}
+{%- endmacro %}
 
-  {#- 2. WHAT'S CAUSING IT -- in round 2, WHERE THE CHANGE CAME FROM, because
-      a metric contributes to a CPA change and causes nothing. Last 7 settled
-      days against the 7 before. -#}
-  {% set v3 = c.bucket is defined and c.bucket %}
+{#- WHAT'S CAUSING IT -- in round 2, WHERE THE CHANGE CAME FROM, because a
+    metric contributes to a CPA change and causes nothing. Last 7 settled days
+    against the 7 before. -#}
+{% macro sec_funnel(c, v3) -%}
   {% set f = c.funnel %}
   {% if f is mapping %}
     <h4 class="tsec">{% if v3 %}Where the change came from{% else %}What's causing it{% endif %}
@@ -613,8 +689,10 @@
         {%- endif %}</p>
     {% endif %}
   {% endif %}
+{%- endmacro %}
 
-  {#- 3. WHERE IT'S CONCENTRATED. -#}
+{#- WHERE IT'S CONCENTRATED. -#}
+{% macro sec_where(c) -%}
   {% set wh = c.where %}
   {% if wh is mapping and (wh.ad_groups or wh.ads) %}
     <h4 class="tsec">Where it's concentrated</h4>
@@ -653,15 +731,18 @@
       {%- if s.ads_with_no_conversions %}, and {{ pct(s.share_on_ads_with_no_conversions_pct, 1) }}
       went to {{ num(s.ads_with_no_conversions) }} ads with no conversions{% endif %}.</p>
   {% endif %}
+{%- endmacro %}
+
+{#- ============================================= shape 2: the analyst report -#}
+{% macro report(c) -%}
+  {% set v3 = c.bucket is defined and c.bucket %}
+  {{ sec_changed(c) }}
+  {{ sec_funnel(c, v3) }}
+  {{ sec_where(c) }}
 
   {#- 4. ISSUES, most pressing first. -#}
   {% set iss = c.issues or [] %}
-  {% if iss and v3 %}
-    {#- Round 2: in the order given (priority, then the impact of the entity
-        each names), each folded to one line that carries its priority. -#}
-    <h4 class="tsec">Issues</h4>
-    {% for p in iss %}{{ issue_v3(p) }}{% endfor %}
-  {% elif iss %}
+  {% if iss %}
     <h4 class="tsec">Issues</h4>
     {% for key, label in [('primary', 'Primary'), ('secondary', 'Secondary'), ('monitor', 'Monitor')] %}
       {% set these = iss | selectattr('priority', 'equalto', key) | list %}
@@ -677,10 +758,6 @@
     {% endif %}
   {% endif %}
 
-  {% if v3 and not iss %}
-    <p class="tnote">No issue raised: nothing in this campaign's numbers calls for a change.</p>
-  {% endif %}
-
   {#- 5. WHAT NOT TO DO YET. -#}
   {% if c.not_yet %}
     <h4 class="tsec">What not to do yet</h4>
@@ -692,6 +769,173 @@
   {% if iss %}
     <p class="tfoot">ACT / TEST / MONITOR is what the evidence supports, not a decision.</p>
   {% endif %}
+{%- endmacro %}
+
+{#- What the checker flagged on a card, and what became of the last review's
+    issues. Shared by both shapes of report. -#}
+{% macro card_notes(c, v3) -%}
+  {#- Round 2 groups by bucket and keeps the rating internal, so the note
+      about a moved rating would explain a label the card no longer shows. -#}
+  {% if c.rating_adjusted_from and not v3 %}
+    <div class="note">The review rated this {{ c.rating_adjusted_from }};
+      the numbers put it here{% if c.rating_reasons %}:
+      {{ c.rating_reasons | join('; ') }}{% endif %}.</div>
+  {% endif %}
+  {% if c.causal_flags %}
+    <div class="note warn">Causal wording flagged: {{ c.causal_flags | join(', ') }}.
+      A metric can appear to be the largest contributor to a change; the
+      review should not say it caused it.</div>
+  {% endif %}
+  {% if c.unverified_figures %}
+    <div class="note warn">Not found in the data:
+      {{ c.unverified_figures | join(', ') }}. Probably worked out by the
+      review rather than read from the numbers; check before relying on it.</div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro card_history(c) -%}
+  {% if c.resolved %}
+    <div class="done"><span class="lbl">Resolved since the last review</span>
+    {% for x in c.resolved %}
+      <div>
+        {%- if x.by == 'you' %}<span class="ptag fixed">fixed &mdash; you changed it</span>
+        {%- elif x.by == 'numbers' %}<span class="ptag moved">no longer showing in the numbers</span>
+        {%- endif %}
+        <b>{{ x.problem or x.observation }}</b><br>
+        <span class="small">Open since {{ x.open_since }}.
+        {%- if x.change %} What changed: {{ x.change }}.{% endif %}
+        {{ x.evidence }}</span></div>
+    {% endfor %}
+    </div>
+  {% endif %}
+  {% if c.dropped %}
+    <div class="quiet"><span class="lbl">No longer mentioned &mdash; not confirmed fixed</span>
+    {% for x in c.dropped %}<div>{{ x.problem or x.observation }} <span class="small">(raised {{ x.open_since }})</span></div>{% endfor %}
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+{#- ============================================== round 2: one campaign, opened
+    Three panels -- what to do, how CPA moved, where the money went -- and the
+    detail one click further. Each panel draws only from its own fields and
+    drops out when they are missing. -#}
+{% macro panels(c) -%}
+  {% set p = lead_issue(c) %}
+  {% set rec = p.recommendation if p.recommendation is mapping else {} %}
+  {% set conf = p.confidence if p.confidence is mapping else {} %}
+  {% set iss = c.issues or [] %}
+  {% set mv = c.movement if c.movement is mapping else {} %}
+  {% set m7 = mv.get('7v7') if mv.get('7v7') is mapping else {} %}
+  {% set m14 = mv.get('14v14') if mv.get('14v14') is mapping else {} %}
+
+  {% set pts = [] %}
+  {% for key, lab in WINDOWS %}{% for w in c.ladder or [] if w.key == key %}
+    {%- set _ = pts.append((lab, w.cpa, w.provisional)) %}{% endfor %}{% endfor %}
+  {% set dots_svg = window_dots(pts, current='Last 7', width=340) %}
+  {% set moves = paired_moves([('Link CTR', m7.get('link_ctr'), m14.get('link_ctr')),
+                               ('Cost per click', m7.get('cost_per_link_click'), m14.get('cost_per_link_click')),
+                               ('Conversion rate', m7.get('conversion_rate'), m14.get('conversion_rate'))], width=104) %}
+
+  {% set wh = c.where if c.where is mapping else {} %}
+  {% set ads = (wh.ads or [])[:2] %}
+  {% set s = c.spend_spread if c.spend_spread is mapping else {} %}
+
+  <div class="tpanels">
+    <section class="tp do" aria-label="What to do">
+      <h4 class="tp-h">What to do</h4>
+      {% if rec.action %}
+        {% if rec.type %}<span class="rtype {{ rec.type }}">{{ rec.type | upper }}</span>{% endif %}
+        <p class="tp-act">{{ rec.action }}</p>
+        {% if rec.expected_outcome %}<p class="tp-out">{{ rec.expected_outcome }}</p>{% endif %}
+        <p class="tp-conf">
+          {%- if conf.level %}<span>{{ conf_dots(conf) }}</span>{% endif %}
+          {%- if iss | length > 1 %}<span>{{ iss | length - 1 }} more issue{{ '' if iss | length == 2 else 's' }}</span>{% endif %}
+          {%- if p.outcome is mapping %}{{ outcome_tag(p.outcome) }}{% endif %}</p>
+      {% else %}
+        <p class="tp-act">No issue raised: nothing in this campaign's numbers calls for a change.</p>
+      {% endif %}
+    </section>
+    {% if dots_svg or moves %}
+    <section class="tp" aria-label="How CPA moved">
+      {% if dots_svg %}<h4 class="tp-h">CPA by window</h4>{{ dots_svg | safe }}{% endif %}
+      {% if moves %}<h4 class="tp-h">What moved
+        <span class="key"><i style="background:var(--accent)"></i>7d <i style="background:var(--focus)"></i>14d</span></h4>
+        {{- moves | safe }}{% endif %}
+    </section>
+    {% endif %}
+    {% if ads or (s and s.share_on_ads_with_no_conversions_pct is not none) %}
+    <section class="tp" aria-label="Where the spend went">
+      <h4 class="tp-h">Where the spend went</h4>
+      {% for a in ads %}
+        <div class="sw-row"><span class="n" title="{{ a.name }}">{{ a.name }}</span>
+          {{ meter(a.share_pct, 100, width=70) | safe }}<b>{{ pct(a.share_pct, 0) }}</b>
+          <span class="c">{{ money(a.cpa) }}</span></div>
+      {% endfor %}
+      {% if s and s.share_on_ads_with_no_conversions_pct is not none %}
+        <div class="sw-nc"><b>{{ pct(s.share_on_ads_with_no_conversions_pct, 0) }}</b>of spend on
+          {{ num(s.ads_with_no_conversions) }} of {{ num(s.ads_with_spend) }} ads with no conversions
+          {{ meter(s.share_on_ads_with_no_conversions_pct, 100, width=180) | safe }}</div>
+      {% endif %}
+    </section>
+    {% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro camp_v3(c, top_spend) -%}
+  {% set mv = c.movement if c.movement is mapping else {} %}
+  {% set m7 = mv.get('7v7') if mv.get('7v7') is mapping else {} %}
+  {% set m14 = mv.get('14v14') if mv.get('14v14') is mapping else {} %}
+  {% set imp = c.impact if c.impact is mapping else {} %}
+  {% set iss = c.issues or [] %}
+  {% set has_numbers = c.ladder or c.funnel is mapping or c.where is mapping or c.spend_spread is mapping %}
+  <details class="tcamp">
+    <summary>
+      <span class="tc-name" title="{{ c.campaign }}"><span class="ttl">{{ c.campaign }}</span>
+        <span class="tc-sub">
+          {%- for g in c.optimization_goals or [] %}{{ words(g) }}{{ ', ' if not loop.last }}{% else %}No single goal{% endfor %}
+          &middot; {{ money(c.spend) }}
+          {%- if c.status and c.status != 'ACTIVE' %} &middot; {{ c.status | lower }}{% endif %}</span></span>
+      <span class="head">{{ reason_line(c) }}</span>
+      <span class="tc-figs">
+        {%- set xc = imp.get('excess_cost') %}
+        {%- if xc is not none and (xc | float(0)) > 0 %}
+        <span class="xs" title="Beyond what this week's conversions cost at last week's rate">+{{ money(xc) }}</span>
+        {%- endif %}
+        {{- cpa_chip('7d', m7.get('cpa')) }}{{ cpa_chip('14d', m14.get('cpa')) -}}
+      </span>
+      <span class="tc-bar">{{ meter(c.spend, top_spend, width=80) | safe }}</span>
+      <svg class="tc-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </summary>
+    <div class="tbody">
+      {{ card_notes(c, true) }}
+      {{ panels(c) }}
+      {% if iss or has_numbers or c.not_yet or c.resolved or c.dropped %}
+      <div class="tfolds">
+        {% if iss %}
+        <details class="tfold"><summary>The full issue{{ 's' if iss | length > 1 }} <span class="c">{{ iss | length }}</span></summary>
+          <div class="tfold-b">{% for p in iss %}{{ issue_v3(p) }}{% endfor %}</div>
+        </details>
+        {% endif %}
+        {% if has_numbers %}
+        <details class="tfold"><summary>The numbers</summary>
+          <div class="tfold-b">{{ sec_changed(c) }}{{ sec_funnel(c, true) }}{{ sec_where(c) }}</div>
+        </details>
+        {% endif %}
+        {% if c.not_yet %}
+        <details class="tfold"><summary>What not to do yet <span class="c">{{ c.not_yet | length }}</span></summary>
+          <div class="tfold-b"><ul class="notyet">{% for x in c.not_yet %}<li>{{ x }}</li>{% endfor %}</ul></div>
+        </details>
+        {% endif %}
+        {% if c.resolved or c.dropped %}
+        <details class="tfold"><summary>Since the last review</summary>
+          <div class="tfold-b">{{ card_history(c) }}</div>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </details>
 {%- endmacro %}
 
 {#- SINCE THE LAST REVIEW. Counts of what the checker in creative.triage_from
@@ -721,8 +965,26 @@
 </div>
 {% endif %}
 
+{% if bucketed %}
+{#- The spend bar on each row is scaled against the largest spend in the file. -#}
+{% set spends = t | map(attribute='spend') | select | list %}
+{% set top_spend = spends | max if spends else none %}
+{% for label, rows, bk, limit in groups if rows %}
+<section class="tlist" id="{{ bk }}" data-bucket="{{ bk }}" aria-label="{{ label }}">
+  <header><span class="bk {{ bk }}">{{ label }}</span>
+    <span class="tl-n">{{ rows | length }} campaign{{ '' if rows | length == 1 else 's' }}</span></header>
+  {% for c in rows[:limit] %}{{ camp_v3(c, top_spend) }}{% endfor %}
+  {% if rows | length > limit %}
+  <details class="tl-more">
+    <summary><b>{{ rows | length - limit }} more</b>{{ rows[limit:] | map(attribute='campaign') | join(' · ') }}</summary>
+    {% for c in rows[limit:] %}{{ camp_v3(c, top_spend) }}{% endfor %}
+  </details>
+  {% endif %}
+</section>
+{% endfor %}
+{% else %}
 {% for key, label, sub, rows, bk in groups if rows %}
-<details class="tgroup {{ key }}"{% if bk %} data-bucket="{{ bk }}"{% endif %}>
+<details class="tgroup {{ key }}">
   <summary>
     <span class="count">{{ rows|length }}</span>
     <span class="tpill {{ key }}">{{ label }}</span>
@@ -734,35 +996,8 @@
   <div class="body">
   {% for c in rows %}
     {% set head = c.headline if c.headline is defined and c.headline else c.why %}
-    {% set v3 = c.bucket is defined and c.bucket %}
     <details class="tcamp">
       <summary>
-        {% if v3 %}
-          {% set bc = BUCKET.get(c.bucket, ('none', c.bucket | string)) %}
-          <span class="tpill {{ bc[0] }}">{{ bc[1] }}</span>
-          <span class="ttl">{{ c.campaign }}</span>
-          {% set line = c.summary if c.summary is defined and c.summary else head %}
-          {% if line %}<span class="head">{{ line | replace('\\n', ' ') }}</span>{% endif %}
-          {% set mv = c.movement if c.movement is mapping else {} %}
-          {% set m7 = mv.get('7v7') if mv.get('7v7') is mapping else {} %}
-          {% set m14 = mv.get('14v14') if mv.get('14v14') is mapping else {} %}
-          {% if m7 or m14 %}
-          <span class="mvs">
-            {{ moverow(m7, 'm7', 'Last 7 vs prior 7') }}
-            {{ moverow(m14, 'm14', 'Last 14 vs prior 14') }}
-          </span>
-          {% endif %}
-          <span class="figs v3">
-            {{ money(c.spend) }} spent &middot; {{ num(c.conversions) }} conv
-            {%- if c.cpa is not none %} &middot; {{ money(c.cpa) }} CPA{% endif %}
-            {%- if c.optimization_goals %} &middot;
-              {{ c.optimization_goals | map('replace', '_', ' ') | map('lower') | join(', ') }}{% endif %}
-            {%- if c.impact is mapping and c.impact.contribution_share_pct is not none %} &middot;
-              {{ pct(c.impact.contribution_share_pct, 1) }} of its goal's CPA change{% endif %}
-            {%- if c.status and c.status != 'ACTIVE' %} &middot;
-              {{ c.status | lower }}{% endif %}
-          </span>
-        {% else %}
         <span class="tpill {{ c.rating or 'none' }}">{{ rating_label.get(c.rating, 'Not rated') }}</span>
         <span class="ttl">{{ c.campaign }}</span>
         {% if head %}<span class="head">{{ head | replace('\\n', ' ') }}</span>{% endif %}
@@ -774,47 +1009,11 @@
           {%- if c.status and c.status != 'ACTIVE' %} &middot;
             {{ c.status | lower }}{% endif %}
         </span>
-        {% endif %}
       </summary>
       <div class="tbody">
-        {#- Round 2 groups by bucket and keeps the rating internal, so the
-            note about a moved rating would explain a label the card no
-            longer shows. -#}
-        {% if c.rating_adjusted_from and not v3 %}
-          <div class="note">The review rated this {{ c.rating_adjusted_from }};
-            the numbers put it here{% if c.rating_reasons %}:
-            {{ c.rating_reasons | join('; ') }}{% endif %}.</div>
-        {% endif %}
-        {% if c.causal_flags %}
-          <div class="note warn">Causal wording flagged: {{ c.causal_flags | join(', ') }}.
-            A metric can appear to be the largest contributor to a change; the
-            review should not say it caused it.</div>
-        {% endif %}
-        {% if c.unverified_figures %}
-          <div class="note warn">Not found in the data:
-            {{ c.unverified_figures | join(', ') }}. Probably worked out by the
-            review rather than read from the numbers; check before relying on it.</div>
-        {% endif %}
-        {% if c.issues is defined or v3 %}{{ report(c) }}{% else %}{{ legacy(c) }}{% endif %}
-        {% if c.resolved %}
-          <div class="done"><span class="lbl">Resolved since the last review</span>
-          {% for x in c.resolved %}
-            <div>
-              {%- if x.by == 'you' %}<span class="ptag fixed">fixed &mdash; you changed it</span>
-              {%- elif x.by == 'numbers' %}<span class="ptag moved">no longer showing in the numbers</span>
-              {%- endif %}
-              <b>{{ x.problem or x.observation }}</b><br>
-              <span class="small">Open since {{ x.open_since }}.
-              {%- if x.change %} What changed: {{ x.change }}.{% endif %}
-              {{ x.evidence }}</span></div>
-          {% endfor %}
-          </div>
-        {% endif %}
-        {% if c.dropped %}
-          <div class="quiet"><span class="lbl">No longer mentioned &mdash; not confirmed fixed</span>
-          {% for x in c.dropped %}<div>{{ x.problem or x.observation }} <span class="small">(raised {{ x.open_since }})</span></div>{% endfor %}
-          </div>
-        {% endif %}
+        {{ card_notes(c, false) }}
+        {% if c.issues is defined %}{{ report(c) }}{% else %}{{ legacy(c) }}{% endif %}
+        {{ card_history(c) }}
       </div>
     </details>
   {% endfor %}
@@ -825,9 +1024,8 @@
 <p class="small muted" style="margin-top:4px; max-width:80ch">
   Click a group to open its campaigns, and a campaign to open its report. Each
   campaign is judged only against ad groups with the same optimization goal.
-  {% if bucketed %}A campaign's group is the strongest call among its issues:
-  act, then test, then monitor; within a group the largest impact comes
-  first. It decides nothing.{% else %}Red means look here first; it decides nothing.{% endif %} A campaign whose ad groups
+  Red means look here first; it decides nothing. A campaign whose ad groups
   span two goals shows no CPA, because that number would mix two different
   events.
 </p>
+{% endif %}

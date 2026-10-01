@@ -16,33 +16,25 @@
     tables are not decisions; they are the INPUT the suggestion was written
     from, and a reader checking a sentence goes looking for the ad it quotes.
 
-    WHAT CHANGED, AND WHY
+    THE EVIDENCE is the wording: the cheapest and dearest ads of one goal
+    side by side, headline and opening line quoted, cost per result beside
+    each, one goal at a time behind tabs because cost per result is not
+    comparable across goals. When the live pack has `dimensions_by_goal` for
+    the open tab, the hook / offer / audience labels are read under that goal
+    alone, with a CPA and a relative word; otherwise the old mixed-goal spend
+    panels render. It sits in one closed fold under the report -- it is what
+    a reader checks a sentence against, not what they read first -- and opens
+    itself once a goal tab has been chosen.
 
-    The suggestion argues about WORDING -- which openings the cheap ads share
-    and the dear ones lack -- so the evidence under it is now the wording:
-    the cheapest and dearest ads of one goal side by side, headline and
-    opening line quoted, cost per result beside each. It used to be three
-    eight-column tables per goal, with the words squeezed into a truncated
-    column between the numbers.
-
-    One goal at a time, behind tabs, because cost per result is not
-    comparable across goals. The hook, offer and audience labels scripts/tag.py
-    files are drawn as spend by label; they ran under mixed goals, so they
-    carry no cost ranking, and the heading says so once rather than per row.
-
-    "Wearing out" went: it was the Fatigue page's table, shorter. One line
-    points there instead. So did the format table and the coverage cards --
-    the brief carries both.
-
-    ROUND 2 (2026-10). Above the campaign groups, two panels from the
-    published file: "What matters today" (account_summary -- per goal, the
-    CPA move and the campaigns that account for it) and "Recommendations
-    followed up" (outcomes.scorecard -- what the account shows was done, and
-    what the numbers read afterwards). Each renders nothing when its field is
-    absent. The hook / offer / audience tables moved inside the goal tabs:
-    when the live pack has `dimensions_by_goal` for the open tab, each label
-    is read under that goal alone, so it carries a CPA and a relative word;
-    otherwise the old mixed-goal spend panels render as before.
+    LESS TO READ (2026-10). Above the campaign groups, one card: "What matters
+    today" is a tile per goal (its CPA move, the evidence, and the campaigns
+    that account for a rise), the summary's computed lines, and the review's
+    one note, labelled as the review's. A goal with no CPA move -- THRUPLAY
+    buys views, not conversions -- gets no tile rather than an empty one.
+    "Recommendations followed up" is one line of counts with the by-kind
+    table folded under it. Beside the card, a count per bucket that jumps to
+    its group. Each panel renders nothing when its field is absent, so an
+    older file renders as it did.
     ===================================================================== -#}
 
 {% block toolbar %}
@@ -54,37 +46,78 @@
 {#- Navy only: this page is under the blue-and-white rule. Severity is weight
     and merit is a word. -#}
 <style>
-  .today, .followed { border:1px solid var(--line); border-radius:var(--radius);
-    background:var(--surface); padding:12px 16px; margin:0 0 12px; }
-  .today h3, .followed h3 { font-size:12px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.06em; color:var(--accent); margin:0 0 8px; display:flex;
-    flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
-  .today h3 .state, .followed h3 .state { text-transform:none; letter-spacing:0;
-    font-weight:500; color:var(--muted); font-size:12px; }
-  .today p, .followed p { margin:4px 0 0; font-size:13px; }
-  .today-goals { display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
-    margin:0 0 6px; }
+  .ai-read[data-shape="triage"] { background:transparent; border:0; padding:0; }
+  .today-grid { display:grid; grid-template-columns:minmax(0, 1fr) 280px; gap:14px;
+    align-items:start; margin:0 0 14px; }
+  .today-grid.solo { grid-template-columns:minmax(0, 1fr); }
+  .today-card { border:1px solid var(--line); border-radius:var(--radius);
+    background:var(--surface); padding:14px 18px; }
+  .today h3 { font-size:14px; font-weight:700; color:var(--accent); margin:0 0 10px; }
+  .today-goals { display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));
+    margin:0 0 10px; }
   .today-goal { border:1px solid var(--line); border-radius:var(--radius-sm);
-    padding:8px 12px; background:var(--surface-2); }
-  .tg-head { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
-  .tg-head b { color:var(--ink-2); }
-  .tg-move { font-size:16px; font-weight:800; color:var(--accent);
-    font-variant-numeric:tabular-nums; }
-  .contrib { margin:6px 0 0; padding-left:18px; font-size:12.5px; }
-  .contrib li + li { margin-top:2px; }
-  .today-note { border-top:1px dashed var(--line-2); padding-top:6px; margin-top:8px !important; }
-  .today-note .k, .sc-k { font-size:10.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.05em; color:var(--muted); margin-right:4px; }
-  .sc-row { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 8px; }
-  .sc { border:1px solid var(--line); border-radius:var(--radius-sm); padding:6px 12px;
-    min-width:88px; }
-  .sc b { display:block; font-size:18px; font-weight:800; color:var(--accent);
-    font-variant-numeric:tabular-nums; }
-  .sc span { font-size:11px; color:var(--muted); }
+    padding:9px 12px; background:var(--surface-2); min-width:0; }
+  .tg-name { font-size:12px; font-weight:600; color:var(--ink-2); white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .tg-move { display:flex; align-items:baseline; gap:8px; margin-top:2px; font-size:20px;
+    font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .tg-move span { font-size:11.5px; font-weight:500; color:var(--muted); }
+  .ev-p { display:inline-block; margin-top:4px; font-size:11px; font-weight:600; padding:1px 8px;
+    border-radius:999px; background:var(--surface); border:1px solid var(--line); color:var(--muted); }
+  .contrib { list-style:none; margin:8px 0 0; padding:0; font-size:12px; }
+  .contrib li { display:flex; align-items:center; gap:6px; }
+  .contrib li + li { margin-top:3px; }
+  .contrib .cn { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .contrib b { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .tg-tot { margin:5px 0 0; font-size:12px; color:var(--ink-2); }
+  .today-facts { margin:0; padding-left:18px; font-size:13.5px; line-height:1.55; color:var(--ink); }
+  .today-facts li + li { margin-top:3px; }
+  .today-note { display:flex; align-items:flex-start; gap:10px; margin:10px 0 0;
+    padding:9px 12px; border-radius:var(--radius-sm); background:var(--surface-3);
+    font-size:13.5px; color:var(--ink); }
+  .today-note .pill { flex:0 0 auto; }
+
+  .followed { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+  .today-card > .followed:first-child { margin-top:0; padding-top:0; border-top:0; }
+  .fu-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; font-size:12.5px;
+    color:var(--ink-2); }
+  .fu-row > strong { color:var(--accent); }
+  .fu-row .fu b { color:var(--accent); font-variant-numeric:tabular-nums; margin-right:4px; }
+  .fu-more { margin-top:8px; }
+  .fu-more > summary { list-style:none; cursor:pointer; display:inline-flex; font-size:12.5px;
+    font-weight:600; color:var(--ink-2); padding:5px 11px; border:1px solid var(--line-2);
+    border-radius:var(--radius-sm); }
+  .fu-more > summary::-webkit-details-marker { display:none; }
+  .fu-more > summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  .fu-more[open] > summary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+  .fu-more .table-wrap { margin-top:8px; }
   .followed table, .goal-dims table { font-size:12.5px; }
   .followed th, .followed td, .goal-dims th, .goal-dims td { padding:5px 10px; }
   .recent { margin:8px 0 0; padding-left:18px; font-size:12.5px; }
   .recent li + li { margin-top:4px; }
+
+  .bk-count { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .bk-count a { display:flex; flex-direction:column; gap:4px; padding:11px 14px;
+    border:1px solid var(--line); border-radius:var(--radius); background:var(--surface);
+    color:var(--accent); }
+  .bk-count a:hover { border-color:var(--accent-line); text-decoration:none; }
+  .bk-count a b { font-size:26px; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .bk-count a .bk { align-self:flex-start; }
+
+  .evidence-fold { border:1px solid var(--line); border-radius:var(--radius);
+    background:var(--surface); margin:0 0 12px; }
+  .evidence-fold > summary { list-style:none; cursor:pointer; display:flex; align-items:center;
+    gap:10px; padding:12px 16px; }
+  .evidence-fold > summary::-webkit-details-marker { display:none; }
+  .evidence-fold > summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  .evidence-fold > summary strong { color:var(--accent); font-size:14px; }
+  .evidence-fold > summary .c { font-size:11px; font-weight:700; padding:1px 7px; border-radius:999px;
+    background:var(--surface-3); color:var(--muted); }
+  .evidence-fold > summary svg { margin-left:auto; color:var(--subtle); transition:transform .15s; }
+  .evidence-fold[open] > summary svg { transform:rotate(180deg); }
+  .evidence-fold[open] > summary { border-bottom:1px solid var(--line); }
+  .evidence-fold > .ef-body { padding:14px 16px 4px; }
+
   .goal-dims { margin-top:16px; }
   .goal-dims .grid { grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
   .goal-dims .card { padding:12px 14px; }
@@ -94,43 +127,61 @@
   .ev { display:inline-block; font-size:10px; font-weight:700; padding:0 6px;
     border-radius:999px; border:1px dashed var(--line-2); color:var(--muted);
     margin-left:4px; white-space:nowrap; }
+  @media (max-width:900px) {
+    .today-grid { grid-template-columns:1fr; }
+    .bk-count { grid-template-columns:repeat(4, minmax(0, 1fr)); }
+  }
   @media (max-width:600px) {
-    .today, .followed { padding:10px; }
+    .today-card { padding:12px; }
     .today-goals, .goal-dims .grid { grid-template-columns:1fr; }
-    .sc { min-width:72px; padding:5px 9px; }
+    .bk-count { grid-template-columns:1fr 1fr; }
   }
 </style>
 
 {#- WHAT MATTERS TODAY. `published.account_summary` (contracts2 D4), built by
     creative.account_summary from SQL fields and counts; the one model-written
     sentence is labelled as the review's. Nothing at all when it is absent, so
-    an older file renders as it did. -#}
+    an older file renders as it did. A tile per goal that HAS a CPA move: the
+    arrow carries the sign, the evidence word its weight, and the campaigns
+    that account for a rise are listed with their share -- the last one's
+    cumulative share is the "together" figure, read, never added up. The
+    goal's own sentence restates the tile, so it is not printed. -#}
 {% macro today_panel(acc) -%}
-{% if acc is mapping and (acc.goals or acc.lines or acc.note) %}
+{% if acc.goals or acc.lines or acc.note %}
 <section class="today" aria-label="What matters today">
-  <h3>What matters today <span class="state">last 7 settled days against the 7 before, per goal</span></h3>
-  {% if acc.goals %}
+  <h3>What matters today</h3>
+  {% set tiles = [] %}
+  {% for gb in acc.goals or [] if gb.cpa_pct is not none %}{% set _ = tiles.append(gb) %}{% endfor %}
+  {% if tiles %}
   <div class="today-goals">
-    {% for gb in acc.goals %}
+    {% for gb in tiles %}
+    {% set x = gb.cpa_pct | float %}
     <div class="today-goal">
-      <div class="tg-head"><b>{{ words(gb.goal) }}</b>
-        {%- if gb.cpa_pct is not none %}<span class="tg-move">CPA {{ signed_pct(gb.cpa_pct) }}</span>{% endif %}
-        {%- if gb.evidence %}<span class="small muted">evidence: {{ gb.evidence }}</span>{% endif %}</div>
-      {% for l in gb.lines or [] %}<p>{{ l }}</p>{% endfor %}
+      <div class="tg-name">{{ words(gb.goal) }}</div>
+      <div class="tg-move">{% if x > 0 %}&uarr;{% elif x < 0 %}&darr;{% else %}&rarr;{% endif %} {{ pct(x | abs, 2) }}<span>CPA, 7 days</span></div>
+      {% if gb.evidence %}<span class="ev-p">{{ words(gb.evidence) }} evidence</span>{% endif %}
       {% if gb.contributors %}
       <ol class="contrib">
-        {% for x in gb.contributors %}
-        <li>{{ x.campaign }} <span class="muted">&middot; {{ pct(x.contribution_share_pct, 1) }} of the change
-          {%- if x.cumulative_share_pct is not none %} &middot; {{ pct(x.cumulative_share_pct, 1) }} together{% endif %}</span></li>
+        {% for k in gb.contributors %}
+        <li><span class="cn" title="{{ k.campaign }}">{{ k.campaign }}</span>
+          {{ meter(k.contribution_share_pct, 100, width=50) | safe }}<b>{{ pct(k.contribution_share_pct, 1) }}</b></li>
         {% endfor %}
       </ol>
+      {% set last = gb.contributors | last %}
+      {% if last.cumulative_share_pct is defined and last.cumulative_share_pct is not none %}
+        <p class="tg-tot">Together, {{ pct(last.cumulative_share_pct, 1) }} of the rise</p>
+      {% endif %}
       {% endif %}
     </div>
     {% endfor %}
   </div>
   {% endif %}
-  {% for l in acc.lines or [] %}<p>{{ l }}</p>{% endfor %}
-  {% if acc.note %}<p class="today-note"><span class="k">The review&rsquo;s read</span>{{ acc.note }}</p>{% endif %}
+  {% if acc.lines %}
+  {#- The lines name diagnose's patterns by their identifiers
+      (possible_fatigue); a reader sees words. -#}
+  <ul class="today-facts">{% for l in acc.lines %}<li>{{ l | replace('_', ' ') }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if acc.note %}<p class="today-note"><span class="pill quiet">The review&rsquo;s read</span><span>{{ acc.note }}</span></p>{% endif %}
 </section>
 {% endif %}
 {%- endmacro %}
@@ -138,7 +189,9 @@
 {#- RECOMMENDATIONS FOLLOWED UP. `published.outcomes.scorecard` (D3): counts
     of what the account shows was done and what the numbers read afterwards.
     A reading, never a conclusion -- nothing here writes
-    ads.experiment.conclusion. -#}
+    ads.experiment.conclusion. One line of counts; the results appear once
+    something has been carried out, and the by-kind table and the last
+    measured entries fold under it. -#}
 {% set KIND = {'creative_test': 'Creative test', 'creative_refresh': 'Creative refresh',
                'delivery_cut': 'Delivery cut', 'budget': 'Budget',
                'post_click': 'Post-click', 'other': 'Other'} %}
@@ -149,19 +202,19 @@
 {% set sc = oc.scorecard if oc.scorecard is mapping else {} %}
 {% set br = sc.by_result if sc.by_result is mapping else {} %}
 <section class="followed" aria-label="Recommendations followed up">
-  <h3>Recommendations followed up <span class="state">last 90 days &middot; read off the
-    account&rsquo;s own changes &middot; a reading, not a conclusion</span></h3>
-  {% if not sc.implemented %}
-    {% if sc.made %}<p>{{ num(sc.made) }} act or test recommendation(s) made.</p>{% endif %}
-    <p class="muted">No recommendation has been implemented yet.</p>
-  {% else %}
-    <div class="sc-row">
-      <div class="sc"><b>{{ num(sc.made) }}</b><span>made</span></div>
-      <div class="sc"><b>{{ num(sc.implemented) }}</b><span>implemented</span></div>
+  <div class="fu-row">
+    <strong>Followed up, last {{ num(sc.days or 90) }} days</strong>
+    <span class="fu"><b>{{ num(sc.made or 0) }}</b>recommended</span>
+    <span class="fu"><b>{{ num(sc.implemented or 0) }}</b>carried out</span>
+    {% if sc.implemented %}
       {% for key in ('improved', 'neutral', 'worse', 'too_early') %}
-        <div class="sc"><b>{{ num(br.get(key) or 0) }}</b><span>{{ RESULT[key] }}</span></div>
+        <span class="fu"><b>{{ num(br.get(key) or 0) }}</b>{{ RESULT[key] }}</span>
       {% endfor %}
-    </div>
+    {% endif %}
+    <span class="pill quiet">a reading, not a conclusion</span>
+  </div>
+  {% if sc.implemented and ((sc.by_kind is mapping and sc.by_kind) or sc.recent) %}
+  <details class="fu-more"><summary>By kind, and the last measured</summary>
     {% if sc.by_kind is mapping and sc.by_kind %}
     <div class="table-wrap"><table>
       <thead><tr><th>Kind</th><th class="num">Made</th><th class="num">Implemented</th>
@@ -179,7 +232,6 @@
     </table></div>
     {% endif %}
     {% if sc.recent %}
-    <p style="margin-top:10px"><span class="sc-k">Last measured</span></p>
     <ul class="recent">
       {% for e in sc.recent %}
         {% set m = e.measurement if e.measurement is mapping else {} %}
@@ -192,31 +244,52 @@
       {% endfor %}
     </ul>
     {% endif %}
+  </details>
   {% endif %}
 </section>
 {% endif %}
 {%- endmacro %}
 
 {#- ============================================================== THE AI READ -#}
-<section class="ai-read" aria-label="Worth writing next">
+{% set tri = published.triage if published and published.triage else [] %}
+{% set bucketed = tri | selectattr('bucket') | list %}
+<section class="ai-read"{% if tri %} data-shape="triage"{% endif %} aria-label="Worth writing next">
   <div class="ai-read-head">
     <span class="pill stop">AI read</span>
     <span class="state">
       {%- if published %}written {{ published.published_at[:10] }}
-        {%- if published.age_hours is not none %} &middot; {{ ago(published.age_hours) }}{% endif %}
-        {%- if published.until %} &middot; from the window to {{ published.until }}{% endif %}
-        &middot; it suggests; it files nothing
+        {%- if published.age_hours is not none %}, {{ ago(published.age_hours) }}{% endif %}
+        {%- if published.until %}, on the window to {{ published.until }}{% endif %}
       {%- else %}nothing published yet{% endif -%}
     </span>
   </div>
-  {#- Two shapes of published answer. Newer files carry `triage` -- one rated
-      card per campaign, rendered by _triage.html -- and older ones carry
+  {#- Two shapes of published answer. Newer files carry `triage` -- one card
+      per campaign, rendered by _triage.html -- and older ones carry
       `suggestion`, prose. Either way it lands inside this block, under the
       same pill and stamp. `ignore missing` keeps the page rendering on a
       checkout that predates the partial. -#}
-  {% if published and published.triage %}
-    {{ today_panel(published.account_summary) }}
-    {{ followed_panel(published.outcomes) }}
+  {% if tri %}
+    {% set acc = published.account_summary if published.account_summary is mapping else {} %}
+    {% set oc = published.outcomes if published.outcomes is mapping else none %}
+    {% set has_today = acc.goals or acc.lines or acc.note %}
+    {% if has_today or oc or bucketed %}
+    <div class="today-grid{% if not bucketed %} solo{% endif %}">
+      {% if has_today or oc %}
+      <div class="today-card">
+        {{ today_panel(acc) }}
+        {{ followed_panel(oc) }}
+      </div>
+      {% endif %}
+      {% if bucketed %}
+      <nav class="bk-count" aria-label="Campaigns by action">
+        {% for key, label in (('act', 'Act'), ('test', 'Test'), ('monitor', 'Monitor'), ('no_change', 'No change')) %}
+          <a href="#{{ key }}"><span class="bk {{ key }}">{{ label }}</span>
+            <b>{{ bucketed | selectattr('bucket', 'equalto', key) | list | length }}</b></a>
+        {% endfor %}
+      </nav>
+      {% endif %}
+    </div>
+    {% endif %}
     {% include "_triage.html" ignore missing %}
   {% elif published and published.suggestion %}
     {% for para in published.suggestion.split('\n\n') if para.strip() %}
@@ -296,6 +369,39 @@
 </div>
 {%- endmacro %}
 
+{#- WHAT THE WRITING IS DOING, mixed goals. Spend by label, from
+    ads.facet_performance. The labels ran under several goals, so the
+    function declines to rank them on cost -- that is a refusal to compare
+    two things measured differently, not a missing number. Shown only when
+    the live pack has no per-goal tables for the open tab. -#}
+{% set dims = {} if gdims else (d.dimensions or {}) %}
+{% macro dim_panel(title, key) -%}
+{% set rows = (dims.get(key) or []) | rejectattr('value', 'none') | rejectattr('value', 'equalto', 'none') | list %}
+{% set tops = rows[:5] | map(attribute='spend') | list %}
+{% set top = tops | max if tops else none %}
+<section class="card" aria-label="{{ title }}">
+  <div class="card-head"><h2 class="card-t">{{ title }}</h2></div>
+  {% if not rows %}
+    <p class="small muted" style="margin:8px 0 0">No ad carries this label yet.</p>
+  {% else %}
+    {% for r in rows[:5] %}
+      <div class="dim-row">
+        <span class="dim-v">{{ r.value }}</span>
+        {{ meter(r.spend, top, width=100) | safe }}
+        <strong>{{ money(r.spend) }}</strong>
+        <span class="muted">{{ num(r.conversions) }} conv</span>
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>
+{%- endmacro %}
+
+<details class="evidence-fold"{% if asked %} open{% endif %}>
+  <summary><strong>The evidence</strong>
+    {%- if goals %}<span class="c">{{ goals | length }} goal{{ '' if goals | length == 1 else 's' }}</span>{% endif %}
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+  <div class="ef-body">
 <section class="stage" id="evidence" aria-label="The evidence it quotes">
   <div class="stage-head">
     <h2>The wording it quotes</h2>
@@ -356,34 +462,6 @@
   {% endif %}
 </section>
 
-
-{#- ================================================ WHAT THE WRITING IS DOING
-    Spend by label, from ads.facet_performance. The labels ran under several
-    goals, so the function declines to rank them on cost -- that is a refusal
-    to compare two things measured differently, not a missing number. Shown
-    only when the live pack has no per-goal tables for the open tab. -#}
-{% set dims = {} if gdims else (d.dimensions or {}) %}
-{% macro dim_panel(title, key) -%}
-{% set rows = (dims.get(key) or []) | rejectattr('value', 'none') | rejectattr('value', 'equalto', 'none') | list %}
-{% set tops = rows[:5] | map(attribute='spend') | list %}
-{% set top = tops | max if tops else none %}
-<section class="card" aria-label="{{ title }}">
-  <div class="card-head"><h2 class="card-t">{{ title }}</h2></div>
-  {% if not rows %}
-    <p class="small muted" style="margin:8px 0 0">No ad carries this label yet.</p>
-  {% else %}
-    {% for r in rows[:5] %}
-      <div class="dim-row">
-        <span class="dim-v">{{ r.value }}</span>
-        {{ meter(r.spend, top, width=100) | safe }}
-        <strong>{{ money(r.spend) }}</strong>
-        <span class="muted">{{ num(r.conversions) }} conv</span>
-      </div>
-    {% endfor %}
-  {% endif %}
-</section>
-{%- endmacro %}
-
 {% if dims %}
 <section class="stage" aria-label="What the writing is doing">
   <div class="stage-head">
@@ -398,6 +476,8 @@
   </div>
 </section>
 {% endif %}
+  </div>
+</details>
 
 
 {#- One line where the Fatigue table used to be copied. -#}
