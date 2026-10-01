@@ -1,4 +1,4 @@
-"""Performance verbs: overview, compare, why, fatigue, ad, trend.
+"""Performance verbs: overview, compare, why, fatigue, ad, trend, funnel.
 
 READ ONLY. This module imports fetch_all/fetch_one and nothing else that
 touches the database. It does not import db_owner, and tests/test_read_only.py
@@ -12,7 +12,10 @@ that ratio and the dashboard and the agent can disagree about it.
 
 from __future__ import annotations
 
+import json
 from datetime import date
+
+from psycopg import errors as _pg_errors
 
 from db import fetch_all, fetch_one
 
@@ -317,3 +320,186 @@ async def trend(slug: str, metric: str = "cpa", days: int = 90,
         out.append({"since": start, "until": end, "rows": rows})
     return {"verb": "trend", "metric": metric, "level": level,
             "bucket_days": bucket, **f, "buckets": out}
+
+
+# ---------------------------------------------------------------------------
+# The funnel ladder (migration 017).
+# ---------------------------------------------------------------------------
+
+#: The only thresholds a caller may override, and the type each is declared
+#: with in ads.funnel_change. Named notation with an explicit cast, for the
+#: reason fatigue() gives above: psycopg sends 5 as smallint, and Postgres will
+#: not widen an argument while resolving which function you meant -- the call
+#: fails as "function does not exist", which reads as a missing migration.
+#: The allowlist is also what keeps a keyword argument from ever reaching the
+#: SQL text as anything but a fixed parameter name.
+FUNNEL_THRESHOLDS: dict[str, str] = {
+    "p_cpa_flat_pct": "numeric",
+    "p_driver_min_share_pct": "numeric",
+    "p_conv_directional": "int",
+    "p_conv_moderate": "int",
+    "p_conv_strong": "int",
+    "p_clicks_directional": "int",
+    "p_clicks_moderate": "int",
+    "p_clicks_strong": "int",
+    "p_fatigue_min_spend": "numeric",
+    "p_fatigue_min_link_clicks": "int",
+    "p_fatigue_freq_rise_pct": "numeric",
+    "p_fatigue_ctr_drop_pct": "numeric",
+    "p_fatigue_cpc_rise_pct": "numeric",
+    "p_cvr_stable_band_pct": "numeric",
+    "p_test_cpa_multiple": "numeric",
+}
+
+FUNNEL_LEVELS = ("ad", "ad_group", "campaign", "brand")
+
+#: Which pair `intel funnel --days N` reads.
+FUNNEL_PAIR_FOR_DAYS = {7: "last_7_vs_prior_7",
+                        14: "last_14_vs_prior_14",
+                        28: "last_28_vs_prior_28"}
+
+_WINDOW_COLS = ("pair", "cur_since", "cur_until", "pri_since", "pri_until",
+                "cur_days", "pri_days", "settled_edge", "unsettled_days")
+_JSONB_COLS = ("cur_m", "pri_m", "pct")
+
+FUNNEL_UNAVAILABLE = ("migration 017 is not applied "
+                      "(python ads_migrate.py --status)")
+
+
+def _decoded(value):
+    """jsonb as a Python object. psycopg already does this; a stub or a
+    driver configured otherwise may hand back the text."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+async def funnel_ladder(slug: str, level: str | None = None,
+                        pairs: list[str] | None = None,
+                        **thresholds) -> dict:
+    """Every entity across every named window pair, in one round trip.
+
+    ads.analysis_windows defines the pairs (anchored at the settled edge) and
+    ads.funnel_change reads each one; this selects, groups by pair and
+    decodes. Nothing here computes a figure -- every rate, change, share and
+    evidence level is a column 017 returned.
+
+    -> {"available": True, "brand", "settled_through",
+        "pairs": {pair: {cur_since, cur_until, pri_since, pri_until,
+                         cur_days, pri_days, unsettled_days, rows: [...]}}}
+    or {"available": False, "why": ...} when 017 is not applied.
+    """
+    if level is not None and level not in FUNNEL_LEVELS:
+        raise ValueError(f"unknown level {level!r}. Known: "
+                         f"{', '.join(FUNNEL_LEVELS)} (Meta's adset is "
+                         f"ad_group here)")
+    unknown = sorted(set(thresholds) - set(FUNNEL_THRESHOLDS))
+    if unknown:
+        raise ValueError(f"unknown funnel threshold(s) {unknown}. Known: "
+                         f"{', '.join(FUNNEL_THRESHOLDS)}")
+
+    b = await context.brand(slug)
+    # Names come from the allowlist, never from the caller's spelling of them.
+    named = [(k, cast) for k, cast in FUNNEL_THRESHOLDS.items()
+             if thresholds.get(k) is not None]
+    overrides = "".join(f", {k} => %s::{cast}" for k, cast in named)
+    wanted = list(pairs) if pairs is not None else None
+    params = (b["id"], b["id"], level,
+              *[thresholds[k] for k, _ in named],
+              wanted, wanted)
+    sql = f"""
+        select w.pair, w.cur_since, w.cur_until, w.pri_since, w.pri_until,
+               w.cur_days, w.pri_days, w.settled_edge, w.unsettled_days,
+               fc.*
+          from ads.analysis_windows(%s::uuid, now()) with ordinality w
+          left join lateral ads.funnel_change(
+                    %s::uuid, %s::text,
+                    w.cur_since, w.cur_until, w.pri_since, w.pri_until,
+                    w.settled_edge{overrides}) with ordinality fc on true
+         where (%s::text[] is null or w.pair = any(%s::text[]))
+         order by w.ordinality, fc.ordinality
+        """
+    # left join, not cross join: a pair whose windows hold no entity still
+    # reports its dates rather than vanishing from the answer. Ordinality
+    # keeps both functions' own row order (pairs short end first; levels
+    # brand -> ad, then spend), which a join does not otherwise promise.
+    try:
+        rows = await fetch_all(sql, params)
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": FUNNEL_UNAVAILABLE}
+
+    out: dict = {"available": True, "brand": b["slug"],
+                 "settled_through": None, "pairs": {}}
+    for r in rows:
+        out["settled_through"] = r.get("settled_edge")
+        entry = out["pairs"].setdefault(r["pair"], {
+            **{k: r.get(k) for k in _WINDOW_COLS
+               if k not in ("pair", "settled_edge")},
+            "rows": []})
+        if r.get("level") is None:
+            continue  # the pair's dates, with no entity in either window
+        row = {k: v for k, v in r.items()
+               if k not in _WINDOW_COLS and k != "ordinality"}
+        for k in _JSONB_COLS:
+            row[k] = _decoded(row.get(k))
+        entry["rows"].append(row)
+    if out["settled_through"] is None:
+        # No pair at all -- no data on either side of the edge. Say where the
+        # edge is anyway, so "no pairs" is not misread as "no edge".
+        out["settled_through"] = await context.settled_through(b["id"])
+    return out
+
+
+async def funnel(slug: str, days: int = 7, until: date | None = None,
+                 level: str = "campaign", limit: int = 50) -> dict:
+    """What changed through each funnel stage, for one window pair.
+
+    `--days` picks the pair: 7 is the last 7 settled days against the 7
+    before, 14 and 28 likewise. The windows always end at the settled edge --
+    that is what makes "last 7 vs prior 7" one fixed pair of dates -- so
+    `until` is refused rather than quietly ignored.
+    """
+    if until is not None:
+        raise ValueError("funnel windows end at the settled edge "
+                         "(ads.analysis_windows); --until is not supported")
+    pair = FUNNEL_PAIR_FOR_DAYS.get(days)
+    if pair is None:
+        raise ValueError(f"--days must be one of "
+                         f"{', '.join(map(str, FUNNEL_PAIR_FOR_DAYS))}, "
+                         f"got {days}")
+    if limit < 1:
+        raise ValueError(f"--limit must be at least 1, got {limit}")
+    try:
+        ladder = await funnel_ladder(slug, level=level, pairs=[pair])
+    except _pg_errors.RaiseException as exc:
+        # 017's own refusals (no active ad account, bad windows) are one
+        # sentence for stderr, not a traceback.
+        raise ValueError(str(exc).strip().splitlines()[0]) from None
+    if not ladder["available"]:
+        raise ValueError(ladder["why"])
+
+    p = ladder["pairs"].get(pair)
+    rows = (p or {}).get("rows", [])
+    settled = ladder["settled_through"]
+    unsettled = (p or {}).get("unsettled_days") or 0
+    return {
+        "verb": "funnel", "brand": ladder["brand"], "level": level,
+        "pair": pair,
+        **{k: (p or {}).get(k) for k in ("cur_since", "cur_until",
+                                         "pri_since", "pri_until",
+                                         "cur_days", "pri_days")},
+        "settled_through": settled, "unsettled_days": unsettled,
+        "caveat": (context.caveat(unsettled, settled) if p else
+                   "One side of this pair holds no data, so there is "
+                   "nothing to compare."),
+        "frequency_note": "daily_frequency is impressions per person-day "
+                          "(ad level only), not cumulative frequency, which "
+                          "is not in this database. Say daily frequency.",
+        "decomposition_note": "cpa_share_* split the CPA change exactly "
+                              "into CPM, link CTR and CVR (conversions per "
+                              "link click, including view-through). Signed, "
+                              "they sum to 100, and are null when CPA is "
+                              "flat or undefined; see `decomposition`.",
+        "row_count": len(rows), "truncated": len(rows) > limit,
+        "rows": rows[:limit],
+    }

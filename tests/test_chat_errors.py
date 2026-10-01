@@ -137,6 +137,14 @@ def test_propose_is_askable():
     assert any("intel propose" in entry for entry in chat._allowed())
 
 
+def test_funnel_is_askable():
+    """"Why did CPA move" is answered by funnel's decomposition. Off the list,
+    the session would rebuild CPM, CTR and CVR changes from overview rows in
+    its head -- the arithmetic CLAUDE.md forbids."""
+    assert "funnel" in chat.READ_VERBS
+    assert any("intel funnel" in entry for entry in chat._allowed())
+
+
 def test_the_two_verbs_that_stay_off_are_still_off():
     """record writes. live spends the Meta rate limit one keystroke at a
     time. Neither reason has changed."""

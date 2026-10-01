@@ -28,7 +28,8 @@ concluding that something is broken.
    • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
 
-  ledger: ads.schema_migrations, files 001…015, all applied
+  ledger: ads.schema_migrations, files 001…017
+          (001…016 applied; 017 prepared, waiting to be applied)
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are
@@ -265,6 +266,7 @@ python -m intel status --brand renegade      # start here; says what is stale
 python -m intel live   --brand renegade      # what is running RIGHT NOW
 python -m intel overview --brand renegade --days 28
 python -m intel why --brand renegade --days 7
+python -m intel funnel --brand renegade --days 7   # 7, 14 or 28; needs 017
 python -m intel fatigue --brand renegade
 python -m intel coverage --brand renegade
 python -m intel ad-readings --brand renegade --key <ad_key>
@@ -377,30 +379,74 @@ provider library; the allowlist in `chat.READ_VERBS` is the security model, and
 ## /suggestions is a campaign triage, written after each import
 
 Nobody presses anything. `scripts/sync.py` runs `scripts/suggest.py --force`
-after a successful import (`_run_after`, alongside `tag.py` and `brief.py`),
-because a suggestion somebody has to remember to ask for is one nobody asks
-for. A failed import skips it: an analysis of numbers that did not land is
-worse than none.
+after a successful import (`_run_after`, alongside `tag.py` and `brief.py`,
+with 1200s to the model call's 900), because a suggestion somebody has to
+remember to ask for is one nobody asks for. A failed import skips it: an
+analysis of numbers that did not land is worse than none.
 
-It builds `intel/creative.py`'s pack, whose `campaigns` section carries each
-campaign's ad groups, leading and tiring ads and a `rating_rule`, and asks a
-model through `chat.classify` (no tools, prompt on stdin) for one rating per
-campaign — red, yellow or green — with problem + fix pairs. The model does not
-have the last word on the colour: `rating_rule` states which ratings the
-campaign's figures allow, and `clamp_rating` moves the reply to the nearest
-allowed one and records `rating_adjusted_from`.
+**It needs migration 017.** `intel/creative.py`'s pack reads
+`metrics.funnel_ladder` -- one round trip over `ads.analysis_windows` and
+`ads.funnel_change`, every level, every window pair. Until 017 is applied the
+pack carries `funnel_available: false`, the /suggestions page still renders
+(it builds the pack live), and `suggest.py` refuses to publish: it logs
+"migration 017 is not applied" and exits 1, so the page keeps the last file.
+A half-analysis is the one-window read this replaced.
 
-Problems carry ids across runs, so each one from the last review comes back
+**The window pairs**, all ending at the settled edge: `unsettled_vs_last_7`
+(the tail, shown as provisional and never a basis), `last_7_vs_prior_7`,
+`last_14_vs_prior_14`, `last_28_vs_prior_28` and `last_7_vs_before`. Each
+campaign's `ladder` is read off their sides -- unsettled, last 7, prior 7,
+last 14, prior 14, last 28, before -- with every figure taken from 017's
+`cur_m`/`pri_m`, never summed here. **There is no target CPL:** each campaign
+is judged against its own earlier windows.
+
+The model is asked four questions per campaign, in order: **what changed**
+(the ladder from the short end; a 7-day move the 14-day comparison does not
+share is a wobble), **where** (campaign, ad group, ad, and whether
+concentration is efficient), **why** (017's CPA decomposition into auction
+cost, click-through and post-click, and `intel/diagnose.py`'s pattern, always
+as a hypothesis) and **what is justified** (act, test or monitor). Each issue
+is observation / evidence / diagnosis / recommendation / expected outcome /
+confidence, a test carries control vs challenger with a decide-when rule from
+the ad group's `test_floor`, and every report says what not to do yet.
+
+**The diagnosis bounds the reply.** `intel/diagnose.py` is a pure module (no
+db, no arithmetic) that reads the rows before the model does: which pattern
+held in which window on what evidence, which types it `allowed`, its
+confidence, the control ad (the incumbent stays unless its own funnel
+deteriorated), and `max_priority`. `creative.triage_from` clamps each issue
+against the finding its `basis` names -- type, confidence and priority move
+down, a test plan on a variable the finding does not allow becomes a monitor,
+an issue naming no finding is a low-confidence monitor, one primary at most
+-- and records each move (`type_adjusted_from`, `test_plan_dropped`, ...) so
+the card says whose call it was. The rating is clamped the same way:
+`rating_rule` (diagnose's, re-exported by creative) allows red only for a CPA
+rise that persists in the 14-day comparison on enough evidence, or
+zero-conversion spend at several times the entity's own baseline. A single
+fatigue symptom, concentration and rank in goal never make a campaign red.
+
+**What the model is sent is a view, and it shrinks by tier.**
+`creative.campaign_tier` strips repetition (dates live in `windows`, a rung
+is an array, a campaign-level finding drops what pct_7 already says) and,
+over `TRIAGE_BUDGET`, drops rungs and non-control copy (B) and then all but
+the essentials (C); `diagnosis` and `rating_rule` are in every tier. The
+campaign list is never cut. If even tier C is over, the prompt goes anyway and
+the log says WARNING. `goals`, `tiring` and `formats` are page-only.
+
+Issues carry ids across runs, so each one from the last review comes back
 still open, resolved, or no longer mentioned. A resolution is accepted only if
 it cites a change from `changes_since`, which is computed, not judged: what
 moved between the last file's `snapshot` (per-ad `copy_hash` and status) and
-today, labelled `"you"` (the account was edited) or `"numbers"` (the figures
-moved). One with no real change behind it is dropped, and the page says it was
-not confirmed fixed. `check_figures` then flags, on its card, any figure the
-card states that the facts do not contain.
+today, labelled `"you"` (the account was edited) or `"numbers"` (a diagnosis
+finding appeared or stopped holding, a rank moved). One with no real change
+behind it is dropped, and the page says it was not confirmed fixed.
+`check_figures` then flags, on its card, any figure the card states that the
+facts sent do not contain -- the last review's own text does not count as a
+fact.
 
-Output is `suggestions/YYYY-MM-DD-<brand>.json` — one per brand per day,
-gitignored, with the pack it was written from stored beside it so it can be
-checked later. `templates/_triage.html` is the one template allowed red, amber
-and green: a user-granted exception, scoped by name in
+Output is `suggestions/YYYY-MM-DD-<brand>.json` -- one per brand per day,
+gitignored, `"shape": 2`, with the facts as sent stored beside it so it can be
+checked later. Older files (`problems` or `changes`) still render.
+`templates/_triage.html` is the one template allowed red, amber and green: a
+user-granted exception, scoped by name in
 `tests/test_charts_and_templates.py`. Everything else stays under the rule.

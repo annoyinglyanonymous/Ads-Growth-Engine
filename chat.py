@@ -88,7 +88,7 @@ PYTHON = "python"
 #: the interpreter, because that would include `record`.
 READ_VERBS = ("status", "brief", "overview", "compare", "why", "fatigue",
               "trend", "ad", "angles", "candidates", "queue", "coverage",
-              "versus", "experiments", "experiment", "propose")
+              "versus", "experiments", "experiment", "propose", "funnel")
 
 #: `propose` is on the list because leaving it off cost a real question.
 #:

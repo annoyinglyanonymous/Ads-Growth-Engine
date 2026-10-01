@@ -64,19 +64,21 @@
     {% for para in published.suggestion.split('\n\n') if para.strip() %}
       <p>{{ para.strip() }}</p>
     {% endfor %}
-    {#- The prose is dated; the evidence under it is live. When an import has
-        landed since, the two disagree, and the reader is told which moved. -#}
-    {% if published.until and published.until != d.until | string %}
-      <div class="caveat" style="margin:12px 0 0">{{ ico.i('warn') }}<span>
-        Written against the window ending <strong>{{ published.until }}</strong>;
-        the evidence below now runs to <strong>{{ d.until }}</strong>. The next
-        import republishes it.</span></div>
-    {% endif %}
   {% else %}
     <p class="muted">No suggestion has been published for this brand yet. One is
       written after every import &mdash; <span class="mono">python scripts/sync.py</span>
       runs it, or <span class="mono">python scripts/suggest.py --brand {{ d.brand }}</span>
       publishes one on its own. The evidence below is live either way.</p>
+  {% endif %}
+  {#- The answer is dated -- the prose or the triage alike -- and the evidence
+      under it is live. When an import has landed since, the two disagree,
+      and the reader is told which moved. -#}
+  {% if published and (published.triage or published.suggestion)
+        and published.until and published.until != d.until | string %}
+    <div class="caveat" style="margin:12px 0 0">{{ ico.i('warn') }}<span>
+      Written against the window ending <strong>{{ published.until }}</strong>;
+      the evidence below now runs to <strong>{{ d.until }}</strong>. The next
+      import republishes it.</span></div>
   {% endif %}
 </section>
 

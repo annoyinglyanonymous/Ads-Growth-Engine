@@ -4,7 +4,7 @@ Every verb prints a JSON object and exits 0, or prints one sentence to stderr
 and exits 2. That is growth-engine's shape (review/__main__.py, meta_ads/
 __main__.py) and it is what lets a SKILL.md call these without a parser.
 
-Sixteen read verbs and one write verb. There is no --approve, no --conclude and
+Nineteen read verbs and one write verb. There is no --approve, no --conclude and
 no --activate, here or anywhere: see intel/shapes.py.
 """
 
@@ -132,6 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = windowed("why", "what moved CPA: rate effect vs mix effect", 7)
     s.add_argument("--limit", type=int, default=25)
 
+    s = windowed("funnel", "what changed through CPM, link CTR and CVR: "
+                           "last N settled days vs the N before (7, 14, 28)", 7)
+    s.add_argument("--level", choices=("campaign", "ad_group", "ad", "brand"),
+                   default="campaign")
+    s.add_argument("--limit", type=int, default=50)
+
     s = brandish("fatigue", "five named symptoms per ad, and their count")
     s.add_argument("--window", type=int, default=7, dest="window_days")
     s.add_argument("--until", help="YYYY-MM-DD; defaults to the settled edge")
@@ -211,6 +217,9 @@ async def run(a: argparse.Namespace) -> dict:
         return await metrics.compare(a.brand, a.days, _day(a.until), a.level, a.limit)
     if v == "why":
         return await metrics.why(a.brand, a.days, _day(a.until), a.limit)
+    if v == "funnel":
+        return await metrics.funnel(a.brand, a.days, _day(a.until), a.level,
+                                    a.limit)
     if v == "fatigue":
         return await metrics.fatigue(a.brand, a.window_days, _day(a.until),
                                      a.min_spend, a.include_unconfident)

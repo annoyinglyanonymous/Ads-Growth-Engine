@@ -57,7 +57,7 @@ BUNDLES = [
          "scripts/sync.py", "scripts/sync.bat",
          "scripts/register_sync_task.ps1"}),
     ("04-verbs",
-     "intel/: the sixteen verbs. Thin on purpose -- they choose a window, "
+     "intel/: the nineteen read verbs and one write verb. Thin on purpose -- they choose a window, "
      "call a Postgres function, and shape the result.",
      lambda r: r.startswith("intel/")),
     ("05-dashboard",

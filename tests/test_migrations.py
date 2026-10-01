@@ -193,3 +193,33 @@ def test_rls_policies_exist_for_every_public_table_read():
         f"granted select but no RLS policy: {sorted(missing)} -- if RLS is on "
         f"for any of these they return zero rows SILENTLY, which reads as an "
         f"empty database rather than a permission problem")
+
+
+#: A sum of reach_this_day is a count of PERSON-DAYS: a real quantity, and the
+#: right denominator for impressions per person-day (017's daily_frequency).
+#: It is not a reach, and the one way it becomes a lie is by being printed as
+#: one. So it may be named (`as c_pd`) and divided by (`/ nullif(x.c_pd, 0)`)
+#: and nothing else -- never selected, compared, returned or rounded on its own.
+PERSON_DAYS = re.compile(r"\b(person_days|\w+_pd)\b", re.IGNORECASE)
+
+
+def test_person_days_is_only_ever_a_denominator():
+    seen = 0
+    for path in MIGRATIONS:
+        code = _strip_comments(path.read_text(encoding="utf-8")).lower()
+        for m in PERSON_DAYS.finditer(code):
+            seen += 1
+            before = code[:m.start()]
+            if re.search(r"\bas\s+$", before):
+                continue  # the alias that names the sum
+            assert re.search(r"/\s*nullif\(\s*(\w+\.)?$", before), (
+                f"{path.name}: {m.group(0)} used outside `/ nullif(`:\n"
+                f"  ...{code[max(0, m.start() - 80):m.end() + 20]}...\n"
+                f"A person-day count is a denominator, never a figure.")
+        # And never a column of any function's result.
+        for body in re.findall(r"returns\s+table\s*\((.*?)\)\s*language",
+                               code, re.DOTALL):
+            assert not PERSON_DAYS.search(body), (
+                f"{path.name} returns a person-day count")
+    # Guard against a green test that checked nothing: 017 sums person-days.
+    assert seen, "expected 017 to define a person-day denominator"

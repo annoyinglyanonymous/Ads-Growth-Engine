@@ -256,7 +256,7 @@ def main() -> int:
         # audience, and reading them BEFORE this run's new ads are labelled
         # would describe the account as it was one import ago.
         _run_after("tag.py", a.brand)
-        _run_after("suggest.py", a.brand, extra=("--force",), timeout=600,
+        _run_after("suggest.py", a.brand, extra=("--force",), timeout=1200,
                    benign={3: "nothing to publish for"})
         if a.no_brief:
             log("skipping the brief (--no-brief)")

@@ -53,6 +53,7 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 # page scope. Same device growth-engine uses for field_labels/capped.
 templates.env.globals.update(
     money=charts.money, num=charts.num, pct=charts.pct, fmt=charts.fmt,
+    signed_pct=charts.signed_pct,
     line_chart=charts.line_chart, bar_chart=charts.bar_chart,
     sparkline=charts.sparkline, column_chart=charts.column_chart,
     split_bar=charts.split_bar, effect_bars=charts.effect_bars,

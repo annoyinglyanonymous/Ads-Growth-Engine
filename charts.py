@@ -100,6 +100,21 @@ def pct(v: Number, places: int = 2) -> str:
     return "--" if n is None else f"{n:,.{places}f}%"
 
 
+def signed_pct(v: Number, places: int = 1) -> str:
+    """+12.3%, −8.1%: a change always says which way it went.
+
+    The minus is U+2212, as in money(), so a column of changes lines up. A
+    figure that rounds to nothing carries no sign: -0.04 is 0.0%, not −0.0%.
+    """
+    n = _f(v)
+    if n is None:
+        return "--"
+    shown = f"{abs(n):,.{places}f}"
+    if not shown.strip("0.,"):
+        return f"{shown}%"
+    return f"{'+' if n > 0 else '−'}{shown}%"
+
+
 def words(v: object) -> str:
     """An enum as a reader says it: QUALITY_LEAD -> "Quality lead".
 

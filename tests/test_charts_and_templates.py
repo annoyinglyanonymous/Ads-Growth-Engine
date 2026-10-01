@@ -147,6 +147,17 @@ def test_formatters_accept_decimal():
     assert charts.pct(Decimal("2.5000")) == "2.50%"
 
 
+def test_signed_pct():
+    """A change says which way it went, with the same minus as money()."""
+    assert charts.signed_pct(12.34) == "+12.3%"
+    assert charts.signed_pct(-8.06) == "−8.1%"
+    assert charts.signed_pct(None) == "--"
+    assert charts.signed_pct(Decimal("-22.4100")) == "−22.4%"
+    assert charts.signed_pct("5") == "+5.0%"
+    assert charts.signed_pct(-0.04) == "0.0%", "a rounded-away change has no sign"
+    assert charts.signed_pct(1234.5, 0) == "+1,234%"
+
+
 def test_labels_are_escaped():
     svg = charts.bar_chart([("<script>x</script>", 1)], kind="cpa")
     assert "<script>" not in svg
@@ -159,6 +170,7 @@ def _env():
     env = Environment(loader=FileSystemLoader(str(ROOT / "templates")),
                       undefined=StrictUndefined)
     env.globals.update(money=charts.money, num=charts.num, pct=charts.pct,
+                       signed_pct=charts.signed_pct,
                        fmt=charts.fmt, line_chart=charts.line_chart,
                        bar_chart=charts.bar_chart, sparkline=charts.sparkline)
     return env

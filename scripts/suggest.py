@@ -73,22 +73,47 @@ STALE_LOCK_AFTER = timedelta(minutes=10)
 #: Which sections of the creative pack reach the model.
 #:
 #: Everything except the frame (brand, window, settled edge), which is
-#: interpolated into the prompt separately. A section in the pack and not here
-#: is work done and thrown away one line before it would have been used.
-SENT_TO_THE_MODEL = ("campaigns", "goals", "dimensions", "untagged", "tiring")
+#: interpolated into the prompt separately, and PAGE_ONLY. A section in the
+#: pack and in neither list is work done and thrown away one line before it
+#: would have been used; tests/test_suggestions.py checks there is none.
+SENT_TO_THE_MODEL = ("campaigns", "challenger_pool", "dimensions", "untagged",
+                     "windows")
+
+#: Built for the /suggestions page, deliberately not sent. `goals` was the
+#: model's per-goal copy list and is replaced by `challenger_pool`; `tiring`
+#: is the 28-day "1 of 5 symptoms" read that turned ten campaigns red on its
+#: own; `formats` is one of the four `dimensions` already sent.
+PAGE_ONLY = ("tiring", "formats", "goals")
 
 #: Sent whole, never through compact(). The reply is one rating per campaign,
-#: and a campaign list cut to three rows is twenty campaigns with no card.
-NEVER_COMPACTED = ("campaigns", "previous_problems", "changes_since_last_review")
+#: and a campaign list cut to three rows is twenty campaigns with no card; the
+#: pool, the windows and the last review are already as short as they get.
+NEVER_COMPACTED = ("campaigns", "challenger_pool", "windows",
+                   "previous_issues", "changes_since_last_review")
+
+#: How the prompt shrinks, in order, until it fits: the campaign tier
+#: (creative.campaign_tier) and how many rows each other section keeps. The
+#: campaigns get shorter before the dimensions lose their rows, because a
+#: test plan's challenger hook comes from the dimensions.
+STEPS = (("A", 8), ("B", 8), ("B", 3), ("C", 3), ("C", 0))
+
+#: What the log says, and the page keeps the last file, when 017 is missing.
+NO_FUNNEL = ("migration 017 is not applied -- apply it (python ads_migrate.py "
+             "--print 017) before the analysis can run")
 
 #: The triage prompt's ceiling. Not creative.PROMPT_BUDGET: that one is the
 #: argv limit, and chat.classify sends its prompt on stdin, which has none.
 #: This is about cost and attention -- the other sections shrink first.
-TRIAGE_BUDGET = 64000
+#: 112k, not 64k: the analyst pack carries a window ladder, funnel and
+#: findings per campaign (~3k each). Measured 2026-10-01 on 25 campaigns with
+#: a 54-issue previous review: tier A ~102k, tier C ~95k. Cutting the carried
+#: review instead would cost the page its "still open / resolved" record,
+#: which is the part a reader trusts most.
+TRIAGE_BUDGET = 112000
 
-#: The window the suggestion reads. Four weeks, matching /suggestions and the
-#: brief: long enough that a single bad day does not rewrite the advice, short
-#: enough that it is about what the account is running now.
+#: The window `dimensions` and the page's evidence read. Four weeks, matching
+#: /suggestions and the brief. The campaign analysis reads 017's named window
+#: pairs instead, all ending at the settled edge.
 DAYS = 28
 
 
@@ -141,15 +166,26 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         log(f"{slug}: no ads spent in the window -- nothing to suggest about")
         return 3
 
+    if not pack.get("funnel_available"):
+        # REFUSED, not degraded. Without 017 there is no window ladder, no
+        # funnel and no diagnosis -- a half-analysis is exactly the one-window
+        # read the operator rejected. The page keeps the last file.
+        log(f"{slug}: {NO_FUNNEL}"
+            + (" (dry run: nothing would have been published)"
+               if dry_run else ""))
+        return 1
+
     out = creative_mod.publish_path(slug, date.today())
     if out.exists() and not force and not dry_run:
         log(f"{slug}: {out.name} already exists; --force to replace it")
         return 0
 
-    ads = sum(len(g["cheapest"]) + len(g["dearest"]) + len(g["by_spend_only"])
-              for g in pack["goals"])
-    log(f"{slug}: {len(pack['goals'])} goal(s), {ads} ad(s) of copy, "
-        f"window {pack['since']} to {pack['until']}")
+    running = [c for c in pack["campaigns"] if c.get("running")]
+    pool = [a for g in pack["challenger_pool"] for a in g["ads"]]
+    log(f"{slug}: {len(pack['campaigns'])} campaign(s), {len(running)} "
+        f"running in the last 7 settled days; {len(pool)} challenger(s) "
+        f"across {len(pack['challenger_pool'])} goal(s); settled through "
+        f"{(pack.get('windows') or {}).get('settled_through')}")
 
     # `dimensions`, not `formats`. They overlap -- format is one of the four --
     # but picking the old key sent the model the ad-builder cut and withheld
@@ -160,7 +196,7 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     # be sent deliberately, but the test below asserts none is forgotten.
     facts = {k: pack[k] for k in SENT_TO_THE_MODEL}
 
-    # The last review, so each of its problems can be carried, resolved or
+    # The last review, so each of its issues can be carried, resolved or
     # reported as no longer mentioned. "Changed" is judged on the campaign
     # facts the model reads, not the window end: a structure pull can change
     # an ad's wording without moving the insights window.
@@ -174,20 +210,21 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         prev, json.loads(json.dumps(pack["campaigns"], default=str)), snap)
     data_changed = not prev or bool(changes)
     facts["changes_since_last_review"] = changes
-    facts["previous_problems"] = creative_mod.for_the_prompt(previous)
+    facts["previous_issues"] = creative_mod.for_the_prompt(
+        previous, {c["campaign"] for c in pack["campaigns"]})
     note = creative_mod.previous_note(prev, data_changed)
     if prev:
         by = [ch["by"] for v in changes.values() for ch in v]
         log(f"{slug}: comparing against {prev['file']} "
-            f"({sum(len(v) for v in previous.values())} problem(s)); "
+            f"({len([p for v in previous.values() for p in v])} issue(s)); "
             f"{by.count('you')} change(s) to the account, "
             f"{by.count('numbers')} in the numbers"
             + ("" if prev.get("snapshot") is not None else
                "; no snapshot in it, so wording is compared on leading ads only"))
 
-    question = build_question(pack, facts, note)
-    log(f"{slug}: {len(pack['campaigns'])} campaign(s), prompt "
-        f"{len(question)} chars")
+    question, sent, tier, keep = fit(pack, facts, note)
+    log(f"{slug}: prompt {len(question)} chars (campaign tier {tier}, "
+        f"other sections at {keep} row(s))")
 
     if dry_run:
         log(f"{slug}: --dry-run, so nobody was asked")
@@ -195,23 +232,25 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
 
     started = datetime.now(timezone.utc)
     try:
-        # 24 campaigns of JSON is several minutes of writing, not one.
+        # 25 campaign reports of JSON is many minutes of writing, not one.
+        # scripts/sync.py gives this whole script 1200s, so this stays under.
         rows = await chat.classify(question, system=creative_mod.TRIAGE_SYSTEM,
-                                   timeout=600)
+                                   timeout=900)
     except (ValueError, chat.ChatUnavailable) as exc:
         log(f"{slug}: FAILED  {exc}")
         return 1
     triage = creative_mod.triage_from(rows, pack["campaigns"], previous,
                                       data_changed, date.today(),
                                       changes if prev else None)
-    flagged = creative_mod.check_figures(triage, facts)
+    flagged = creative_mod.check_figures(triage, sent)
     if flagged:
         log(f"{slug}: {flagged} figure(s) on the cards appear nowhere in the "
             f"facts; flagged on their cards")
     moved = [t for t in triage if t.get("rating_adjusted_from")]
     if moved:
         log(f"{slug}: {len(moved)} rating(s) moved by the rating rule")
-    unrated = sum(1 for t in triage if t["rating"] is None)
+    log(f"{slug}: {clamp_summary(triage)}")
+    unrated = len([t for t in triage if t["rating"] is None])
     if unrated == len(triage):
         log(f"{slug}: FAILED  the reply rated none of the "
             f"{len(triage)} campaign(s)")
@@ -222,6 +261,9 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
 
     doc = {
         "verb": "suggest",
+        # 2: per-campaign analyst reports with `issues` (contracts C5). The
+        # page still renders files without it, through the legacy markup.
+        "shape": 2,
         "brand": slug,
         "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "since": str(pack["since"]),
@@ -240,50 +282,90 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         "snapshot": snap,
         "duration_ms": int((datetime.now(timezone.utc) - started)
                            .total_seconds() * 1000),
-        # The pack rides along. A suggestion without the numbers it was written
-        # from cannot be checked later, and checking it later is the only way
-        # anyone finds out whether these were any good.
-        "pack": facts,
+        # The pack rides along -- as SENT, at the tier that fitted. A
+        # suggestion without the numbers it was written from cannot be checked
+        # later, and checking it later is the only way anyone finds out
+        # whether these were any good.
+        "pack": sent,
+        "prompt_tier": tier,
     }
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(doc, indent=2, ensure_ascii=False, default=str),
                    encoding="utf-8")
-    counts = {r: sum(1 for t in triage if t["rating"] == r)
+    counts = {r: len([t for t in triage if t["rating"] == r])
               for r in creative_mod.RATINGS}
     log(f"{slug}: published {out.name} ({counts['red']} red, "
         f"{counts['yellow']} yellow, {counts['green']} green, "
         f"{doc['duration_ms'] / 1000:.0f}s)")
     if prev:
-        n = {k: sum(len(t[k]) for t in triage) for k in ("resolved", "dropped")}
-        still = sum(1 for t in triage for p in t["problems"]
-                    if p["status"] == "still_open")
+        n = {k: len([x for t in triage for x in t[k]])
+             for k in ("resolved", "dropped")}
+        still = len([p for t in triage
+                     for p in (t.get("issues") or t.get("problems") or [])
+                     if p["status"] == "still_open"])
         log(f"{slug}: since {prev['file']}: {n['resolved']} resolved, "
             f"{still} still open, {n['dropped']} no longer mentioned")
     return 0
 
 
-def build_question(pack: dict, facts: dict, previous_note: str = "") -> str:
-    """The prompt, shrunk until it fits the command line.
+def clamp_summary(triage: list) -> str:
+    """One log line: what the reply recommended, and how often the diagnosis
+    had to move it. A run where every test became a monitor is a prompt (or a
+    diagnosis) worth reading, and only the log shows the trend."""
+    issues = [p for t in triage for p in t.get("issues") or []]
+    types = [(p.get("recommendation") or {}).get("type") for p in issues]
+    moved = {k: len([p for p in issues if p.get(k)])
+             for k in ("type_adjusted_from", "confidence_adjusted_from",
+                       "priority_adjusted_from", "test_plan_dropped",
+                       "basis_unknown")}
+    trimmed = len([x for t in triage
+                   for x in range(t.get("issues_trimmed") or 0)])
+    return (f"{len(issues)} issue(s): {types.count('act')} act, "
+            f"{types.count('test')} test, {types.count('monitor')} monitor; "
+            f"adjusted: {moved['type_adjusted_from']} type, "
+            f"{moved['confidence_adjusted_from']} confidence, "
+            f"{moved['priority_adjusted_from']} priority, "
+            f"{moved['test_plan_dropped']} test plan(s) dropped, "
+            f"{moved['basis_unknown']} with no known basis, "
+            f"{trimmed} trimmed over the caps")
 
-    Only the sections outside NEVER_COMPACTED shrink. The campaign list goes
-    whole because the reply is one rating per campaign; the per-goal ad lists
-    and the dimensions are supporting evidence and can lose their tails.
+
+def fit(pack: dict, facts: dict, previous_note: str = "") -> tuple:
+    """(prompt, the facts as sent, tier, keep): the prompt, shrunk until it
+    fits TRIAGE_BUDGET.
+
+    The campaign list is never cut -- the reply is one rating per campaign --
+    so it shrinks by tier (creative.campaign_tier) instead, and the sections
+    outside NEVER_COMPACTED lose their tails. STEPS is the order. If even the
+    last step is over budget the prompt goes anyway and the log says so: an
+    over-budget prompt costs attention, a skipped review costs the day.
     """
     whole = {k: facts[k] for k in NEVER_COMPACTED if k in facts}
     rest = {k: v for k, v in facts.items() if k not in whole}
-    question = ""
-    for keep in (8, 3, 0):
+    question, sent, tier, keep = "", {}, None, None
+    for tier, keep in STEPS:
+        sent = {**whole, **creative_mod.compact(rest, keep)}
+        if "campaigns" in whole:
+            sent["campaigns"] = [creative_mod.campaign_tier(c, tier)
+                                 for c in whole["campaigns"]]
         question = creative_mod.SUGGESTIONS_PROMPT.format(
             brand=pack["brand"], since=pack["since"], until=pack["until"],
             days=pack["days"], settled=pack["settled_through"],
             unsettled=pack["unsettled_days"],
             previous_note=previous_note or creative_mod.previous_note(None, True),
-            facts=json.dumps({**whole, **creative_mod.compact(rest, keep)},
-                             separators=(",", ":"), ensure_ascii=False,
+            facts=json.dumps(sent, separators=(",", ":"), ensure_ascii=False,
                              default=str))
         if len(question) <= TRIAGE_BUDGET:
-            break
-    return question
+            return question, sent, tier, keep
+    log(f"WARNING: the triage prompt is {len(question)} chars, over "
+        f"TRIAGE_BUDGET ({TRIAGE_BUDGET}) even at tier {tier} with {keep} "
+        f"row(s) per section; sending it anyway")
+    return question, sent, tier, keep
+
+
+def build_question(pack: dict, facts: dict, previous_note: str = "") -> str:
+    """The prompt alone, as fit() shrinks it."""
+    return fit(pack, facts, previous_note)[0]
 
 
 async def run(only: str | None, dry_run: bool, force: bool) -> int:

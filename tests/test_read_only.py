@@ -259,3 +259,72 @@ def test_the_importer_does_not_reach_for_the_ads_pools():
         assert "db" not in names, (
             f"{path.name} imports db (the ads_reader pool). The importer's "
             f"connection is db_meta.")
+
+
+# ---------------------------------------------------------------------------
+# Every function the read pool calls has a grant a migration actually wrote.
+#
+# 012 exists because a grant was assumed. 006 granted execute on every ads
+# function that existed when it ran, plus default privileges for objects
+# ads_owner creates -- and ads_migrate applies as postgres, so the default
+# never fires for anything after 006. Functions stay executable by PUBLIC
+# unless revoked, which is why the missing grants did not surface as errors;
+# that is luck, not a property of this schema, and the day PUBLIC is revoked
+# every verb built on a later function dies at once.
+#
+# So: a function called from SQL on the read pool is either created by a
+# migration numbered 006 or lower (006's sweep covers it), or some migration
+# says `grant execute on function ads.<name>(` in so many words.
+# ---------------------------------------------------------------------------
+
+#: record.py is left out: it runs on the owner pool, and its
+#: `insert into ads.x (columns)` names a table, not a call.
+GRANT_CALLERS = (sorted(p for p in INTEL.glob("*.py") if p.name != WRITER)
+                 + [ROOT / "ui.py"])
+SQL_FN_CALL = re.compile(r"(?<!into )\bads\.(\w+)\s*\(", re.IGNORECASE)
+
+
+def _migration_sql() -> list[tuple[int, str]]:
+    out = []
+    for p in sorted((ROOT / "migrations").glob("*.sql")):
+        sql = "\n".join(re.sub(r"--.*$", "", line)
+                        for line in p.read_text(encoding="utf-8").splitlines())
+        out.append((int(p.name.split("_", 1)[0]), sql))
+    return out
+
+
+def _granted_functions() -> set[str]:
+    granted: set[str] = set()
+    for number, sql in _migration_sql():
+        if number <= 6:
+            granted |= {m.lower() for m in re.findall(
+                r"create\s+(?:or\s+replace\s+)?function\s+ads\.(\w+)",
+                sql, re.IGNORECASE)}
+        granted |= {m.lower() for m in re.findall(
+            r"grant\s+execute\s+on\s+function\s+ads\.(\w+)\s*\(",
+            sql, re.IGNORECASE)}
+    return granted
+
+
+def _called_functions() -> dict[str, set[str]]:
+    called: dict[str, set[str]] = {}
+    for path in GRANT_CALLERS:
+        for text in _string_literals(path):
+            if not SQL_START.match(text.strip()):
+                continue  # prose may name a function that does not exist yet
+            for name in SQL_FN_CALL.findall(text):
+                called.setdefault(name.lower(), set()).add(path.name)
+    return called
+
+
+def test_every_function_the_read_pool_calls_is_granted():
+    called = _called_functions()
+    # A rename that emptied the scan would pass vacuously.
+    assert "window_metrics" in called, sorted(called)
+    granted = _granted_functions()
+    missing = {name: sorted(files) for name, files in called.items()
+               if name not in granted}
+    assert not missing, (
+        f"called on the read pool with no grant in any migration: {missing}. "
+        f"Add `grant execute on function ads.<name>(<arg types>) to "
+        f"ads_reader` in the migration that creates it -- see 016's block.")
