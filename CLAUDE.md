@@ -28,7 +28,7 @@ concluding that something is broken.
    • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
 
-  ledger: ads.schema_migrations, files 001…017, all applied
+  ledger: ads.schema_migrations, files 001…018, all applied
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are
@@ -430,7 +430,81 @@ is an array, a campaign-level finding drops what pct_7 already says) and,
 over `TRIAGE_BUDGET`, drops rungs and non-control copy (B) and then all but
 the essentials (C); `diagnosis` and `rating_rule` are in every tier. The
 campaign list is never cut. If even tier C is over, the prompt goes anyway and
-the log says WARNING. `goals`, `tiring` and `formats` are page-only.
+the log says WARNING. `goals`, `tiring`, `formats` and `goal_impact` are
+page-only; `movement`, `campaign_key`, `entity_keys` and each ad's `ad_key`
+ride on the pack for the page and the ledger and are never sent.
+`TRIAGE_BUDGET` is 140k: measured 2026-10-01 before 018, tier A was 118,242
+chars (the prompt text alone is ~18k); re-measure with `--dry-run` once 018 is
+applied and the ledger has a week of followups.
+
+**The reply is one object**, `{"account_note": str, "campaigns": [...]}`.
+`chat.classify(expect="any")` takes it, and `creative.parse_reply` still reads
+a bare array (the round-1 shape) so a reply in the old form is not wasted.
+`chat.classify` defaults to `expect="list"`, which is what `scripts/tag.py`
+needs, unchanged.
+
+**Buckets, not colours.** After the clamps, each campaign's `bucket` is the
+strongest recommendation type among its issues -- act > test > monitor, none
+is `no_change` -- computed by `creative.bucket_of`; a bucket in the reply is
+never read. The rating still exists and is still clamped, but the page groups
+by bucket. `creative.sort_triage` is the published order: act, test,
+monitor, no change, and within a bucket by `impact.impact_score` (None last,
+stable). `priority_rank` is comparisons only: 1 for act, or a test with
+impact_score >= `PRIORITY_1_IMPACT` (250); 2 for any other test, or a monitor
+>= `PRIORITY_2_IMPACT` (100); else 3. The thresholds are evidence-weighted
+dollars and were set by eye on one week of the live account -- revisit once
+018 has rows.
+
+**Impact needs 018.** The pack attaches each campaign's `impact` from
+`metrics.goal_impact(slug, "last_7_vs_prior_7")`'s campaign row (matched by
+campaign_key, then name): goal, `excess_cost` (dollars beyond what this
+week's conversions cost at last week's rate), `impact_score`,
+`contribution_share_pct` and evidence. Dollars may be ordered across goals; a
+CPA never is. A campaign spanning two goals has no campaign row and no
+impact. `movement` is 017's pct for CPA, link CTR, CPC and CVR, 7v7 and
+14v14, for the collapsed card's strip. Before 018, `impact_available` is
+false, every impact is None, and the page and pack degrade (no impact order,
+the old `dimensions` table) rather than crash.
+
+**What matters today.** `creative.account_summary(pack, triage, note)` is
+deterministic: per goal, its CPA move from 018's goal row and -- when it rose
+on at least directional evidence -- how many campaigns (the first whose
+`cumulative_share_pct` reaches 60) account for it; then, over act and test
+campaigns, how many show creative-side deterioration (creative_engagement,
+possible_fatigue, audience_saturation, clickier_poorer_intent) and how many
+post-click; then how many have issues with low current impact. Every line is
+an f-string of SQL values and `len` counts. The reply's one `account_note`
+sits beside it, figure-checked (`check_note`) and causal-checked.
+
+**Each card has a `summary`** -- one line, at most ~25 words, "CPA +22%.
+Lower CTR appears to be the largest contributor. Test new creative.
+Medium-high confidence." -- checked by `check_figures` like every other
+field; `headline`/`why` stay as aliases. **Causal wording is disciplined:** a
+metric never "caused" anything. `creative.causal_language` runs
+`\b(caused|causes|because of|due to|is driving|drove)\b` over each card's
+summary, headline, observations and evidence and sets `causal_flags`; the log
+counts them. Flagged, not rewritten.
+
+**Every issue carries six fields** -- observation, evidence, diagnosis,
+recommendation (action and expected outcome), confidence (level and reason),
+and a test plan when the type is test. One missing any is `incomplete: [...]`
+and clamped to monitor.
+
+**Existing asset vs new creative.** A creative test's plan carries
+`challenger_kind`. `existing_asset` stands only when `challenger_ad` is
+exactly the name of an ad in `challenger_pool` under the campaign's own
+goal, or in its `where.ads`; otherwise `triage_from` relabels it
+`new_creative` and records `challenger_kind_adjusted_from`. `new_creative`
+carries a `brief` {format, angle_or_hook, opening_line, built_from}; the
+opening line is proposed copy and is not figure-checked, `built_from` is the
+evidence and is. A test of anything but the creative has no kind.
+
+**Dimensions by goal.** `dimensions_by_goal` (018's `facet_by_goal` for hook,
+offer and audience over the last 28 settled days, grouped by goal, each label
+`baseline / better / similar / worse` against its own goal's CPA) is on the
+pack for the page's goal tabs and is sent to the model INSTEAD of
+`dimensions` when present (`suggest.model_facts`); without 018 the old
+cross-goal `dimensions` is sent. Never both.
 
 Issues carry ids across runs, so each one from the last review comes back
 still open, resolved, or no longer mentioned. A resolution is accepted only if
@@ -449,3 +523,65 @@ checked later. Older files (`problems` or `changes`) still render.
 `templates/_triage.html` is the one template allowed red, amber and green: a
 user-granted exception, scoped by name in
 `tests/test_charts_and_templates.py`. Everything else stays under the rule.
+The published file also carries `account_summary`, `impact_available` and
+`outcomes` (`{"available", "measurement_available", "scorecard"}`); each act
+or test issue carries an `outcome` tag from the ledger.
+
+## Outcomes are auto-detected
+
+Was a recommendation carried out, and what followed? `intel/outcomes.py`
+answers it from the account's own changes, with no button and no migration
+beyond 018's read functions. **A measured result is a reading of SQL figures,
+not a conclusion:** nothing here writes `ads.experiment.conclusion`, and the
+page labels the scorecard "a reading, not a conclusion".
+
+**The ledger is a file**, `outcomes/<brand>.json` (gitignored, like
+`suggestions/`). `scripts/suggest.py` loads it before the prompt (each
+campaign's open / implemented / measuring entries go to the model as
+`followups` -- status, dates, match, result, never the old wording -- with
+the rule "do not propose a second test in an ad group whose test is
+measuring"), and after the review: `update_ledger` registers every published
+act or test issue by its id (ids persist across runs), applies the overrides,
+matches this run's `changes_since` "you" items, and expires what nobody has
+mentioned for 30 days; `measure` reads what was implemented; the file is
+saved after the review is on disk. Each step degrades alone: a bad overrides
+file is logged and ignored, a failed measurement keeps the ledger as
+matched, and only a failed registration drops `outcomes` from the doc.
+
+**Matching rules** (`outcomes._match_one`, deterministic, each recording
+`matched_by` and `match`):
+
+- **creative test**: an `ad_added` in the control's ad group on or after the
+  recommendation. `strong` when the new ad's name is `challenger_ad` (or is
+  quoted in the challenger), else `likely`. Implemented on the new ad's
+  first spend day (the snapshot's `first_spend_day`, from SQL). A new ad
+  implements one test, strong matches placed first.
+- **delivery cut** (act on one ad): that ad goes non-ACTIVE or is gone;
+  implemented on the review date that saw it.
+- **creative refresh**: `wording_changed` on that ad.
+- **budget**: `budget_changed` on the campaign (CBO: strong for a campaign
+  issue, likely for an ad group one) or on the named ad group.
+- **Not detectable**: landing page, form, offer and tracking changes are not
+  visible in Meta's structure data. Those entries are `not_detectable` until
+  a person says otherwise. Anything no rule recognises stays `open` with the
+  reason "no rule detects this kind of change automatically".
+
+**Overrides** are the one manual surface, a file edit:
+`outcomes/overrides.json`, `{"<issue id>": {"implemented_on": "YYYY-MM-DD"}
+| {"not_implemented": true}}` (an implemented override may also carry
+`challenger_ad_key`). An override always wins and is labelled "set by a
+person". Invalid JSON is logged and ignored for that run, never silently
+treated as applied.
+
+**Measurement** (018's `arm_compare` and `entity_outcome`, so nothing until
+018 is applied -- entries then wait as `implemented` with the reason): a
+creative test compares control against challenger from the implementation
+day to the settled edge, against the ad group's `decision_spend_per_arm`;
+everything else compares the 14 settled days before implementation with the
+implementation day to the settled edge, on the entity the issue named (an ad
+whose delivery was cut is read on its ad group). Classified by comparison
+only: `too_early` under 7 settled days, on insufficient evidence, or with an
+arm under its decision spend; `improved` at a CPA effect of -10% or better,
+`worse` at +10% or worse, `neutral` otherwise. Re-read each run until 28
+settled days, then frozen. The scorecard (`outcomes.scorecard`, last 90
+days) is counts by `len`: made, implemented, and each result, by kind.

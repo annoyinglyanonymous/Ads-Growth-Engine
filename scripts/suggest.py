@@ -60,6 +60,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import chat  # noqa: E402
 import db  # noqa: E402
 from intel import creative as creative_mod  # noqa: E402
+from intel import outcomes as outcomes_mod  # noqa: E402
 from intel.context import UnknownBrand  # noqa: E402
 
 LOCK = PROJECT_ROOT / ".suggest.lock"
@@ -76,20 +77,26 @@ STALE_LOCK_AFTER = timedelta(minutes=10)
 #: interpolated into the prompt separately, and PAGE_ONLY. A section in the
 #: pack and in neither list is work done and thrown away one line before it
 #: would have been used; tests/test_suggestions.py checks there is none.
-SENT_TO_THE_MODEL = ("campaigns", "challenger_pool", "dimensions", "untagged",
-                     "windows")
+SENT_TO_THE_MODEL = ("campaigns", "challenger_pool", "dimensions",
+                     "dimensions_by_goal", "untagged", "windows")
 
 #: Built for the /suggestions page, deliberately not sent. `goals` was the
 #: model's per-goal copy list and is replaced by `challenger_pool`; `tiring`
 #: is the 28-day "1 of 5 symptoms" read that turned ten campaigns red on its
 #: own; `formats` is one of the four `dimensions` already sent.
-PAGE_ONLY = ("tiring", "formats", "goals")
+PAGE_ONLY = ("tiring", "formats", "goals", "goal_impact")
+
+#: The pack's frame and flags: interpolated into the prompt or read by this
+#: script, never sent as a section.
+FRAME = ("verb", "brand", "since", "until", "days", "settled_through",
+         "unsettled_days", "funnel_available", "funnel_why",
+         "impact_available", "impact_why")
 
 #: Sent whole, never through compact(). The reply is one rating per campaign,
 #: and a campaign list cut to three rows is twenty campaigns with no card; the
 #: pool, the windows and the last review are already as short as they get.
 NEVER_COMPACTED = ("campaigns", "challenger_pool", "windows",
-                   "previous_issues", "changes_since_last_review")
+                   "previous_issues", "changes_since_last_review", "followups")
 
 #: How the prompt shrinks, in order, until it fits: the campaign tier
 #: (creative.campaign_tier) and how many rows each other section keeps. The
@@ -109,7 +116,18 @@ NO_FUNNEL = ("migration 017 is not applied -- apply it (python ads_migrate.py "
 #: a 54-issue previous review: tier A ~102k, tier C ~95k. Cutting the carried
 #: review instead would cost the page its "still open / resolved" record,
 #: which is the part a reader trusts most.
-TRIAGE_BUDGET = 112000
+#:
+#: 140k since round 2 (buckets, summary, challenger kind, followups). Measured
+#: 2026-10-01 with `--dry-run` on the same account BEFORE 018 was applied: the
+#: prompt text itself is 17.9k (was ~11k), and tier A is 118,242 chars
+#: (campaigns 74.9k, previous_issues 11.4k, changes 4.4k, challenger_pool
+#: 4.1k, dimensions 4.0k); tier C is 102,412. Once 018 is applied each running
+#: campaign carries `impact` (~120 chars, ~2.5k in all), `dimensions_by_goal`
+#: replaces `dimensions` (four goals x three dimensions, at most 8 rows each
+#: after compact), and `followups` grows with the ledger -- an estimated
+#: 128-135k at tier A. The model has taken 250k; stdin has no length limit.
+#: Re-measure with --dry-run once 018 is applied and the ledger has a week.
+TRIAGE_BUDGET = 140000
 
 #: The window `dimensions` and the page's evidence read. Four weeks, matching
 #: /suggestions and the brief. The campaign analysis reads 017's named window
@@ -194,7 +212,7 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     # given", while the pack had it and the publisher dropped it on the way
     # past. Named explicitly rather than `pack.keys()` so a new section has to
     # be sent deliberately, but the test below asserts none is forgotten.
-    facts = {k: pack[k] for k in SENT_TO_THE_MODEL}
+    facts = model_facts(pack)
 
     # The last review, so each of its issues can be carried, resolved or
     # reported as no longer mentioned. "Changed" is judged on the campaign
@@ -213,6 +231,13 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     facts["previous_issues"] = creative_mod.for_the_prompt(
         previous, {c["campaign"] for c in pack["campaigns"]})
     note = creative_mod.previous_note(prev, data_changed)
+
+    # The outcomes ledger as the last run left it: what was recommended
+    # before and whether the account shows it done. The model reads it as
+    # `followups`, so it reports a measuring test instead of stacking another.
+    ledger = load_ledger(slug)
+    facts["followups"] = creative_mod.followups(
+        ledger, pack["campaigns"], outcomes_mod.for_campaign)
     if prev:
         by = [ch["by"] for v in changes.values() for ch in v]
         log(f"{slug}: comparing against {prev['file']} "
@@ -234,18 +259,33 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     try:
         # 25 campaign reports of JSON is many minutes of writing, not one.
         # scripts/sync.py gives this whole script 1200s, so this stays under.
-        rows = await chat.classify(question, system=creative_mod.TRIAGE_SYSTEM,
-                                   timeout=900)
+        reply = await chat.classify(question, system=creative_mod.TRIAGE_SYSTEM,
+                                    timeout=900, expect="any")
+        rows, account_note = creative_mod.parse_reply(reply)
     except (ValueError, chat.ChatUnavailable) as exc:
         log(f"{slug}: FAILED  {exc}")
         return 1
     triage = creative_mod.triage_from(rows, pack["campaigns"], previous,
                                       data_changed, date.today(),
-                                      changes if prev else None)
+                                      changes if prev else None,
+                                      pool=pack.get("challenger_pool"))
     flagged = creative_mod.check_figures(triage, sent)
     if flagged:
         log(f"{slug}: {flagged} figure(s) on the cards appear nowhere in the "
             f"facts; flagged on their cards")
+    causal = creative_mod.causal_language(triage)
+    summary = creative_mod.account_summary(pack, triage, account_note)
+    summary["note_unverified_figures"] = creative_mod.check_note(account_note,
+                                                                 sent)
+    summary["note_causal_flags"] = creative_mod.causal_phrases(account_note)
+    if causal or summary["note_causal_flags"]:
+        log(f"{slug}: {causal} causal phrase(s) on the cards"
+            + (" and in the account note" if summary["note_causal_flags"]
+               else "") + "; flagged on their cards")
+    if summary["note_unverified_figures"]:
+        log(f"{slug}: the account note states "
+            f"{summary['note_unverified_figures']}, which the facts do not "
+            f"contain; flagged")
     moved = [t for t in triage if t.get("rating_adjusted_from")]
     if moved:
         log(f"{slug}: {len(moved)} rating(s) moved by the rating rule")
@@ -258,6 +298,15 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     if unrated:
         log(f"{slug}: {unrated} campaign(s) came back unrated; published "
             f"with them marked")
+
+    # The ledger: register this review's act/test issues, match the
+    # account's own changes, read what was implemented. Each step degrades
+    # on its own: a ledger that cannot be measured is still a ledger.
+    ledger, outcomes_ok = await update_outcomes(slug, ledger, triage,
+                                                changes if prev else {}, pack)
+    creative_mod.attach_outcomes(triage, ledger)
+    triage = creative_mod.sort_triage(triage)
+    log(f"{slug}: {bucket_summary(triage)}")
 
     doc = {
         "verb": "suggest",
@@ -275,6 +324,18 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         # prose this used to publish -- is no longer written; the page still
         # reads it off older files.
         "triage": triage,
+        # "What matters today": 018's goal and campaign rows plus counts,
+        # and the reply's one account_note (checked like a card).
+        "account_summary": summary,
+        "impact_available": bool(pack.get("impact_available")),
+        # The outcomes ledger's scorecard (outcomes/<brand>.json). None when
+        # the ledger step failed outright; the cards then carry no tags.
+        "outcomes": ({"available": True,
+                      "measurement_available":
+                          bool(pack.get("impact_available")),
+                      "scorecard": outcomes_mod.scorecard(ledger,
+                                                          date.today())}
+                     if outcomes_ok else None),
         "previous_file": prev.get("file") if prev else None,
         "data_changed": data_changed,
         # The account as it stood, so the next run can tell which ads'
@@ -292,6 +353,13 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(doc, indent=2, ensure_ascii=False, default=str),
                    encoding="utf-8")
+    # After the review is on disk: a ledger that moved ahead of a review
+    # that failed to write would describe recommendations nobody saw.
+    if outcomes_ok:
+        try:
+            outcomes_mod.save(slug, ledger)
+        except OSError as exc:
+            log(f"{slug}: the outcomes ledger could not be saved: {exc}")
     counts = {r: len([t for t in triage if t["rating"] == r])
               for r in creative_mod.RATINGS}
     log(f"{slug}: published {out.name} ({counts['red']} red, "
@@ -306,6 +374,84 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         log(f"{slug}: since {prev['file']}: {n['resolved']} resolved, "
             f"{still} still open, {n['dropped']} no longer mentioned")
     return 0
+
+
+def model_facts(pack: dict) -> dict:
+    """The pack sections the model reads (SENT_TO_THE_MODEL), with the
+    creative dimensions in ONE form: `dimensions_by_goal` (018, trimmed by
+    creative.dimensions_by_goal_view) when the pack has it, else the older
+    cross-goal `dimensions`. Sending both would hand the model the
+    cross-goal table the per-goal one exists to replace."""
+    facts = {k: pack.get(k) for k in SENT_TO_THE_MODEL}
+    by_goal = creative_mod.dimensions_by_goal_view(
+        pack.get("dimensions_by_goal"))
+    if by_goal:
+        facts["dimensions_by_goal"] = by_goal
+        facts.pop("dimensions", None)
+    else:
+        facts.pop("dimensions_by_goal", None)
+    return facts
+
+
+def load_ledger(slug: str) -> dict:
+    """outcomes/<brand>.json, or an empty ledger when it is missing or
+    unreadable (logged: a ledger silently restarted would read as nothing
+    ever having been recommended)."""
+    try:
+        return outcomes_mod.load(slug)
+    except (OSError, ValueError) as exc:
+        log(f"{slug}: the outcomes ledger could not be read ({exc}); "
+            f"starting from an empty one")
+        return outcomes_mod.empty(slug)
+
+
+async def update_outcomes(slug: str, ledger: dict, triage: list,
+                          changes: dict, pack: dict) -> tuple:
+    """(ledger, ok): register, match and measure. Overrides that will not
+    parse are logged and ignored; a measurement that fails keeps the ledger
+    as matched. `ok` is False only when registration itself failed."""
+    try:
+        overrides = outcomes_mod.load_overrides()
+    except ValueError as exc:
+        log(f"{slug}: {exc}; overrides ignored this run")
+        overrides = {}
+    try:
+        ledger = outcomes_mod.update_ledger(ledger, triage, changes,
+                                            date.today(), overrides)
+    except Exception as exc:  # noqa: BLE001 -- the review still publishes
+        log(f"{slug}: the outcomes ledger could not be updated: "
+            f"{type(exc).__name__}: {exc}")
+        return ledger, False
+    settled = ((pack.get("windows") or {}).get("settled_through")
+               or pack.get("settled_through"))
+    try:
+        ledger = await outcomes_mod.measure(ledger, slug, settled)
+    except Exception as exc:  # noqa: BLE001
+        log(f"{slug}: outcomes not measured this run: "
+            f"{type(exc).__name__}: {exc}")
+    statuses = [e.get("status")
+                for e in (ledger.get("entries") or {}).values()]
+    if statuses:
+        log(f"{slug}: outcomes ledger, {len(statuses)} entr(ies): "
+            + ", ".join(f"{statuses.count(s)} {s}"
+                        for s in outcomes_mod.STATUSES if statuses.count(s)))
+    else:
+        log(f"{slug}: outcomes ledger is empty (no act or test issue yet)")
+    return ledger, True
+
+
+def bucket_summary(triage: list) -> str:
+    """One log line: how many campaigns landed in each bucket, and the
+    impact order of the ones to act on or test."""
+    buckets = [t.get("bucket") for t in triage]
+    order = [t["campaign"] for t in triage
+             if t.get("bucket") in ("act", "test")
+             and (t.get("impact") or {}).get("impact_score") is not None]
+    return ("buckets: " + ", ".join(f"{buckets.count(b)} {b}"
+                                    for b in creative_mod.BUCKETS)
+            + (f"; impact order: {order[:5]}" if order else
+               "; no impact figures (018 not applied, or no single-goal "
+               "campaign to act on or test)"))
 
 
 def clamp_summary(triage: list) -> str:

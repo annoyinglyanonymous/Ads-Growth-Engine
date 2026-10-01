@@ -1,0 +1,202 @@
+{
+  "published_at": "2026-10-05T09:00:00",
+  "until": "2026-10-04",
+  "previous_file": "2026-10-04-sample.json",
+  "data_changed": true,
+  "shape": 2,
+  "impact_available": true,
+  "account_summary": {
+    "goals": [
+      {"goal": "OFFSITE_CONVERSIONS", "cpa_pct": 18.2, "evidence": "moderate",
+       "contributors": [
+         {"campaign": "Campaign Delta", "contribution_share_pct": 41.5, "cumulative_share_pct": 41.5},
+         {"campaign": "Campaign Hotel", "contribution_share_pct": 26.9, "cumulative_share_pct": 68.4}
+       ],
+       "lines": ["Offsite conversions: CPA up 18.20% on the prior 7 days; 2 campaigns account for 68.4% of that rise."]},
+      {"goal": "LINK_CLICKS", "cpa_pct": -6.1, "evidence": "directional",
+       "contributors": [],
+       "lines": ["Link clicks: CPA down 6.10% on the prior 7 days."]}
+    ],
+    "lines": ["1 shows creative-side deterioration (creative_engagement), 1 post-click.",
+              "2 have issues with low current impact."],
+    "note": "Most of the rise sits in two conversion campaigns; the rest is steady."
+  },
+  "outcomes": {
+    "available": true,
+    "scorecard": {
+      "days": 90, "made": 6, "implemented": 3,
+      "by_result": {"improved": 1, "neutral": 0, "worse": 0, "too_early": 2},
+      "by_kind": {
+        "creative_test": {"made": 3, "implemented": 2, "improved": 1, "neutral": 0, "worse": 0, "too_early": 1},
+        "delivery_cut": {"made": 2, "implemented": 1, "improved": 0, "neutral": 0, "worse": 0, "too_early": 1},
+        "post_click": {"made": 1, "implemented": 0, "improved": 0, "neutral": 0, "worse": 0, "too_early": 0}
+      },
+      "recent": [
+        {"id": "i0920-3-0", "campaign": "Campaign Echo", "kind": "creative_test", "type": "test",
+         "action": "Test the problem-first opener against the incumbent.",
+         "status": "measured", "implemented_on": "2026-09-22", "match": "strong",
+         "measurement": {"settled_days": 9, "result": "improved",
+                         "basis": "Challenger CPA 18.40% below the control on directional evidence.",
+                         "figures": {"effect_pct": {"cpa": -18.4}}}}
+      ]
+    }
+  },
+  "triage": [
+    {"shape": 2, "campaign": "Campaign Golf", "bucket": "no_change", "priority_rank": 3,
+     "rating": "green", "summary": "CPA −12% and steady. Nothing to change.",
+     "headline": "Steady and cheaper than its own prior week.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["LINK_CLICKS"],
+     "spend": 310.00, "conversions": 40, "cpa": 7.75,
+     "impact": null,
+     "movement": {"7v7": {"cpa": -12.04, "link_ctr": 3.3, "cost_per_link_click": -8.75, "conversion_rate": 1.1}},
+     "causal_flags": [], "unverified_figures": [],
+     "issues": [], "not_yet": [], "resolved": [], "dropped": []},
+
+    {"shape": 2, "campaign": "Campaign Foxtrot", "bucket": "monitor", "priority_rank": 3,
+     "rating": "yellow", "summary": "",
+     "headline": "Too few conversions to read a trend.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["OFFSITE_CONVERSIONS"],
+     "spend": 140.00, "conversions": 2, "cpa": 70.00,
+     "impact": {"goal": "OFFSITE_CONVERSIONS", "excess_cost": 12.0, "impact_score": 0.0,
+                "contribution_share_pct": 3.1, "evidence": "insufficient"},
+     "movement": {"7v7": {"cpa": 9.5, "link_ctr": null}},
+     "causal_flags": [], "unverified_figures": [],
+     "issues": [
+       {"id": "i1005-2-0", "status": "new", "open_since": "2026-10-05", "priority": "monitor", "basis": "d1",
+        "observation": "Two conversions in the last week.",
+        "evidence": "",
+        "diagnosis": "Low volume.",
+        "recommendation": {"type": "monitor", "action": "Wait for more conversions before judging the creative.",
+                           "expected_outcome": "A readable trend next week."},
+        "test_plan": null,
+        "confidence": {"level": "low", "reason": "Insufficient evidence."},
+        "incomplete": ["evidence", "test_plan"],
+        "type_adjusted_from": "test"}
+     ],
+     "not_yet": ["Do not judge the creative on two conversions."], "resolved": [], "dropped": []},
+
+    {"shape": 2, "campaign": "Campaign Delta", "bucket": "act", "priority_rank": 1,
+     "rating": "red", "rating_adjusted_from": "yellow", "rating_reasons": ["CPA rose with moderate evidence"],
+     "summary": "CPA +22%. Lower conversion rate after the click appears to be the largest contributor. Cut the non-converting ad. Medium confidence.",
+     "headline": "CPA rose; post-click conversion fell.",
+     "why": "CPA rose; post-click conversion fell.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["OFFSITE_CONVERSIONS"],
+     "spend": 1840.00, "conversions": 19, "cpa": 96.84,
+     "impact": {"goal": "OFFSITE_CONVERSIONS", "excess_cost": 310.5, "impact_score": 248.4,
+                "contribution_share_pct": 41.5, "evidence": "moderate"},
+     "movement": {
+       "7v7":   {"cpa": 22.41, "link_ctr": -18.3, "cost_per_link_click": 9.1, "conversion_rate": -4.2},
+       "14v14": {"cpa": 15.02, "link_ctr": -10.5, "cost_per_link_click": 4.0, "conversion_rate": 1.2}
+     },
+     "causal_flags": ["due to"],
+     "unverified_figures": ["$999.00"],
+     "ladder": [
+       {"key": "unsettled", "label": "Last 3 days", "since": "2026-10-02", "until": "2026-10-04", "provisional": true,
+        "spend": 260.00, "conversions": 2, "cpa": 130.00, "cpm": 22.10, "link_ctr": 0.80, "cvr": 4.00},
+       {"key": "last_7", "label": "Last 7 days", "since": "2026-09-25", "until": "2026-10-01", "provisional": false,
+        "spend": 640.00, "conversions": 6, "cpa": 106.67, "cpm": 21.00, "link_ctr": 0.85, "cvr": 4.60},
+       {"key": "prior_7", "label": "Prior 7 days", "since": "2026-09-18", "until": "2026-09-24", "provisional": false,
+        "spend": 610.00, "conversions": 7, "cpa": 87.14, "cpm": 20.50, "link_ctr": 1.04, "cvr": 4.80}
+     ],
+     "funnel": {
+       "cur": {"since": "2026-09-25", "until": "2026-10-01"},
+       "prior": {"since": "2026-09-18", "until": "2026-09-24"},
+       "metrics": [
+         {"metric": "cpm", "cur": 21.00, "prior": 20.50, "pct_change": 2.44},
+         {"metric": "link_ctr", "cur": 0.85, "prior": 1.04, "pct_change": -18.27},
+         {"metric": "cpa", "cur": 106.67, "prior": 87.14, "pct_change": 22.41}
+       ],
+       "shares": {"auction_cost": 9.0, "click_through": 12.0, "post_click": 79.0},
+       "primary_driver": "post_click", "evidence": "moderate",
+       "spend_to_baseline_cpa": 7.3, "fatigue_consistent": false
+     },
+     "where": {
+       "ad_groups": [
+         {"name": "Group D1", "goal": "OFFSITE_CONVERSIONS", "spend": 1200.00, "share_pct": 65.2, "cpa": 92.31, "rank": 1, "of": 2, "same_as_campaign": true}
+       ],
+       "ads": [
+         {"name": "Ad D1", "role": "control", "spend": 900.00, "share_pct": 48.9, "cpa": 81.82, "conversions": 11, "link_ctr": 0.92},
+         {"name": "Ad D2", "role": "spending, no conversions", "spend": 300.00, "share_pct": 16.3, "cpa": null, "conversions": 0, "link_ctr": 0.60}
+       ]
+     },
+     "issues": [
+       {"id": "i1003-0-0", "status": "still_open", "open_since": "2026-10-03", "priority": "primary", "basis": "d2",
+        "observation": "One ad takes a sixth of the spend with no conversions.",
+        "evidence": "Ad D2: $300.00 spent, 0 conversions.",
+        "diagnosis": "The ad attracts clicks that do not convert.",
+        "recommendation": {"type": "act", "action": "Pause Ad D2 and let the budget move to Ad D1.",
+                           "expected_outcome": "Spend moves to the ad that converts."},
+        "test_plan": null,
+        "confidence": {"level": "medium", "reason": "Spend is several times the baseline CPA."},
+        "outcome": {"status": "measuring", "implemented_on": "2026-10-03", "match": "likely",
+                    "settled_days": 4, "result": null}},
+       {"id": "i1005-0-1", "status": "new", "open_since": "2026-10-05", "priority": "secondary", "basis": "d1",
+        "observation": "Link click-through on the control fell week on week.",
+        "evidence": "Link CTR 1.04% to 0.85%.",
+        "diagnosis": "The opener may be wearing out with this audience.",
+        "recommendation": {"type": "test", "action": "Test Ad D3 from the pool against the control.",
+                           "expected_outcome": "If the opener is the limit, the challenger's link CTR is higher at a similar CPM."},
+        "test_plan": {"variable": "creative", "control": "Ad D1", "challenger": "Its question-first opener",
+                      "challenger_kind": "existing_asset", "challenger_ad": "Ad D3", "brief": null,
+                      "hold_constant": ["audience", "budget", "landing page"],
+                      "evaluate_on": ["CPA", "link CTR"],
+                      "decide_when": "Each arm has 10 conversions or $435.70 spend."},
+        "confidence": {"level": "medium", "reason": "Held over 7 and 14 days."}}
+     ],
+     "not_yet": ["Do not raise the budget until the paused ad's spend has moved."],
+     "resolved": [], "dropped": []},
+
+    {"shape": 2, "campaign": "Campaign Echo", "bucket": "test", "priority_rank": 2,
+     "rating": "yellow",
+     "summary": "CPA +8%. Lower click-through appears to be the largest contributor. Test new creative.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["OFFSITE_CONVERSIONS"],
+     "spend": 720.00, "conversions": 12, "cpa": 60.00,
+     "impact": {"goal": "OFFSITE_CONVERSIONS", "excess_cost": 55.0, "impact_score": 27.5,
+                "contribution_share_pct": 11.0, "evidence": "directional"},
+     "movement": {"7v7": {"cpa": 8.1, "link_ctr": -11.0, "cost_per_link_click": 6.0, "conversion_rate": 0.4},
+                  "14v14": {"cpa": 2.0}},
+     "causal_flags": [], "unverified_figures": [],
+     "issues": [
+       {"id": "i0920-3-0", "status": "still_open", "open_since": "2026-09-20", "priority": "primary", "basis": "d1",
+        "observation": "Click-through fell while CPM held.",
+        "evidence": "Link CTR down 11.00% on the prior 7 days.",
+        "diagnosis": "The incumbent opener may be losing attention.",
+        "recommendation": {"type": "test", "action": "Brief a short video that leads with the problem hook.",
+                           "expected_outcome": "A higher link CTR at a similar CPM."},
+        "test_plan": {"variable": "creative", "control": "Ad E1", "challenger": "A problem-first video",
+                      "challenger_kind": "new_creative", "challenger_ad": null,
+                      "challenger_kind_adjusted_from": "existing_asset",
+                      "brief": {"format": "15-second video", "angle_or_hook": "problem",
+                                "opening_line": "Still paying for cover you never use?",
+                                "built_from": "the problem hook, similar to this goal's CPA"},
+                      "hold_constant": ["audience", "budget"], "evaluate_on": ["CPA", "link CTR"],
+                      "decide_when": "Each arm has 10 conversions or $300.00 spend."},
+        "confidence": {"level": "high", "reason": "Held over 7 and 14 days on directional evidence."},
+        "outcome": {"status": "measured", "implemented_on": "2026-09-22", "match": "strong",
+                    "settled_days": 9, "result": "improved"}}
+     ],
+     "not_yet": [], "resolved": [], "dropped": []},
+
+    {"shape": 2, "campaign": "Campaign Hotel", "bucket": "act", "priority_rank": 2,
+     "rating": "yellow",
+     "summary": "CPA +30%. Auction cost appears to be the largest contributor. Narrow the spend.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["OFFSITE_CONVERSIONS"],
+     "spend": 500.00, "conversions": 5, "cpa": 100.00,
+     "impact": {"goal": "OFFSITE_CONVERSIONS", "excess_cost": 120.0, "impact_score": 96.0,
+                "contribution_share_pct": 26.9, "evidence": "moderate"},
+     "movement": {"7v7": {"cpa": 30.0}},
+     "causal_flags": [], "unverified_figures": [],
+     "issues": [
+       {"id": "i1005-4-0", "status": "new", "open_since": "2026-10-05", "priority": "primary", "basis": "d1",
+        "observation": "Spend rose on the dearest ad group.",
+        "evidence": "Group H2 took more spend at a higher CPA.",
+        "diagnosis": "Delivery shifted to the weaker group.",
+        "recommendation": {"type": "act", "action": "Lower the budget on Group H2.",
+                           "expected_outcome": "Spend moves to the cheaper group."},
+        "test_plan": null,
+        "confidence": {"level": "medium", "reason": "Moderate evidence."},
+        "outcome": {"status": "open", "implemented_on": null, "match": null, "settled_days": null, "result": null}}
+     ],
+     "not_yet": [], "resolved": [], "dropped": []}
+  ]
+}

@@ -257,6 +257,23 @@ def _pct_view(row) -> dict | None:
     return out or None
 
 
+#: The four moves the collapsed card shows (contracts2 D4 `movement`).
+MOVEMENT_KEYS = ("cpa", "link_ctr", "cost_per_link_click", "conversion_rate")
+
+
+def _movement(row7, row14) -> dict:
+    """{"7v7": {...}, "14v14": {...}}: 017's pct for MOVEMENT_KEYS, each
+    window present only when it has at least one of them. Selected, never
+    computed -- a missing key is a pct 017 left null."""
+    out = {}
+    for label, row in (("7v7", row7), ("14v14", row14)):
+        pct = (row or {}).get("pct") or {}
+        moves = {k: pct[k] for k in MOVEMENT_KEYS if pct.get(k) is not None}
+        if moves:
+            out[label] = moves
+    return out
+
+
 def _shares(row) -> dict | None:
     if not row:
         return None
@@ -358,6 +375,9 @@ def _ad_view(e: dict, roles: list, with_copy: bool, many_groups: bool) -> dict:
         "link_ctr": _rate(m, "link_ctr"),
         "fatigue_pattern": r7.get("fatigue_pattern"),
         "hook": None, "offer": None, "format": None,
+        # Kept on the pack (and the published card) so the outcomes ledger
+        # can measure the control by key; never sent (AD_NOT_SENT).
+        "ad_key": e["key"],
         "_key": e["key"], "_with_copy": with_copy})
     return view
 
@@ -505,6 +525,7 @@ async def _campaigns(ladder: dict, brand_id) -> tuple:
         one_goal = len(goals) == 1
         info = meta.get(key) or {}
         base = {"campaign": _first(rows, "entity_name"),
+                "campaign_key": key,
                 "status": info.get("effective_status")
                 or _first(rows, "entity_status"),
                 "objective": info.get("objective"),
@@ -553,7 +574,7 @@ async def _campaigns(ladder: dict, brand_id) -> tuple:
                 "test_floor": _test_floor(g["rows"], windows)})
             ad_groups.append(item)
             where_groups.append({
-                "name": g["name"], "goal": g["goal"],
+                "name": g["name"], "ad_group_key": g["key"], "goal": g["goal"],
                 "spend": gm.get("spend"), "share_pct":
                     g7.get("parent_spend_share_pct"),
                 "cpa": _rate(gm),
@@ -572,6 +593,17 @@ async def _campaigns(ladder: dict, brand_id) -> tuple:
             "evidence_14": (row14 or {}).get("evidence_level"),
             "spend_to_baseline_cpa": (row7 or {}).get("spend_to_baseline_cpa"),
             "funnel": _funnel(row7, w7),
+            # The page's movement strip: 017's pct, selected, never computed.
+            "movement": _movement(row7, row14),
+            # Names -> keys for every ad group and ad 017 returned for this
+            # campaign, so a published issue can be registered in the
+            # outcomes ledger by key. Page and ledger only (NOT_SENT).
+            "entity_keys": {
+                "ad_groups": {g["name"]: g["key"] for g in mine if g["name"]},
+                "ads": {a["name"]: {"key": a["key"],
+                                    "ad_group": _first(a["rows"],
+                                                       "ad_group_name")}
+                        for a in ads if a["name"]}},
             "ad_groups": ad_groups,
             "more_ad_groups": len(mine[CAMPAIGN_AD_GROUPS:]),
             "where": {"ad_groups": where_groups,
@@ -591,6 +623,100 @@ async def _campaigns(ladder: dict, brand_id) -> tuple:
         del entry["rows"], entry["groups_rows"]
         out.append(entry)
     return out, pool, windows
+
+
+# ------------------------------------------------------- impact (018) --
+# BUSINESS IMPACT is dollars, and dollars may be ordered across goals (016's
+# argument): a dollar spent beyond last week's rate is a dollar whatever event
+# bought it. A CPA or a contribution share is never compared across goals.
+# Every figure is a column ads.goal_impact returned.
+
+#: The pair impact is read on, and the fields a campaign carries.
+IMPACT_PAIR = P7
+IMPACT_FIELDS = ("excess_cost", "impact_score", "contribution_share_pct")
+
+#: The facet dimensions read per goal for the page and the model. `format`
+#: stays in `dimensions`; angle and family are empty on this brand.
+GOAL_DIMENSIONS = ("hook", "offer", "audience")
+
+
+async def _impact(brand: str, campaigns: list) -> tuple:
+    """(available, why, rows): attaches `impact` to every campaign in place.
+
+    Matched by campaign_key, then by name. A campaign spanning two goals has
+    no campaign row in 018 (its CPA blends two events), so it carries
+    impact None -- as does every campaign before 018 is applied.
+    """
+    try:
+        res = await metrics.goal_impact(brand, IMPACT_PAIR)
+    except ValueError as exc:
+        res = {"available": False, "why": str(exc)}
+    rows = (res.get("rows") or []) if res.get("available") else []
+    camp_rows = [r for r in rows if r.get("level") == "campaign"]
+    by_key = {str(r.get("campaign_key")): r for r in camp_rows
+              if r.get("campaign_key") is not None}
+    by_name = {r.get("campaign_name"): r for r in camp_rows}
+    for c in campaigns:
+        r = by_key.get(str(c.get("campaign_key"))) or by_name.get(
+            c.get("campaign"))
+        c["impact"] = ({"goal": r.get("optimization_goal"),
+                        **{k: r.get(k) for k in IMPACT_FIELDS},
+                        "evidence": r.get("evidence_level")} if r else None)
+    return bool(res.get("available")), res.get("why"), rows
+
+
+async def _dimensions_by_goal(brand: str, windows: dict | None) -> dict | None:
+    """{goal: {"hook": [rows], "offer": [...], "audience": [...]}} from
+    ads.facet_by_goal over the last 28 settled days (the last_28 rung's
+    dates), or None before 018 is applied or without 017's windows.
+
+    Rows keep facet_by_goal's order, capped at DIMENSION_ROWS per goal and
+    dimension. `relative` is within the goal only, which is the point.
+    """
+    w = (windows or {}).get(P28) or {}
+    since, until = w.get("cur_since"), w.get("cur_until")
+    if not (since and until):
+        return None
+    out: dict = {}
+    for dim in GOAL_DIMENSIONS:
+        try:
+            res = await metrics.facet_by_goal(brand, since, until, dim)
+        except ValueError:
+            return None
+        if not res.get("available"):
+            return None
+        for r in res.get("rows") or []:
+            slot = out.setdefault(r.get("optimization_goal") or "(none)",
+                                  {d: [] for d in GOAL_DIMENSIONS})[dim]
+            if len(slot) < DIMENSION_ROWS:
+                slot.append(r)
+    return out
+
+
+#: The facet_by_goal columns the model reads.
+GOAL_DIMENSION_SENT = ("value", "spend", "conversions", "cpa", "relative",
+                       "relative_pct", "evidence_level", "spend_share_pct")
+
+
+def dimensions_by_goal_view(dbg: dict | None) -> dict | None:
+    """dimensions_by_goal as the model is sent it: per row the value, spend,
+    conversions, CPA (from `rates`), the relative label and pct, evidence and
+    spend share. Selected, never computed."""
+    if not dbg:
+        return None
+    out = {}
+    for goal, dims in dbg.items():
+        out[goal] = {}
+        for dim, rows in (dims or {}).items():
+            view = []
+            for r in rows or []:
+                v = {k: r.get(k) for k in GOAL_DIMENSION_SENT if k != "cpa"}
+                v["cpa"] = (r.get("rates") or {}).get("cpa")
+                view.append({k: v[k] for k in GOAL_DIMENSION_SENT
+                             if v.get(k) is not None or k == "value"})
+            if view:
+                out[goal][dim] = view
+    return out
 
 
 def _fill_copy(item: dict, copy_by_key: dict) -> None:
@@ -676,6 +802,15 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
                    **windows}
     else:
         campaigns, pool, windows = [], [], None
+    # Impact and the per-goal dimensions need 018 (and 017's windows). Both
+    # degrade to absent rather than failing the pack: no impact order, no
+    # scorecard measurement, the old `dimensions` table.
+    if ladder.get("available"):
+        impact_ok, impact_why, impact_rows = await _impact(brand, campaigns)
+        dims_by_goal = await _dimensions_by_goal(brand, windows)
+    else:
+        impact_ok, impact_why, impact_rows = False, ladder.get("why"), []
+        dims_by_goal = None
     for c in campaigns:
         for a in (c.get("where") or {}).get("ads") or []:
             chosen.append({"entity_key": a.get("_key")})
@@ -848,6 +983,15 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
         "goals": goals,
         "formats": formats,
         "dimensions": dimensions,
+        # Per optimization goal, from ads.facet_by_goal (018), over the last
+        # 28 settled days. None before 018: the page and the model fall back
+        # to `dimensions`.
+        "dimensions_by_goal": dims_by_goal,
+        # ads.goal_impact's rows for last 7 vs prior 7: goal rows and
+        # single-goal campaign rows. Page and account_summary only.
+        "impact_available": impact_ok,
+        "impact_why": None if impact_ok else impact_why,
+        "goal_impact": impact_rows,
         "untagged": untagged,
         "tiring": [{"ad": r.get("entity_name"),
                     "optimization_goal": r.get("optimization_goal"),
@@ -890,7 +1034,15 @@ TIERS = ("A", "B", "C")
 LADDER_COLUMNS = ("spend", "conversions", "cpa", "cpm", "link_ctr", "cvr")
 #: Never sent: the page draws them, and the model has the same figures as
 #: `ladder`, `pct_7` and `cpa_shares_7`.
-NOT_SENT = ("funnel", "objective", "spend", "conversions", "cpa", "link_ctr")
+#: `movement` is pct_7/pct_14 again for the page's strip; the keys are for
+#: the outcomes ledger.
+NOT_SENT = ("funnel", "objective", "spend", "conversions", "cpa", "link_ctr",
+            "movement", "campaign_key", "entity_keys")
+#: What a short-form campaign drops on the way to the model.
+SHORT_NOT_SENT = ("campaign_key", "entity_keys", "movement")
+#: The impact fields the model reads: dollars and the share of the goal's
+#: change. impact_score is the page's sort key, not a figure to quote.
+IMPACT_SENT = ("goal", "excess_cost", "contribution_share_pct", "evidence")
 TIER_B_DROPS = ("before", "prior_14")
 TIER_C_RUNGS = ("last_7", "prior_7", "last_28")
 #: Tier C keeps the 7-day driver and both evidence levels besides the plan's
@@ -899,11 +1051,12 @@ TIER_C_RUNGS = ("last_7", "prior_7", "last_28")
 TIER_C_KEYS = ("campaign", "status", "running", "optimization_goals",
                "ladder", "pct_7", "pct_14", "cpa_shares_7", "driver_7",
                "evidence_7", "evidence_14", "ad_groups", "where", "diagnosis",
-               "rating_rule")
+               "rating_rule", "impact")
 COPY_FIELDS = ("headline", "opening")
 #: Fields of an ad the page shows and the model does without: its place by
-#: spend is the list's order, and its format is in `dimensions`.
-AD_NOT_SENT = ("spend_rank_in_parent", "format")
+#: spend is the list's order, its format is in `dimensions`, and its key is
+#: for the outcomes ledger.
+AD_NOT_SENT = ("spend_rank_in_parent", "format", "ad_key")
 
 
 def _dense(d: dict) -> dict:
@@ -972,6 +1125,12 @@ def _group_sent(g: dict) -> dict:
     return _dense(v)
 
 
+def _impact_sent(impact) -> dict | None:
+    if not isinstance(impact, dict):
+        return None
+    return _dense({k: impact.get(k) for k in IMPACT_SENT}) or None
+
+
 def campaign_tier(c: dict, tier: str = "A") -> dict:
     """One pack campaign as the model is sent it, at tier A, B or C.
 
@@ -981,9 +1140,15 @@ def campaign_tier(c: dict, tier: str = "A") -> dict:
     if tier not in TIERS:
         raise ValueError(f"unknown tier {tier!r}; expected one of {TIERS}")
     if c.get("running") is False:
-        return dict(c)
+        out = {k: v for k, v in c.items() if k not in SHORT_NOT_SENT}
+        if "impact" in out:
+            out["impact"] = _impact_sent(out["impact"])
+            if out["impact"] is None:
+                out.pop("impact")
+        return out
     many = len(c.get("ad_groups") or []) > 1
     out = {k: v for k, v in c.items() if k not in NOT_SENT}
+    out["impact"] = _impact_sent(c.get("impact"))
     if out.get("status") == "ACTIVE":
         out.pop("status")
     if not out.get("more_ad_groups"):
@@ -1063,7 +1228,9 @@ reason, and what -- if anything -- the evidence justifies doing about it.
 Brand: {brand}
 Settled through {settled}; the {unsettled} day(s) after it can still move.
 `windows` gives the exact dates of every comparison; every one ends at the
-settled edge. `dimensions` covers {since} to {until} ({days} days).
+settled edge. `dimensions_by_goal` covers the last 28 settled days (the
+current side of `windows.last_28_vs_prior_28`); `dimensions`, sent only when
+`dimensions_by_goal` is not, covers {since} to {until} ({days} days).
 
 THE ACCOUNT:
 
@@ -1072,7 +1239,13 @@ THE ACCOUNT:
 `campaigns` is the unit you are rating. A running campaign carries a `ladder`
 of windows, its 7- and 14-day changes, its ad groups, the ads that matter in
 it (`where.ads`: the control, the incumbent and the top spender), how its
-spend is spread (`spend_spread`), a `diagnosis` and a `rating_rule`. Each
+spend is spread (`spend_spread`), its `impact`, a `diagnosis` and a
+`rating_rule`. `impact` (when present) is the last 7 settled days against the
+7 before, within the campaign's own optimization goal: `excess_cost` is the
+dollars spent beyond what this week's conversions cost at last week's rate
+(negative is a saving) and `contribution_share_pct` is its share of its
+goal's CPA change. Dollars may be compared across campaigns; a CPA may not.
+A campaign whose ad groups span two goals has no `impact`. Each
 `ladder` entry is [spend, conversions, cpa, cpm, link_ctr, cvr] for that
 window; `windows` has its dates. A campaign with "running": false spent
 nothing in the last 7 settled days and carries its 28-day figures: rate it,
@@ -1122,6 +1295,12 @@ ANSWER FOUR QUESTIONS, IN ORDER.
    Say "daily frequency", never "frequency": it is impressions per person per
    day, and cumulative frequency is not in these facts.
 
+   CAUSAL WORDING. A metric never "caused" anything. Write "lower link CTR
+   appears to be the largest contributor" and put the contribution evidence
+   underneath ("click_through: 64% of the 7-day CPA change"). Never write
+   "caused", "causes", "because of", "due to", "is driving" or "drove":
+   those words are flagged on the card.
+
 4. WHAT IS JUSTIFIED. Each finding's `allowed` lists the recommendation types
    its evidence supports, weakest first: monitor, test, act.
      act      the evidence supports a direct change; phrase it "the evidence
@@ -1140,8 +1319,26 @@ A TEST PLAN
   variable       ONE of the finding's `test_variables`.
   challenger     ONE thing: an existing ad or wording from `challenger_pool`
                  under the SAME optimization goal, quoted; or a new opening
-                 line on a hook from `dimensions` that the account funded and
-                 this campaign has not tried, written out in full.
+                 line on a hook from `dimensions_by_goal` that the account
+                 funded and this campaign has not tried, written out in full.
+  challenger_kind  for a creative test, say which of the two it is:
+                 "existing_asset"  an ad already in the account. Set
+                                   `challenger_ad` to its name EXACTLY as
+                                   `challenger_pool` (same optimization goal)
+                                   or this campaign's `where.ads` gives it.
+                                   Use it when the pool has a same-goal ad
+                                   that fits the variable. A name that is not
+                                   there is relabelled new_creative.
+                 "new_creative"    nothing in the account fits, so it has to
+                                   be made. `challenger_ad` is null and
+                                   `brief` is {{format, angle_or_hook,
+                                   opening_line, built_from}}: `built_from`
+                                   names the ad, hook or angle it extends and
+                                   the evidence for it, read from
+                                   `dimensions_by_goal` ("the problem hook is
+                                   better than this goal's CPA").
+                 For a test of anything but the creative, challenger_kind,
+                 challenger_ad and brief are null.
   hold_constant  audience, offer, landing page and optimization event --
                  whichever is not the variable.
   evaluate_on    cost per lead, link CTR and conversion rate. Qualified cost
@@ -1170,9 +1367,18 @@ is context only: the verdict is the campaign against its own earlier windows.
 lend. An engagement or video-view campaign is often built not to convert: say
 that cost could not be judged.
 
-Every row in `dimensions` carries `comparable_on_cost`. Where it is false,
-those rows ran under two or more optimization goals and you may NOT say one
-hook, offer, audience or format beats another on cost.
+`dimensions_by_goal` gives, per optimization goal, each hook, offer and
+audience label's spend, conversions and CPA against that goal's own CPA:
+`relative` is "baseline" (the goal's largest-spend label), "better",
+"similar" (within 10%) or "worse", with `relative_pct`, and `evidence_level`
+says how many conversions stand behind it ("directional" is few). RELATIVE
+IS WITHIN ITS GOAL ONLY: a "better" hook under LEAD_GENERATION says nothing
+about OFFSITE_CONVERSIONS. A null `value` is the untagged ads. Read a
+challenger's hook inside the challenger's own goal.
+
+When only `dimensions` is sent, every row carries `comparable_on_cost`. Where
+it is false, those rows ran under two or more optimization goals and you may
+NOT say one hook, offer, audience or format beats another on cost.
 
 Only the CURRENT wording of each ad is stored. An ad edited since it ran
 carries today's words against older spend, so do not claim a specific line
@@ -1206,19 +1412,43 @@ issue names the finding it rests on in `basis` (its `id`, e.g. "d1"). An issue
 with no finding behind it can only be a monitor at low confidence.
 Every issue carries its own recommendation -- an observation with no
 recommendation is a complaint, and a recommendation with no observation is a
-guess.
+guess. SIX FIELDS ARE MANDATORY on every issue: `observation`, `evidence`,
+`diagnosis`, `recommendation` (its `action` AND its `expected_outcome`),
+`confidence` (its `level` AND its `reason`), and a `test_plan` whenever the
+type is "test". An issue missing any of them is marked incomplete and shown
+as a monitor, whatever it asked for.
 
 `not_yet`: what NOT to do yet. `diagnosis.not_yet` is already on the card;
 add only what it does not say, one line each, and do not restate its lines.
 
-REPLY WITH JSON AND NOTHING ELSE. The first character is [ and the last is ].
-No markdown fence, no preamble, no commentary. One object per campaign, in
-the order `campaigns` lists them:
+WHAT WAS RECOMMENDED BEFORE, AND WHAT BECAME OF IT. `followups` maps a
+campaign to the act and test recommendations earlier reviews made that are
+still in play: each with its `status` (open: not seen in the account yet;
+implemented / measuring: the account shows it was done, on `implemented_on`,
+matched `match` -- strong, likely, or set by a person), and when measured its
+`result` and `settled_days`. A result is a reading of the figures, not a
+verdict. Do not propose a second test in an ad group whose test is
+implemented or measuring: report that test's status instead ("the challenger
+launched on 2026-10-03 is measuring, 4 settled days; nothing new to stack on
+it"). An open one you would still recommend is raised again with its id in
+`continues`.
 
-[
+THE SUMMARY. Each campaign's `summary` is ONE line of at most 25 words, the
+collapsed card's whole text, in this form: "CPA +22%. Lower CTR appears to be
+the largest contributor. Test new creative. Medium-high confidence." -- the
+move, where the change came from, what is justified, and how sure. Only
+figures from the facts. `account_note` is ONE sentence for the whole account:
+where the reader should start today.
+
+REPLY WITH JSON AND NOTHING ELSE. The first character is {{ and the last is }}.
+No markdown fence, no preamble, no commentary. `campaigns` holds one object
+per campaign, in the order `campaigns` lists them:
+
+{{"account_note": "<one sentence: where to start today>",
+ "campaigns": [
  {{"campaign": "<the campaign name exactly as given>",
   "rating": "red" | "yellow" | "green",
-  "headline": "<one plain sentence: what changed, and the figure that shows it>",
+  "summary": "<one line, at most 25 words, as above>",
   "issues": [
    {{"priority": "primary" | "secondary" | "monitor",
     "basis": "<the id of the diagnosis finding this rests on>",
@@ -1230,6 +1460,11 @@ the order `campaigns` lists them:
     "test_plan": {{"variable": "<one of the finding's test_variables>",
                   "control": "<the control ad, as named>",
                   "challenger": "<the one thing that differs, quoted or written in full>",
+                  "challenger_kind": "existing_asset" | "new_creative" | null,
+                  "challenger_ad": "<exact ad name, for existing_asset>" | null,
+                  "brief": {{"format": "...", "angle_or_hook": "...",
+                            "opening_line": "<written in full>",
+                            "built_from": "<the ad, hook or angle it extends, and the evidence>"}} | null,
                   "hold_constant": ["..."], "evaluate_on": ["..."],
                   "decide_when": "<the test floor, quoted>"}} | null,
     "confidence": {{"level": "low" | "medium" | "high", "reason": "<why>"}},
@@ -1241,7 +1476,7 @@ the order `campaigns` lists them:
     "change": "<the id of the entry in changes_since_last_review for THIS campaign that shows it gone>",
     "evidence": "<in plain words, how that change settles it>"}}
   ]}}
-]
+ ]}}
 
 `test_plan` is null unless the recommendation type is "test".
 
@@ -1345,14 +1580,15 @@ def age_hours(doc: dict | None) -> float | None:
 #: wrong instruction, and chat.CLASSIFY_SYSTEM is about labelling copy.
 TRIAGE_SYSTEM = """\
 You are reviewing advertising campaigns for the person who runs them. You
-return JSON and nothing else: the first character of your reply is [ and the
-last is ]. No preamble, no markdown fence, no trailing commentary. A reply that
-does not parse is discarded and the work is wasted.
+return JSON and nothing else: one object, the first character of your reply
+is { and the last is }. No preamble, no markdown fence, no trailing
+commentary. A reply that does not parse is discarded and the work is wasted.
 
 Every figure you write must appear in the facts you were given. Do not add,
 subtract, divide or average anything. Never compare cost per result across
 two optimization goals. Never choose a recommendation type, a test variable
-or a confidence above what the diagnosis you were given allows.
+or a confidence above what the diagnosis you were given allows. A metric
+never "caused" anything: say it "appears to be the largest contributor".
 """
 
 
@@ -1519,31 +1755,94 @@ CHANGES_PER_CAMPAIGN = 12
 _NOT_A_FINDING = ("steady", "insufficient_evidence")
 
 
+def _text(value):
+    """A snapshot value as the published file will hold it. suggest.py writes
+    with default=str, so a budget read back from the last file is a string;
+    storing it as one here keeps today's side comparable with it."""
+    return None if value is None else str(value)
+
+
 async def snapshot(brand: str, campaign_names: list) -> dict:
-    """campaign name -> {ad_key: {ad, copy_hash, status}}, as the account is now.
+    """The account's structure now, per campaign name (snapshot v2):
+
+        {"_campaign":  {"status", "daily_budget"},
+         "_ad_groups": {ad_group_key: {"name", "daily_budget",
+                                       "optimization_goal"}},
+         ad_key:       {"ad", "status", "copy_hash", "ad_group",
+                        "ad_group_key", "first_spend_day"}}
 
     Stored in the published file so the NEXT run can see which ads' wording or
-    status moved. copy_hash is ads.ad_copy's own md5 over every text field, so
-    a changed headline, body or button changes it; a hash of None is an ad the
-    import has never read copy for.
+    status moved, which ads are new and when they first spent, and which
+    budgets changed (changes_since). copy_hash is ads.ad_copy's own md5 over
+    every text field, so a changed headline, body or button changes it; a
+    hash of None is an ad the import has never read copy for.
+    `first_spend_day` is the earliest day ads.fact_ad_day has spend for the
+    ad -- min(day), selected, not computed -- and None for an ad that has
+    not spent. Keys starting "_" are never ad keys (an ad key is a uuid).
+    Snapshots written before v2 hold only {ad_key: {ad, status, copy_hash}}.
     """
     if not campaign_names:
         return {}
     b = await context.brand(brand)
+    names = list(campaign_names)
+    groups = await fetch_all(
+        """
+        select c.name as campaign, c.effective_status as campaign_status,
+               c.daily_budget as campaign_budget,
+               g.ad_group_key, g.name as ad_group, g.daily_budget,
+               g.optimization_goal
+          from ads.campaign c
+          left join ads.ad_group g on g.campaign_key = c.campaign_key
+         where c.brand_id = %s and c.name = any(%s::text[])
+        """, (b["id"], names))
     rows = await fetch_all(
         """
+        with camp as (
+            select campaign_key, name
+              from ads.campaign
+             where brand_id = %s and name = any(%s::text[])
+        ), spent as (
+            select f.ad_key, min(f.day) as first_spend_day
+              from ads.fact_ad_day f
+              join ads.ad a  on a.ad_key = f.ad_key
+              join camp c    on c.campaign_key = a.campaign_key
+             where f.brand_id = %s and f.spend > 0
+             group by f.ad_key
+        )
         select c.name as campaign, a.ad_key, a.name as ad,
-               a.effective_status as status, cp.copy_hash
+               a.effective_status as status, cp.copy_hash,
+               a.ad_group_key, g.name as ad_group, s.first_spend_day
           from ads.ad a
-          join ads.campaign c   on c.campaign_key = a.campaign_key
+          join camp c              on c.campaign_key = a.campaign_key
+          left join ads.ad_group g on g.ad_group_key = a.ad_group_key
           left join ads.ad_copy cp on cp.ad_key = a.ad_key
-         where c.brand_id = %s and c.name = any(%s::text[])
-        """, (b["id"], list(campaign_names)))
+          left join spent s        on s.ad_key = a.ad_key
+        """, (b["id"], names, b["id"]))
     out: dict = {}
+    for r in groups:
+        camp = out.setdefault(r["campaign"], {})
+        camp.setdefault("_campaign", {
+            "status": r["campaign_status"],
+            "daily_budget": _text(r["campaign_budget"])})
+        slot = camp.setdefault("_ad_groups", {})
+        if r["ad_group_key"] is not None:
+            slot[str(r["ad_group_key"])] = {
+                "name": r["ad_group"],
+                "daily_budget": _text(r["daily_budget"]),
+                "optimization_goal": r["optimization_goal"]}
     for r in rows:
         out.setdefault(r["campaign"], {})[str(r["ad_key"])] = {
-            "ad": r["ad"], "status": r["status"], "copy_hash": r["copy_hash"]}
+            "ad": r["ad"], "status": r["status"], "copy_hash": r["copy_hash"],
+            "ad_group": r["ad_group"],
+            "ad_group_key": _text(r["ad_group_key"]),
+            "first_spend_day": _text(r["first_spend_day"])}
     return out
+
+
+def _ads_of(snap_campaign: dict) -> dict:
+    """The ad entries of one campaign's snapshot, without the "_" keys."""
+    return {k: v for k, v in (snap_campaign or {}).items()
+            if not str(k).startswith("_") and isinstance(v, dict)}
 
 
 def _rank(g: dict) -> str | None:
@@ -1559,8 +1858,23 @@ def _found(c: dict) -> set:
             if isinstance(f, dict) and f.get("pattern") not in _NOT_A_FINDING}
 
 
+#: The structured kinds a "you" change carries (contracts D2). intel/outcomes.py
+#: matches recommendations against these, never against the `what` text.
+YOU_KINDS = ("ad_added", "wording_changed", "status_changed", "ad_gone",
+             "budget_changed", "campaign_status")
+
+
+def _ad_fields(key, a: dict) -> dict:
+    """The ad-level fields of a structured "you" change. An old snapshot
+    without ad_group / first_spend_day gives None for them."""
+    return {"ad": a.get("ad"), "ad_key": key,
+            "ad_group": a.get("ad_group"),
+            "ad_group_key": a.get("ad_group_key"),
+            "first_spend_day": a.get("first_spend_day")}
+
+
 def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
-    """campaign name -> [{id, by, what}]: what moved since the last review.
+    """campaign name -> [{id, by, what, ...}]: what moved since the last review.
 
     `prev` is the last published file: its `pack.campaigns` (the facts it was
     written from) and, when it has one, its `snapshot`. A file from before
@@ -1568,6 +1882,13 @@ def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
     change says so. A field only one side carries (an old file's tiring ads, a
     new one's diagnosis) is not compared: its absence is a change of shape,
     not of the account.
+
+    Every "you" item also carries `kind` (YOU_KINDS) and, where they apply,
+    "ad", "ad_key", "ad_group", "ad_group_key", "status_from", "status_to",
+    "first_spend_day" -- and for a budget, "level" (campaign | ad_group),
+    "budget_from", "budget_to". Budgets are compared only when both
+    snapshots are v2 (they carry "_campaign" / "_ad_groups"); a v1 snapshot
+    on either side is read for ads only.
     """
     if not prev:
         return {}
@@ -1580,8 +1901,9 @@ def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
         was = before.get(name)
         items: list = []
 
-        def add(by: str, what: str) -> None:
-            items.append({"id": f"c{len(items) + 1}", "by": by, "what": what})
+        def add(by: str, what: str, **fields) -> None:
+            items.append({"id": f"c{len(items) + 1}", "by": by, "what": what,
+                          **fields})
 
         if was is None:
             out[name] = [{"id": "c1", "by": "numbers",
@@ -1589,23 +1911,54 @@ def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
             continue
 
         if (was.get("status") or None) != (c.get("status") or None):
-            add("you", f"campaign status {was.get('status')} -> {c.get('status')}")
+            add("you", f"campaign status {was.get('status')} -> {c.get('status')}",
+                kind="campaign_status", status_from=was.get("status"),
+                status_to=c.get("status"))
 
         if prev_snap is not None:
-            old, new = prev_snap.get(name) or {}, snap.get(name) or {}
+            s_old, s_new = prev_snap.get(name) or {}, snap.get(name) or {}
+            old, new = _ads_of(s_old), _ads_of(s_new)
             for k, a in new.items():
                 o = old.get(k)
                 if o is None:
-                    add("you", f'ad added: "{a["ad"]}"')
+                    add("you", f'ad added: "{a["ad"]}"', kind="ad_added",
+                        **_ad_fields(k, a), status_from=None,
+                        status_to=a.get("status"))
                     continue
                 if o.get("copy_hash") and a.get("copy_hash") \
                         and o["copy_hash"] != a["copy_hash"]:
-                    add("you", f'wording changed on "{a["ad"]}"')
+                    add("you", f'wording changed on "{a["ad"]}"',
+                        kind="wording_changed", **_ad_fields(k, a))
                 if (o.get("status") == "ACTIVE") != (a.get("status") == "ACTIVE"):
-                    add("you", f'"{a["ad"]}" {o.get("status")} -> {a.get("status")}')
+                    add("you", f'"{a["ad"]}" {o.get("status")} -> {a.get("status")}',
+                        kind="status_changed", **_ad_fields(k, a),
+                        status_from=o.get("status"), status_to=a.get("status"))
             for k, o in old.items():
                 if k not in new:
-                    add("you", f'ad gone from the campaign: "{o["ad"]}"')
+                    add("you", f'ad gone from the campaign: "{o["ad"]}"',
+                        kind="ad_gone", **_ad_fields(k, o),
+                        status_from=o.get("status"), status_to=None)
+            # Budgets: only when both sides are v2 snapshots.
+            if "_campaign" in s_old and "_campaign" in s_new:
+                b_old = (s_old.get("_campaign") or {}).get("daily_budget")
+                b_new = (s_new.get("_campaign") or {}).get("daily_budget")
+                if b_old != b_new:
+                    add("you", f"daily budget {b_old} -> {b_new} on the campaign",
+                        kind="budget_changed", level="campaign", ad=None,
+                        ad_key=None, ad_group=None, ad_group_key=None,
+                        budget_from=b_old, budget_to=b_new)
+            if "_ad_groups" in s_old and "_ad_groups" in s_new:
+                g_was = s_old.get("_ad_groups") or {}
+                for gk, g in (s_new.get("_ad_groups") or {}).items():
+                    o = g_was.get(gk)
+                    if o is None or o.get("daily_budget") == g.get("daily_budget"):
+                        continue
+                    add("you", f'daily budget {o.get("daily_budget")} -> '
+                               f'{g.get("daily_budget")} on ad group "{g.get("name")}"',
+                        kind="budget_changed", level="ad_group", ad=None,
+                        ad_key=None, ad_group=g.get("name"), ad_group_key=gk,
+                        budget_from=o.get("daily_budget"),
+                        budget_to=g.get("daily_budget"))
         elif "leading_ads" in was and "leading_ads" in c:
             # No snapshot in the last file: the leading ads' copy is all there
             # is to compare, and only for ads that lead in both.
@@ -1617,7 +1970,10 @@ def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
                 for f in ("headline", "body", "cta_button"):
                     if (o.get(f) or "") != (a.get(f) or ""):
                         add("you", f'{f} changed on "{a.get("ad")}" (compared '
-                                   f'on the leading ads only)')
+                                   f'on the leading ads only)',
+                            kind="wording_changed", ad=a.get("ad"),
+                            ad_key=None, ad_group=None, ad_group_key=None,
+                            first_spend_day=None)
 
         if "diagnosis" in was and "diagnosis" in c:
             f_old, f_new = _found(was), _found(c)
@@ -1717,8 +2073,71 @@ def _variable_ok(variable, test_variables) -> bool:
     return bool(v) and any(tv in v for tv in test_variables or [])
 
 
-def _issue_from(x: dict, findings: dict, max_priority: str) -> dict | None:
-    """One reply issue, clamped against the finding its `basis` names."""
+#: The two kinds of creative challenger (plan section 5).
+CHALLENGER_KINDS = ("existing_asset", "new_creative")
+BRIEF_FIELDS = ("format", "angle_or_hook", "opening_line", "built_from")
+
+
+def _brief(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    out = {k: _clean(value.get(k)) or None for k in BRIEF_FIELDS}
+    return out if any(out.values()) else None
+
+
+def _challenger(tp: dict, variable: str, assets) -> dict:
+    """challenger_kind, challenger_ad and brief for a test plan, checked.
+
+    Only a creative test has a challenger kind. "existing_asset" stands only
+    when `challenger_ad` is exactly the name of an ad the model was shown as
+    available (the same-goal challenger_pool, or this campaign's where.ads);
+    otherwise the plan is relabelled "new_creative" and says it was. A plan
+    that names no kind gets one from the same test.
+    """
+    if "creative" not in _norm(variable):
+        return {"challenger_kind": None, "challenger_ad": None, "brief": None}
+    asked = _clean(tp.get("challenger_kind")).lower() or None
+    ad = _clean(tp.get("challenger_ad")) or None
+    brief = _brief(tp.get("brief"))
+    # The control is never its own challenger: a test of an ad against
+    # itself measures nothing.
+    found = bool(ad) and ad in assets and ad != _clean(tp.get("control"))
+    if asked == "new_creative":
+        out = {"challenger_kind": "new_creative", "challenger_ad": None,
+               "brief": brief}
+    elif found:
+        out = {"challenger_kind": "existing_asset", "challenger_ad": ad,
+               "brief": None}
+    else:
+        out = {"challenger_kind": "new_creative", "challenger_ad": None,
+               "brief": brief}
+    if asked and asked != out["challenger_kind"]:
+        out["challenger_kind_adjusted_from"] = asked
+    return out
+
+
+def _missing(x: dict, rec: dict, conf: dict, needs_plan: bool) -> list:
+    """The mandatory fields an issue left empty (plan section 4)."""
+    missing = [k for k in ("observation", "evidence", "diagnosis")
+               if not _clean(x.get(k))]
+    if not _clean(rec.get("action")):
+        missing.append("action")
+    if not _clean(rec.get("expected_outcome")):
+        missing.append("expected_outcome")
+    if not _clean(conf.get("level")):
+        missing.append("confidence_level")
+    if not _clean(conf.get("reason")):
+        missing.append("confidence_reason")
+    if needs_plan and not isinstance(x.get("test_plan"), dict):
+        missing.append("test_plan")
+    return missing
+
+
+def _issue_from(x: dict, findings: dict, max_priority: str,
+                assets=frozenset()) -> dict | None:
+    """One reply issue, clamped against the finding its `basis` names.
+
+    `assets`: the ad names a creative test may call an existing asset."""
     rec = x.get("recommendation") if isinstance(x.get("recommendation"),
                                                 dict) else {}
     observation, action = _clean(x.get("observation")), _clean(rec.get("action"))
@@ -1746,6 +2165,8 @@ def _issue_from(x: dict, findings: dict, max_priority: str) -> dict | None:
         out["type_adjusted_from"] = asked
 
     tp = x.get("test_plan") if isinstance(x.get("test_plan"), dict) else None
+    conf = x.get("confidence") if isinstance(x.get("confidence"), dict) else {}
+    missing = _missing(x, rec, conf, kind == "test")
     plan = None
     if kind == "test":
         variable = _clean((tp or {}).get("variable"))
@@ -1774,6 +2195,7 @@ def _issue_from(x: dict, findings: dict, max_priority: str) -> dict | None:
                         if _norm(h) not in _norm(variable)],
                     "evaluate_on": ev or list(EVALUATE_ON),
                     "decide_when": _clean(tp.get("decide_when")) or None}
+            plan.update(_challenger(tp, variable, assets))
         if why:
             out["test_plan_dropped"] = why
             out.setdefault("type_adjusted_from", asked or "test")
@@ -1782,12 +2204,23 @@ def _issue_from(x: dict, findings: dict, max_priority: str) -> dict | None:
         out["test_plan_dropped"] = (f"the evidence supports {kind}, "
                                     f"not a test")
 
+    if missing:
+        # Incomplete: shown as a monitor, whatever it asked for, and the
+        # card names what was missing.
+        out["incomplete"] = missing
+        if kind != "monitor":
+            out.setdefault("type_adjusted_from", asked or kind)
+            if plan is not None:
+                out["test_plan_dropped"] = ("the issue is incomplete ("
+                                            + ", ".join(missing) + ")")
+            plan = None
+            kind = "monitor"
+
     out["recommendation"] = {"type": kind, "action": action or None,
                              "expected_outcome":
                                  _clean(rec.get("expected_outcome")) or None}
     out["test_plan"] = plan
 
-    conf = x.get("confidence") if isinstance(x.get("confidence"), dict) else {}
     asked_c = _clean(conf.get("level")).lower() or None
     level = diagnose.clamp_confidence(asked_c, cap_conf)
     if asked_c and asked_c != level:
@@ -1825,16 +2258,78 @@ def _capped(issues: list) -> tuple:
     return kept, len(issues[len(kept):])
 
 
+def _assets(c: dict, pool: list | None) -> frozenset:
+    """The ad names a creative test may call an existing asset: the
+    challenger pool under this campaign's own goal(s), and the ads its card
+    shows. Names cleaned the way a reply's are, and nothing else."""
+    goals = set(c.get("optimization_goals") or [])
+    names = {_clean(a.get("name") or a.get("ad"))
+             for a in (c.get("where") or {}).get("ads") or []
+             if isinstance(a, dict)}
+    for g in pool or []:
+        if not isinstance(g, dict):
+            continue
+        if goals and g.get("optimization_goal") not in goals:
+            continue
+        names |= {_clean(a.get("ad")) for a in g.get("ads") or []
+                  if isinstance(a, dict)}
+    return frozenset(n for n in names if n)
+
+
+def _attach_keys(i: dict, f: dict | None, c: dict) -> None:
+    """The entity key, level and ad group an issue is about, and for a test
+    its control's key and decision spend -- from the pack, so the outcomes
+    ledger can register and measure it by key. Lookups by name; nothing
+    computed. A name the pack does not know leaves None (outcomes then looks
+    the key up by name in SQL)."""
+    keys = c.get("entity_keys") or {}
+    ads, groups = keys.get("ads") or {}, keys.get("ad_groups") or {}
+    level = (f or {}).get("level")
+    entity = i.get("entity")
+    control = (c.get("diagnosis") or {}).get("control") or {}
+    only = c.get("ad_groups") or []
+    single = (only[0].get("ad_group") if len(only) == 1
+              and isinstance(only[0], dict) else None)
+    if level == "campaign":
+        key, group = c.get("campaign_key"), control.get("ad_group") or single
+    elif level == "ad_group":
+        key, group = groups.get(entity), entity
+    elif level == "ad":
+        a = ads.get(entity) or {}
+        key, group = a.get("key"), a.get("ad_group")
+    else:
+        key, group = None, None
+    i["entity_level"] = level
+    i["entity_key"] = str(key) if key else None
+    plan = i.get("test_plan")
+    if isinstance(plan, dict):
+        ctl = ads.get(plan.get("control")) or {}
+        plan["control_ad_key"] = str(ctl["key"]) if ctl.get("key") else None
+        group = ctl.get("ad_group") or group
+        floor = {}
+        for g in only:
+            if isinstance(g, dict) and (g.get("ad_group") == group
+                                        or len(only) == 1):
+                floor = g.get("test_floor") or {}
+                break
+        plan["decision_spend_per_arm"] = floor.get("decision_spend_per_arm")
+    i["ad_group"] = group
+
+
 def _report(r: dict, c: dict, before: dict, used: set, tag: str, ci: int,
-            today: date) -> dict:
+            today: date, pool: list | None = None) -> dict:
     """The shape-2 body of one campaign's entry: issues and not_yet."""
     diag = c.get("diagnosis") or {}
     findings = {f.get("id"): f for f in diag.get("findings") or []
                 if isinstance(f, dict)}
     raw = r.get("issues") if isinstance(r.get("issues"), list) else []
+    assets = _assets(c, pool)
     issues = [i for i in (_issue_from(x, findings,
-                                      diag.get("max_priority") or "monitor")
+                                      diag.get("max_priority") or "monitor",
+                                      assets)
                           for x in raw if isinstance(x, dict)) if i]
+    for i in issues:
+        _attach_keys(i, findings.get(i.get("basis")), c)
     issues, trimmed = _capped(issues)
     for pi, i in enumerate(issues):
         prior = before.get(i.pop("_continues"))
@@ -1859,8 +2354,13 @@ def _report(r: dict, c: dict, before: dict, used: set, tag: str, ci: int,
         if s and key not in seen:
             seen.add(key)
             not_yet.append(s)
-    headline = _clean(r.get("headline")) or _clean(r.get("why"))
-    return {"headline": headline or "The reply did not rate this campaign.",
+    summary = _clean(r.get("summary"))
+    headline = _clean(r.get("headline")) or _clean(r.get("why")) or summary
+    headline = headline or "The reply did not rate this campaign."
+    return {"headline": headline,
+            # The collapsed card's one line. `headline` / `why` stay as its
+            # aliases, so an older template still has a sentence to show.
+            "summary": summary or headline,
             "issues": issues, "issues_trimmed": trimmed, "not_yet": not_yet}
 
 
@@ -1895,7 +2395,8 @@ def _legacy(r: dict, before: dict, used: set, tag: str, ci: int,
 
 def triage_from(rows: list, campaigns: list, previous: dict | None = None,
                 data_changed: bool = True, today: date | None = None,
-                changes: dict | None = None) -> list:
+                changes: dict | None = None,
+                pool: list | None = None) -> list:
     """The model's reply, checked against the campaigns it was asked about.
 
     Returns one entry per campaign in `campaigns`, in that order. A campaign
@@ -1926,6 +2427,15 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
         that change, and a campaign with no changes resolves nothing.
       - A previous issue neither continued nor resolved is kept as
         `dropped`, so the page can say it was not confirmed fixed.
+
+    ROUND 2 (contracts2 D4) on every shape-2 entry: `bucket` (bucket_of the
+    clamped issues), `priority_rank`, the pack's `impact` and `movement`,
+    `summary`, an empty `causal_flags` for causal_language to fill, and on
+    each issue the six-field check (`incomplete`, clamped to monitor), the
+    creative challenger's kind checked against `pool` (the pack's
+    challenger_pool) and the campaign's ads, and the keys the outcomes
+    ledger registers it by. The order is still the pack's; sort_triage is
+    the published order.
     """
     previous = previous or {}
     today = today or date.today()
@@ -1945,7 +2455,7 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
 
         shape2 = isinstance(r.get("issues"), list) or (
             "problems" not in r and "changes" not in r and "diagnosis" in c)
-        body = (_report(r, c, before, used, tag, ci, today) if shape2
+        body = (_report(r, c, before, used, tag, ci, today, pool) if shape2
                 else _legacy(r, before, used, tag, ci, today))
 
         resolved = []
@@ -1994,9 +2504,20 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
             "cpa": c.get("cpa"),
         }
         if shape2:
+            bucket = bucket_of(entry["issues"])
+            impact = c.get("impact") if isinstance(c.get("impact"),
+                                                   dict) else None
             entry.update({
                 "shape": 2,
                 "why": entry["headline"],
+                # Derived from the clamped issues; a `bucket` in the reply
+                # is never read.
+                "bucket": bucket,
+                "priority_rank": priority_rank(bucket, impact),
+                "impact": impact,
+                "movement": c.get("movement") or {},
+                "causal_flags": [],
+                "campaign_key": c.get("campaign_key"),
                 "running": c.get("running"),
                 "ladder": c.get("ladder"),
                 "funnel": c.get("funnel"),
@@ -2006,6 +2527,66 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
             })
         out.append(entry)
     return out
+
+
+# ---------------------------------------------------------------- buckets --
+# ACT / TEST / MONITOR / NO CHANGE, decided after the clamps and never by the
+# model: a campaign's bucket is the strongest recommendation type among its
+# issues. Priority is the bucket plus 018's impact_score, by comparison only.
+
+BUCKETS = ("act", "test", "monitor", "no_change")
+
+#: impact_score is excess dollars x an evidence weight (018), so these are
+#: dollars of evidence-weighted excess spend over the last 7 settled days.
+#: Priority 1: anything the evidence supports acting on, and a test whose
+#: campaign is costing at least PRIORITY_1_IMPACT. Priority 2: every other
+#: test (a test is something to do, even without 018's figure), and a monitor
+#: costing at least PRIORITY_2_IMPACT. Everything else is 3. Set against the
+#: live account on 2026-10-01, where a week's excess on one campaign runs from
+#: a few dollars to several hundred; revisit once 018 has a few weeks of rows.
+PRIORITY_1_IMPACT = 250
+PRIORITY_2_IMPACT = 100
+
+
+def bucket_of(issues: list) -> str:
+    types = {(i.get("recommendation") or {}).get("type")
+             for i in issues or [] if isinstance(i, dict)}
+    for b in ("act", "test", "monitor"):
+        if b in types:
+            return b
+    return "no_change"
+
+
+def _score(impact) -> float | None:
+    v = (impact or {}).get("impact_score") if isinstance(impact, dict) else None
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def priority_rank(bucket: str, impact: dict | None) -> int:
+    score = _score(impact)
+    if bucket == "act" or (bucket == "test" and score is not None
+                           and score >= PRIORITY_1_IMPACT):
+        return 1
+    if bucket == "test" or (bucket == "monitor" and score is not None
+                            and score >= PRIORITY_2_IMPACT):
+        return 2
+    return 3
+
+
+def sort_triage(triage: list) -> list:
+    """The published order: act, test, monitor, no change; within a bucket
+    by impact_score, highest first, a campaign with none last. Stable, so
+    equal scores keep the pack's spend order. Entries without a bucket (old
+    shapes) go last in their own order."""
+    def key(t):
+        b = t.get("bucket")
+        score = _score(t.get("impact"))
+        return (BUCKETS.index(b) if b in BUCKETS else len(BUCKETS),
+                score is None, -score if score is not None else 0)
+    return sorted(triage, key=key)
 
 
 # ---------------------------------------------------------- figure check --
@@ -2116,6 +2697,8 @@ def _card_texts(t: dict) -> tuple:
     not a threshold the sentence compares against.
     """
     loose = [t.get("headline") or t.get("why") or ""]
+    if t.get("summary") and t.get("summary") != loose[0]:
+        loose.append(t["summary"])
     strict = []
     for p in t.get("problems") or []:
         loose += [p.get("problem") or "", p.get("fix") or ""]
@@ -2125,7 +2708,11 @@ def _card_texts(t: dict) -> tuple:
                   p.get("diagnosis") or "", rec.get("action") or "",
                   rec.get("expected_outcome") or "",
                   (p.get("confidence") or {}).get("reason") or ""]
-        strict.append((p.get("test_plan") or {}).get("decide_when") or "")
+        plan = p.get("test_plan") or {}
+        strict.append(plan.get("decide_when") or "")
+        # A brief's opening line is proposed copy, like the challenger; its
+        # `built_from` is the evidence for it and is checked.
+        loose.append((plan.get("brief") or {}).get("built_from") or "")
     loose += [s for s in t.get("not_yet") or [] if isinstance(s, str)]
     for x in t.get("resolved") or []:
         loose.append(x.get("evidence") or "")
@@ -2141,10 +2728,7 @@ def check_figures(triage: list, facts: dict) -> int:
     the -22.41 the facts hold. Every name in the account -- campaigns, ad
     groups, ads -- is cut out of the text first, longest first.
     """
-    given = {k: v for k, v in (facts or {}).items() if k not in MODEL_WRITTEN}
-    known = _fact_numbers(given)
-    known = known | {abs(v) for v in known if v < 0}
-    names = _names(given)
+    known, names = _known(facts)
     flagged: list = []
     for t in triage:
         mine = sorted(names | _names({"campaign": t.get("campaign"),
@@ -2155,19 +2739,280 @@ def check_figures(triage: list, facts: dict) -> int:
         bad: list = []
         for s, exempt in [*[(x, True) for x in loose],
                           *[(x, False) for x in strict]]:
-            for n in mine:
-                s = s.replace(n, " ")
-            # Quoted text is ad copy: either the account's own, which is in
-            # the facts already, or wording the review PROPOSES, which is a
-            # suggestion and not a claim about the data.
-            s = _QUOTED.sub(" ", s)
-            if exempt:
-                # "under $300", "more than 20": a threshold the sentence
-                # compares against, not a figure it claims the data holds.
-                s = _BOUND.sub(" ", s)
-            for f in unverified_figures(s, known):
+            for f in _unverified_in(s, exempt, mine, known):
                 if f not in bad:
                     bad.append(f)
         t["unverified_figures"] = bad
         flagged.extend(bad)
     return len(flagged)
+
+
+def _known(facts: dict) -> tuple:
+    """(known figures, account names) of the facts as sent, minus what a
+    model wrote. A negative figure's size counts: "down 22.41%"."""
+    given = {k: v for k, v in (facts or {}).items() if k not in MODEL_WRITTEN}
+    known = _fact_numbers(given)
+    known = known | {abs(v) for v in known if v < 0}
+    return known, _names(given)
+
+
+def _unverified_in(s: str, exempt: bool, names: list, known: set) -> list:
+    for n in names:
+        s = s.replace(n, " ")
+    # Quoted text is ad copy: either the account's own, which is in the facts
+    # already, or wording the review PROPOSES, which is a suggestion and not
+    # a claim about the data.
+    s = _QUOTED.sub(" ", s)
+    if exempt:
+        # "under $300", "more than 20": a threshold the sentence compares
+        # against, not a figure it claims the data holds.
+        s = _BOUND.sub(" ", s)
+    return unverified_figures(s, known)
+
+
+def check_note(note: str | None, facts: dict) -> list:
+    """The figures the reply's account_note states that the facts do not
+    contain -- check_figures' rule, for the one account-level sentence."""
+    if not note:
+        return []
+    known, names = _known(facts)
+    out: list = []
+    for f in _unverified_in(note, True, sorted(names, key=len, reverse=True),
+                            known):
+        if f not in out:
+            out.append(f)
+    return out
+
+
+# ------------------------------------------------------- causal wording --
+# A METRIC NEVER CAUSED ANYTHING. The prompt says "appears to be the largest
+# contributor"; this flags, on the card, the sentences that said otherwise.
+# Flagged, not rewritten: the sentence may still be right, and the flag says
+# it claimed more than a decomposition can show.
+
+CAUSAL = _re.compile(r"\b(caused|causes|because of|due to|is driving|drove)\b",
+                     _re.I)
+
+
+def causal_phrases(text) -> list:
+    """The causal phrases in `text`, lower-cased, each once, in order."""
+    out: list = []
+    for m in CAUSAL.finditer(str(text or "")):
+        p = m.group(1).lower()
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def causal_language(triage: list) -> int:
+    """Set each entry's `causal_flags` from its summary, headline and each
+    issue's observation and evidence. Returns how many were flagged."""
+    n = 0
+    for t in triage:
+        texts = [t.get("summary"), t.get("headline")]
+        for p in t.get("issues") or []:
+            if isinstance(p, dict):
+                texts += [p.get("observation"), p.get("evidence")]
+        flags: list = []
+        for s in texts:
+            for p in causal_phrases(s):
+                if p not in flags:
+                    flags.append(p)
+        t["causal_flags"] = flags
+        n += len(flags)
+    return n
+
+
+# -------------------------------------------------------- the reply shape --
+
+def parse_reply(reply) -> tuple:
+    """(campaign rows, account_note) from either reply shape.
+
+    The prompt asks for {"account_note": str, "campaigns": [...]}. A bare
+    array -- what the prompt asked for before round 2, and what a model
+    sometimes still sends -- is read as the campaign list, with the note
+    taken from an `account_note` on its first element if there is one.
+    """
+    if isinstance(reply, dict):
+        rows = reply.get("campaigns")
+        rows = rows if isinstance(rows, list) else []
+        note = reply.get("account_note")
+    elif isinstance(reply, list):
+        rows = reply
+        first = reply[0] if reply and isinstance(reply[0], dict) else {}
+        note = first.get("account_note")
+    else:
+        raise ValueError(f"expected a JSON object or array, got "
+                         f"{type(reply).__name__}")
+    return rows, (_clean(note) or None)
+
+
+# ------------------------------------------------------ what matters today --
+# THE ACCOUNT SUMMARY is deterministic: every figure in it is a column of
+# ads.goal_impact (018), and every count is a len() over the published
+# triage. The one model-written sentence (`account_note`) rides beside it,
+# labelled as the review's and checked like a card.
+
+#: The share of a goal's CPA rise the named campaigns must reach together.
+CONTRIBUTORS_REACH = 60
+#: Patterns read as creative-side deterioration, in the order they are named.
+CREATIVE_SIDE = ("creative_engagement", "possible_fatigue",
+                 "audience_saturation", "clickier_poorer_intent")
+
+
+def _words(goal) -> str:
+    return str(goal or "(no goal)").replace("_", " ").capitalize()
+
+
+def _printed(value, places: int = 2) -> str:
+    """A SQL percentage printed without its sign ("up 18.20%"): formatting,
+    not arithmetic -- the sign is the word beside it."""
+    return f"{float(value):.{places}f}".lstrip("-") + "%"
+
+
+def _ev_at_least(ev, floor: str) -> bool:
+    return (ev in diagnose.EVIDENCE
+            and diagnose.EVIDENCE.index(ev) >= diagnose.EVIDENCE.index(floor))
+
+
+def _rank_key(r: dict):
+    rank = r.get("contribution_rank")
+    return (rank is None, rank if rank is not None else 0)
+
+
+def _goal_summary(g: dict, camps: list) -> dict:
+    goal, cpa, ev = g.get("optimization_goal"), g.get("cpa_pct"), \
+        g.get("evidence_level")
+    lines, contributors = [], []
+    if cpa is not None:
+        rose, fell = float(cpa) > 0, float(cpa) < 0
+        if not (rose or fell):
+            text = f"{_words(goal)}: CPA unchanged on the prior 7 days"
+        else:
+            text = (f"{_words(goal)}: CPA {'up' if rose else 'down'} "
+                    f"{_printed(cpa)} on the prior 7 days")
+        if rose and _ev_at_least(ev, "directional"):
+            reached = None
+            for i, r in enumerate(sorted(camps, key=_rank_key), 1):
+                contributors.append({
+                    "campaign": r.get("campaign_name"),
+                    "contribution_share_pct": r.get("contribution_share_pct"),
+                    "cumulative_share_pct": r.get("cumulative_share_pct")})
+                cum = r.get("cumulative_share_pct")
+                if cum is not None and float(cum) >= CONTRIBUTORS_REACH:
+                    reached = (i, cum)
+                    break
+            if reached:
+                n, cum = reached
+                text += (f"; {n} campaign{'s' if n != 1 else ''} "
+                         f"account{'' if n != 1 else 's'} for "
+                         f"{_printed(cum, 1)} of that rise")
+            else:
+                contributors = []
+        lines.append(text + ".")
+    return {"goal": goal, "cpa_pct": cpa, "evidence": ev,
+            "contributors": contributors, "lines": lines}
+
+
+def account_summary(pack: dict, triage: list, note: str | None = None) -> dict:
+    """"What matters today" (contracts2 D4 `account_summary`).
+
+    Per goal, from 018's goal row: its CPA move on the prior 7 days and,
+    when it rose on at least directional evidence, how many campaigns -- the
+    first whose cumulative_share_pct reaches CONTRIBUTORS_REACH -- account
+    for it. Then, over the act and test campaigns, how many show
+    creative-side deterioration and how many post-click (by the patterns of
+    their act/test issues), and how many campaigns have issues with low
+    current impact (monitor bucket, or a test whose impact_score is at or
+    below PRIORITY_2_IMPACT; never an act). Lines are f-strings of SQL values and len() counts.
+    """
+    rows = (pack.get("goal_impact") or []) if pack.get("impact_available") else []
+    goals = []
+    for g in rows:
+        if g.get("level") != "goal":
+            continue
+        camps = [r for r in rows if r.get("level") == "campaign"
+                 and r.get("optimization_goal") == g.get("optimization_goal")]
+        goals.append(_goal_summary(g, camps))
+
+    acting = [t for t in triage if t.get("bucket") in ("act", "test")]
+    seen: list = []
+    creative_n = post_n = 0
+    for t in acting:
+        patterns = {p.get("pattern") for p in t.get("issues") or []
+                    if (p.get("recommendation") or {}).get("type")
+                    in ("act", "test")}
+        mine = [x for x in CREATIVE_SIDE if x in patterns]
+        seen += [x for x in mine if x not in seen]
+        creative_n += 1 if mine else 0
+        post_n += 1 if "post_click" in patterns else 0
+    lines = []
+    parts = []
+    if creative_n:
+        ordered = [x for x in CREATIVE_SIDE if x in seen]
+        parts.append(f"{creative_n} show{'s' if creative_n == 1 else ''} "
+                     f"creative-side deterioration ({' / '.join(ordered)})")
+    if post_n:
+        parts.append(f"{post_n} post-click" if parts else
+                     f"{post_n} show{'s' if post_n == 1 else ''} post-click "
+                     f"deterioration")
+    if parts:
+        lines.append(", ".join(parts) + ".")
+    low = len([t for t in triage if t.get("issues") and (
+        t.get("bucket") == "monitor"
+        # An act campaign is never "low impact": the evidence already
+        # supports a change there, whatever its dollars say.
+        or (t.get("bucket") == "test"
+            and _score(t.get("impact")) is not None
+            and _score(t.get("impact")) <= PRIORITY_2_IMPACT))])
+    if low:
+        lines.append(f"{low} {'has' if low == 1 else 'have'} issues with low "
+                     f"current impact.")
+    return {"goals": goals, "lines": lines, "note": note}
+
+
+# ----------------------------------------------------------- outcome tags --
+
+OUTCOME_TAG = ("status", "implemented_on", "match")
+
+
+def attach_outcomes(triage: list, ledger: dict | None) -> int:
+    """Put each issue's ledger reading on it as `outcome` (D4): status,
+    implemented_on, match, settled_days and result. Returns how many."""
+    entries = (ledger or {}).get("entries") or {}
+    n = 0
+    for t in triage:
+        for p in t.get("issues") or []:
+            e = entries.get(str(p.get("id"))) if isinstance(p, dict) else None
+            if not e:
+                continue
+            m = e.get("measurement") or {}
+            p["outcome"] = {**{k: e.get(k) for k in OUTCOME_TAG},
+                            "settled_days": m.get("settled_days"),
+                            "result": m.get("result")}
+            n += 1
+    return n
+
+
+#: What the model is told about each recommendation still in play.
+FOLLOWUP_FIELDS = ("id", "type", "kind", "variable", "challenger_ad",
+                   "ad_group", "status", "implemented_on", "match")
+
+
+def followups(ledger: dict | None, campaigns: list, for_campaign) -> dict:
+    """campaign -> the ledger entries still in play (open, implemented,
+    measuring), as the prompt's `followups`: no model-written text, only the
+    ledger's own fields and, once measured, the result and settled days.
+    `for_campaign` is outcomes.for_campaign."""
+    out = {}
+    for c in campaigns:
+        name = c.get("campaign")
+        rows = []
+        for e in for_campaign(ledger or {}, name):
+            m = e.get("measurement") or {}
+            rows.append(_dense({**{k: e.get(k) for k in FOLLOWUP_FIELDS},
+                                "settled_days": m.get("settled_days"),
+                                "result": m.get("result")}))
+        if rows:
+            out[name] = rows
+    return out

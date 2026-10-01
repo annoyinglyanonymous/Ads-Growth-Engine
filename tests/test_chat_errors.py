@@ -175,3 +175,36 @@ def test_every_allowed_verb_actually_exists():
             parsers.add(node.args[0].value)
     missing = sorted(set(chat.READ_VERBS) - parsers)
     assert not missing, f"allowed but not a verb: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# classify(expect=...): the triage asks for an object, tagging for a list.
+# ---------------------------------------------------------------------------
+
+def _classify(monkeypatch, reply, **kw):
+    def fake_subprocess_run(*a, **k):
+        env = {"type": "result", "subtype": "success", "is_error": False,
+               "result": json.dumps(reply)}
+        return _Done(0, json.dumps(env).encode("utf-8"), b"")
+
+    monkeypatch.setattr(chat, "available", lambda: True)
+    monkeypatch.setattr(chat.subprocess, "run", fake_subprocess_run)
+    return asyncio.run(chat.classify("label these", **kw))
+
+
+def test_classify_still_wants_a_list_by_default(monkeypatch):
+    """scripts/tag.py's labelling pass is unchanged: a list or an error."""
+    assert _classify(monkeypatch, [{"a": 1}]) == [{"a": 1}]
+    with pytest.raises(ValueError, match="expected a JSON array"):
+        _classify(monkeypatch, {"a": 1})
+
+
+def test_classify_takes_the_shape_the_caller_names(monkeypatch):
+    obj = {"account_note": "n", "campaigns": []}
+    assert _classify(monkeypatch, obj, expect="object") == obj
+    with pytest.raises(ValueError, match="expected a JSON object"):
+        _classify(monkeypatch, [1], expect="object")
+    assert _classify(monkeypatch, obj, expect="any") == obj
+    assert _classify(monkeypatch, [1], expect="any") == [1]
+    with pytest.raises(ValueError, match="unknown expect"):
+        _classify(monkeypatch, [1], expect="table")

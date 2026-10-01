@@ -207,9 +207,19 @@ number somebody compares against.
 """
 
 
+#: classify(expect=...) -> the top-level JSON types it accepts.
+_SHAPES = {"list": (list,), "object": (dict,), "any": (list, dict)}
+
+
 async def classify(prompt: str, *, timeout: float | None = None,
-                   system: str | None = None) -> list:
-    """Ask for JSON, with NO tools at all. Returns the parsed list.
+                   system: str | None = None,
+                   expect: str = "list") -> list | dict:
+    """Ask for JSON, with NO tools at all. Returns the parsed reply.
+
+    `expect` is the top-level shape the caller accepts: "list" (the default,
+    and what scripts/tag.py's labelling pass needs), "object", or "any" for
+    either -- the campaign triage asks for an object and still reads an
+    array, so a reply in the older shape is not wasted.
 
     WHY THIS IS NOT answer().
 
@@ -232,6 +242,9 @@ async def classify(prompt: str, *, timeout: float | None = None,
     when the reply will not parse. The caller decides whether a batch that
     would not parse is fatal; here it is only a fact.
     """
+    wanted = _SHAPES.get(expect)
+    if wanted is None:
+        raise ValueError(f"unknown expect {expect!r}; use list, object or any")
     if not available():
         raise ChatUnavailable(
             "The `claude` command is not on PATH, so nothing can be "
@@ -290,8 +303,10 @@ async def classify(prompt: str, *, timeout: float | None = None,
     except ValueError as exc:
         raise ValueError(f"the reply was not JSON: {exc}. First 160 chars: "
                          f"{reply[:160]!r}") from None
-    if not isinstance(rows, list):
-        raise ValueError(f"expected a JSON array, got {type(rows).__name__}")
+    if not isinstance(rows, wanted):
+        what = {"list": "a JSON array", "object": "a JSON object",
+                "any": "a JSON array or object"}[expect]
+        raise ValueError(f"expected {what}, got {type(rows).__name__}")
     return rows
 
 

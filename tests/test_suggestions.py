@@ -261,11 +261,34 @@ def fake_ladder(entities=None, override=None, drop=()):
             "settled_through": "2026-09-18", "pairs": pairs}
 
 
-def _pack(monkeypatch, rows=None, formats=None, ladder=None, copy=None):
-    """Run creative_pack with every database call stubbed."""
+#: What metrics.goal_impact / facet_by_goal return before 018 is applied.
+NO_018 = {"available": False, "why": "migration 018 is not applied"}
+
+
+def _pack(monkeypatch, rows=None, formats=None, ladder=None, copy=None,
+          impact=None, by_goal=None):
+    """Run creative_pack with every database call stubbed.
+
+    `impact`: metrics.goal_impact's answer (default: 018 not applied).
+    `by_goal`: dimension -> metrics.facet_by_goal's answer (default: the
+    same)."""
     rows = ROWS if rows is None else rows
     formats = FORMATS if formats is None else formats
     ladder = fake_ladder() if ladder is None else ladder
+    asked_by_goal = []
+
+    async def fake_goal_impact(slug, pair="last_7_vs_prior_7"):
+        assert pair == "last_7_vs_prior_7"
+        return NO_018 if impact is None else impact
+
+    async def fake_facet_by_goal(slug, since, until, dimension):
+        asked_by_goal.append((since, until, dimension))
+        if by_goal is None:
+            return NO_018
+        return by_goal.get(dimension) or {"available": True, "rows": []}
+
+    monkeypatch.setattr(creative.metrics, "goal_impact", fake_goal_impact)
+    monkeypatch.setattr(creative.metrics, "facet_by_goal", fake_facet_by_goal)
 
     async def fake_funnel_ladder(slug, level=None, pairs=None, **thresholds):
         assert level is None and pairs is None, (
@@ -639,8 +662,7 @@ def test_every_pack_section_reaches_the_model(monkeypatch):
     spec.loader.exec_module(suggest)
 
     pack = _pack(monkeypatch)
-    frame = {"verb", "brand", "since", "until", "days", "settled_through",
-             "unsettled_days", "funnel_available", "funnel_why"}
+    frame = set(suggest.FRAME)
     missing = (set(pack) - frame - set(suggest.SENT_TO_THE_MODEL)
                - set(suggest.PAGE_ONLY))
     assert not missing, (
@@ -772,7 +794,8 @@ def test_the_prompt_pairs_each_observation_with_a_recommendation():
     p = creative.SUGGESTIONS_PROMPT
     for key in ('"observation"', '"evidence"', '"diagnosis"',
                 '"recommendation"', '"expected_outcome"', '"test_plan"',
-                '"confidence"', '"basis"', '"not_yet"', '"headline"'):
+                '"confidence"', '"basis"', '"not_yet"', '"summary"',
+                '"account_note"', '"challenger_kind"', '"brief"'):
         assert key in p, key
     assert "every issue carries its own recommendation" in p.lower()
 
@@ -946,6 +969,113 @@ def test_without_a_snapshot_wording_is_compared_on_the_leading_ads():
     ch = creative.changes_since(prev, [_camp("A", [("X", "new", "b")])], {})
     assert ch["A"][0]["by"] == "you"
     assert "leading ads only" in ch["A"][0]["what"]
+    assert ch["A"][0]["kind"] == "wording_changed"
+    assert ch["A"][0]["ad"] == "X"
+
+
+def _v2(budget="5000", group_budget="2000", **ads):
+    """A v2 snapshot of campaign A: one ad group, the named ads in it."""
+    snap = {"_campaign": {"status": "ACTIVE", "daily_budget": budget},
+            "_ad_groups": {"g1": {"name": "G", "daily_budget": group_budget,
+                                  "optimization_goal": "LEAD_GENERATION"}}}
+    for key, (ad, h, status, first) in ads.items():
+        snap[key] = {"ad": ad, "copy_hash": h, "status": status,
+                     "ad_group": "G", "ad_group_key": "g1",
+                     "first_spend_day": first}
+    return {"A": snap}
+
+
+def test_you_changes_carry_a_structured_kind():
+    """D2: outcomes.py matches on these fields, never on the `what` text."""
+    was = _camp("A", [("X", "h", "b")])
+    now = _camp("A", [("X", "h", "b")], status="PAUSED")
+    old = _v2(k1=("X", "a", "ACTIVE", "2026-08-01"),
+              k2=("Y", "b", "ACTIVE", "2026-08-02"),
+              k4=("W", "w", "ACTIVE", "2026-08-03"))
+    new = _v2(budget="8000", group_budget="3000",
+              k1=("X", "c", "ACTIVE", "2026-08-01"),
+              k2=("Y", "b", "PAUSED", "2026-08-02"),
+              k3=("Z", "d", "ACTIVE", "2026-10-04"))
+    ch = creative.changes_since({"pack": {"campaigns": [was]}, "snapshot": old},
+                                [now], new)["A"]
+    you = {c["kind"]: c for c in ch if c["by"] == "you"}
+    assert set(you) <= set(creative.YOU_KINDS)
+    assert you["campaign_status"]["status_from"] == "ACTIVE"
+    assert you["campaign_status"]["status_to"] == "PAUSED"
+    added = you["ad_added"]
+    assert (added["ad"], added["ad_key"], added["ad_group"],
+            added["ad_group_key"], added["first_spend_day"]) == (
+        "Z", "k3", "G", "g1", "2026-10-04")
+    assert added["what"] == 'ad added: "Z"', "the text is unchanged"
+    assert you["wording_changed"]["ad_key"] == "k1"
+    st = you["status_changed"]
+    assert (st["ad"], st["status_from"], st["status_to"]) == ("Y", "ACTIVE", "PAUSED")
+    assert st["what"] == '"Y" ACTIVE -> PAUSED'
+    assert you["ad_gone"]["ad"] == "W" and you["ad_gone"]["ad_key"] == "k4"
+    budgets = [c for c in ch if c.get("kind") == "budget_changed"]
+    assert {(b["level"], b["budget_from"], b["budget_to"]) for b in budgets} == {
+        ("campaign", "5000", "8000"), ("ad_group", "2000", "3000")}
+    assert next(b for b in budgets if b["level"] == "ad_group")["ad_group"] == "G"
+    assert all("kind" not in c for c in ch if c["by"] == "numbers")
+    # The "_" keys are structure, never ads.
+    assert not any(c.get("ad_key", "").startswith("_")
+                   for c in ch if c.get("ad_key"))
+
+
+def test_a_v1_snapshot_against_a_v2_one_compares_ads_only():
+    c = _camp("A", [("X", "h", "b")])
+    v1 = {"A": {"k1": {"ad": "X", "copy_hash": "a", "status": "ACTIVE"}}}
+    v2 = _v2(budget="9999", k1=("X", "a", "ACTIVE", "2026-08-01"))
+    assert creative.changes_since({"pack": {"campaigns": [c]}, "snapshot": v1},
+                                  [c], v2) == {}
+    v2["A"]["k9"] = {"ad": "New", "copy_hash": "n", "status": "ACTIVE",
+                     "ad_group": "G", "ad_group_key": "g1",
+                     "first_spend_day": None}
+    ch = creative.changes_since({"pack": {"campaigns": [c]}, "snapshot": v1},
+                                [c], v2)["A"]
+    assert [x["kind"] for x in ch] == ["ad_added"]
+    assert ch[0]["first_spend_day"] is None
+
+
+def test_snapshot_v2_shape(monkeypatch):
+    """Campaign status and budget, each ad group's budget and goal, and per
+    ad its group and first spend day -- budgets and dates as the published
+    file will hold them (strings)."""
+    from decimal import Decimal
+    from datetime import date as _date
+
+    async def fake_brand(slug):
+        return {"id": "b1", "slug": slug}
+
+    async def fake_fetch_all(sql, params=()):
+        if "ads.fact_ad_day" in sql:
+            assert "min(f.day)" in sql and "f.spend > 0" in sql
+            return [{"campaign": "A", "ad_key": "k1", "ad": "X",
+                     "status": "ACTIVE", "copy_hash": "h", "ad_group_key": "g1",
+                     "ad_group": "G", "first_spend_day": _date(2026, 10, 4)},
+                    {"campaign": "A", "ad_key": "k2", "ad": "Y",
+                     "status": "PAUSED", "copy_hash": None,
+                     "ad_group_key": "g1", "ad_group": "G",
+                     "first_spend_day": None}]
+        return [{"campaign": "A", "campaign_status": "ACTIVE",
+                 "campaign_budget": None, "ad_group_key": "g1",
+                 "ad_group": "G", "daily_budget": Decimal("5000"),
+                 "optimization_goal": "LEAD_GENERATION"}]
+
+    monkeypatch.setattr(creative.context, "brand", fake_brand)
+    monkeypatch.setattr(creative, "fetch_all", fake_fetch_all)
+    snap = asyncio.run(creative.snapshot("renegade", ["A"]))
+    assert snap == {"A": {
+        "_campaign": {"status": "ACTIVE", "daily_budget": None},
+        "_ad_groups": {"g1": {"name": "G", "daily_budget": "5000",
+                              "optimization_goal": "LEAD_GENERATION"}},
+        "k1": {"ad": "X", "status": "ACTIVE", "copy_hash": "h",
+               "ad_group": "G", "ad_group_key": "g1",
+               "first_spend_day": "2026-10-04"},
+        "k2": {"ad": "Y", "status": "PAUSED", "copy_hash": None,
+               "ad_group": "G", "ad_group_key": "g1",
+               "first_spend_day": None}}}
+    assert asyncio.run(creative.snapshot("renegade", [])) == {}
 
 
 def test_a_resolution_must_cite_a_listed_change_for_its_campaign():
@@ -1218,9 +1348,11 @@ def test_a_campaign_not_running_gets_the_short_form(monkeypatch):
     pack = _pack(monkeypatch, ladder=fake_ladder(
         drop=[(P7, "Y"), (P14, "Y"), (PU, "Y"), (PB, "Y")]))
     y = next(c for c in pack["campaigns"] if c["campaign"] == "Campaign Y")
-    assert set(y) == {"campaign", "status", "running", "objective",
-                      "optimization_goals", "spend", "conversions", "cpa",
-                      "link_ctr", "diagnosis", "rating_rule"}
+    assert set(y) == {"campaign", "campaign_key", "status", "running",
+                      "objective", "optimization_goals", "spend",
+                      "conversions", "cpa", "link_ctr", "diagnosis",
+                      "rating_rule", "impact"}
+    assert y["impact"] is None, "no 018, no impact"
     assert y["running"] is False
     assert y["diagnosis"] == {"findings": [], "max_priority": "monitor",
                               "not_yet": []}
@@ -1421,7 +1553,7 @@ def _realistic_formats():
 
 
 def _sized_facts(suggest, pack, issues_each=0):
-    facts = jsonable_encoder({k: pack[k] for k in suggest.SENT_TO_THE_MODEL})
+    facts = jsonable_encoder(suggest.model_facts(pack))
     prev = {c["campaign"]: [{"id": f"i0930-{ci}-{k}", "open_since": "2026-09-29",
                              "problem": "Conversion rate after the click fell "
                                         "by about a third week on week while "
@@ -1878,7 +2010,9 @@ def test_the_prompt_asks_four_questions_in_order():
 def test_the_system_prompt_forbids_going_past_the_diagnosis():
     s = creative.TRIAGE_SYSTEM
     assert "Never choose a recommendation type" in s
-    assert "first character of your reply is [" in s
+    assert "the first character of your reply is { and the last is }" in \
+        " ".join(s.split())
+    assert "appears to be the largest contributor" in s
     assert "subtract" in s
 
 
@@ -1963,3 +2097,628 @@ def test_not_yet_keeps_one_line_per_thing_and_the_diagnosis_wins():
     out = creative._report(r, c, {}, set(), "1001", 0, _date(2026, 10, 1))
     assert out["not_yet"] == [
         seed, "Pausing the control: it is the baseline every test reads against."]
+
+
+# ---------------------------------------------------------------------------
+# Round 2: buckets, impact, movement, summary, asset vs new, outcomes.
+# ---------------------------------------------------------------------------
+
+def _keyed(name="Camp A", **over):
+    """_dcamp with the keys the pack carries for the outcomes ledger."""
+    c = _dcamp(name, **over)
+    c.update({"campaign_key": "K-A",
+              "entity_keys": {"ad_groups": {"Group One": "G-1"},
+                              "ads": {"Ad One": {"key": "AD-1",
+                                                 "ad_group": "Group One"},
+                                      "Ad Two": {"key": "AD-2",
+                                                 "ad_group": "Group One"}}},
+              "ad_groups": [{"ad_group": "Group One", "same_as_campaign": True,
+                             "test_floor": {"decision_spend_per_arm": 435.7,
+                                            "min_conversions_per_arm": 10}}],
+              "optimization_goals": ["LEAD_GENERATION"],
+              "movement": {"7v7": {"cpa": 22.41, "link_ctr": -18.3}},
+              "impact": {"goal": "LEAD_GENERATION", "excess_cost": 310.5,
+                         "impact_score": 248.4,
+                         "contribution_share_pct": 41.5,
+                         "evidence": "moderate"}})
+    return c
+
+
+CREATIVE_PLAN = {"variable": "creative", "control": "Ad One",
+                 "challenger": "a question-first opener",
+                 "hold_constant": [], "evaluate_on": [],
+                 "decide_when": "each arm has spent $435.70 and 10 conversions"}
+
+POOL = [{"optimization_goal": "LEAD_GENERATION", "rankable_on_cost": True,
+         "ads": [{"ad": "Pool Ad | Static", "from_campaign": "Other"}]},
+        {"optimization_goal": "OFFSITE_CONVERSIONS", "rankable_on_cost": True,
+         "ads": [{"ad": "Offsite Ad | Video", "from_campaign": "Other"}]}]
+
+
+def _r2(issues, camp=None, pool=None, **reply):
+    r = {"campaign": "Camp A", "rating": "yellow", "headline": "h",
+         "issues": issues, "not_yet": [], "resolved": [], **reply}
+    return creative.triage_from([r], [camp or _keyed()],
+                                today=_date(2026, 10, 1), pool=pool)[0]
+
+
+def test_the_bucket_is_derived_never_taken_from_the_reply():
+    t = _r2([_issue(basis="d3", kind="act")], bucket="no_change")
+    assert t["bucket"] == "act"
+    # A test the clamps moved to monitor puts the campaign in monitor.
+    t = _r2([_issue(plan={**PLAN, "variable": "creative"})], bucket="act")
+    assert t["bucket"] == "monitor"
+    t = _r2([], bucket="act")
+    assert t["bucket"] == "no_change"
+    assert creative.bucket_of([{"recommendation": {"type": "test"}},
+                               {"recommendation": {"type": "monitor"}}]) == "test"
+
+
+def test_priority_rank_is_bucket_plus_impact_by_comparison():
+    rank = creative.priority_rank
+    big = {"impact_score": creative.PRIORITY_1_IMPACT}
+    mid = {"impact_score": creative.PRIORITY_2_IMPACT}
+    low = {"impact_score": 5.0}
+    assert rank("act", None) == 1 and rank("act", low) == 1
+    assert rank("test", big) == 1
+    assert rank("test", low) == 2 and rank("test", None) == 2
+    assert rank("monitor", mid) == 2
+    assert rank("monitor", low) == 3 and rank("monitor", None) == 3
+    assert rank("no_change", big) == 3
+    assert _r2([_issue(basis="d3", kind="act")])["priority_rank"] == 1
+
+
+def test_the_published_order_is_bucket_then_impact():
+    def e(name, bucket, score):
+        return {"campaign": name, "bucket": bucket,
+                "impact": None if score is None else {"impact_score": score}}
+    triage = [e("m1", "monitor", 500), e("n1", "no_change", None),
+              e("t1", "test", 10), e("a1", "act", None), e("t2", "test", 90),
+              e("a2", "act", 20), e("t3", "test", None), e("t4", "test", 90),
+              {"campaign": "old"}]
+    order = [t["campaign"] for t in creative.sort_triage(triage)]
+    assert order == ["a2", "a1", "t2", "t4", "t1", "t3", "m1", "n1", "old"]
+
+
+def test_a_card_carries_impact_movement_and_summary_from_the_pack():
+    camp = _keyed()
+    t = _r2([], summary="CPA +22.41%. Lower CTR appears to be the largest "
+                        "contributor. Monitor.")
+    assert t["impact"] == camp["impact"]
+    assert t["movement"] == camp["movement"]
+    assert t["summary"].startswith("CPA +22.41%")
+    assert t["campaign_key"] == "K-A"
+    # No summary in the reply: the headline stands in.
+    assert _r2([])["summary"] == "h"
+
+
+def test_an_incomplete_issue_is_a_monitor_and_says_what_is_missing():
+    i = _r2([_issue(basis="d3", kind="act", evidence="",
+                    confidence={"level": "high", "reason": ""})])["issues"][0]
+    assert i["recommendation"]["type"] == "monitor"
+    assert i["type_adjusted_from"] == "act"
+    assert i["incomplete"] == ["evidence", "confidence_reason"]
+    i = _r2([_issue(plan=None)])["issues"][0]
+    assert "test_plan" in i["incomplete"]
+    assert i["recommendation"]["type"] == "monitor"
+    # Complete issues carry no flag at all.
+    assert "incomplete" not in _r2([_issue()])["issues"][0]
+
+
+def _creative_issue(**plan):
+    return _issue(basis="d2", plan={**CREATIVE_PLAN, **plan},
+                  confidence={"level": "low", "reason": "one week"})
+
+
+def test_an_existing_asset_must_be_named_in_the_pool_or_the_campaign():
+    # In the same-goal pool: kept.
+    i = _r2([_creative_issue(challenger_kind="existing_asset",
+                             challenger_ad="Pool Ad | Static")],
+            pool=POOL)["issues"][0]
+    assert i["test_plan"]["challenger_kind"] == "existing_asset"
+    assert i["test_plan"]["challenger_ad"] == "Pool Ad | Static"
+    assert "challenger_kind_adjusted_from" not in i["test_plan"]
+    # One of the campaign's own ads: kept -- unless it is the control, which
+    # cannot be its own challenger.
+    i = _r2([_creative_issue(challenger_kind="existing_asset",
+                             challenger_ad="Ad One", control="Ad Zero")],
+            pool=POOL)["issues"][0]
+    assert i["test_plan"]["challenger_kind"] == "existing_asset"
+    i = _r2([_creative_issue(challenger_kind="existing_asset",
+                             challenger_ad="Ad One")], pool=POOL)["issues"][0]
+    assert i["test_plan"]["challenger_kind"] == "new_creative"
+    # Another goal's pool ad, or a name nobody has: new creative, and says so.
+    for name in ("Offsite Ad | Video", "An Ad Nobody Made"):
+        i = _r2([_creative_issue(challenger_kind="existing_asset",
+                                 challenger_ad=name,
+                                 brief={"format": "video",
+                                        "opening_line": "Still paying?"})],
+                pool=POOL)["issues"][0]
+        tp = i["test_plan"]
+        assert tp["challenger_kind"] == "new_creative", name
+        assert tp["challenger_kind_adjusted_from"] == "existing_asset"
+        assert tp["challenger_ad"] is None
+        assert tp["brief"]["opening_line"] == "Still paying?"
+        assert tp["brief"]["built_from"] is None
+
+
+def test_new_creative_keeps_its_brief_and_a_non_creative_test_has_no_kind():
+    brief = {"format": "static", "angle_or_hook": "problem",
+             "opening_line": "Tired of building someone else's book?",
+             "built_from": "the problem hook, better than this goal's CPA"}
+    i = _r2([_creative_issue(challenger_kind="new_creative", brief=brief)],
+            pool=POOL)["issues"][0]
+    assert i["test_plan"]["challenger_kind"] == "new_creative"
+    assert i["test_plan"]["brief"] == brief
+    i = _r2([_issue()], pool=POOL)["issues"][0]          # a landing page test
+    assert i["test_plan"]["challenger_kind"] is None
+    assert i["test_plan"]["brief"] is None
+
+
+def test_an_issue_carries_the_keys_the_ledger_registers_it_by():
+    t = _r2([_creative_issue(challenger_kind="existing_asset",
+                             challenger_ad="Pool Ad | Static"),
+             _issue(basis="d3", kind="act")], pool=POOL)
+    test = next(i for i in t["issues"] if i["basis"] == "d2")
+    act = next(i for i in t["issues"] if i["basis"] == "d3")
+    assert test["entity_level"] == "campaign"     # _finding's level
+    assert act["entity_key"] == "K-A"
+    plan = test["test_plan"]
+    assert plan["control_ad_key"] == "AD-1"
+    assert plan["decision_spend_per_arm"] == 435.7
+    assert test["ad_group"] == "Group One"
+    from intel import outcomes
+    ledger = outcomes.update_ledger(outcomes.empty("renegade"), [t], {},
+                                    _date(2026, 10, 1), {})
+    e = ledger["entries"][test["id"]]
+    assert e["kind"] == "creative_test"
+    assert e["challenger_kind"] == "existing_asset"
+    assert e["decision_spend_per_arm"] == 435.7
+    assert ledger["entries"][act["id"]]["entity_key"] == "K-A"
+
+
+def test_causal_wording_is_flagged_on_the_card():
+    t = _r2([_issue(observation="CPA rose due to the auction.",
+                    evidence="Lower CTR is driving it, because of fatigue.")],
+            summary="CPA +22%. CTR caused it.")
+    assert creative.causal_language([t]) == 4
+    assert t["causal_flags"] == ["caused", "due to", "is driving",
+                                 "because of"]
+    clean = _r2([_issue()], summary="CPA +22%. Lower CTR appears to be the "
+                                    "largest contributor.")
+    assert creative.causal_language([clean]) == 0
+    assert clean["causal_flags"] == []
+    assert creative.causal_phrases("It drove the rise.") == ["drove"]
+
+
+def test_the_summary_and_the_account_note_are_figure_checked():
+    t = _r2([], summary="CPA +22.41%, $1,234.56 wasted.")
+    facts = {"campaigns": [{"pct_7": {"cpa": 22.41}}]}
+    assert creative.check_figures([t], facts) == 1
+    assert t["unverified_figures"] == ["$1,234.56"]
+    assert creative.check_note("Start with the $310.50 rise in Camp A.",
+                               {"campaigns": [{"impact": {
+                                   "excess_cost": 310.5}}]}) == []
+    assert creative.check_note("Start with the $999.99 one.", facts) == [
+        "$999.99"]
+    assert creative.check_note(None, facts) == []
+
+
+def test_a_briefs_evidence_is_checked_and_its_opening_line_is_not():
+    brief = {"format": "static", "angle_or_hook": "problem",
+             "opening_line": "Still paying $4,000 a year for leads?",
+             "built_from": "the problem hook, 31.25% better on this goal"}
+    t = _r2([_creative_issue(challenger_kind="new_creative", brief=brief)],
+            pool=POOL)
+    floor = {"campaigns": [{"ad_groups": [{"test_floor": {
+        "decision_spend_per_arm": 435.7, "min_conversions_per_arm": 10}}]}]}
+    assert creative.check_figures([t], floor) == 1
+    assert t["unverified_figures"] == ["31.25%"]
+
+
+GOAL_ROWS = [
+    {"level": "goal", "optimization_goal": "LEAD_GENERATION",
+     "campaign_key": None, "campaign_name": None, "cpa_pct": 18.2,
+     "evidence_level": "moderate", "excess_cost": 400.0, "impact_score": 320.0},
+    {"level": "campaign", "optimization_goal": "LEAD_GENERATION",
+     "campaign_key": "K-A", "campaign_name": "Camp A", "cpa_pct": 30.0,
+     "excess_cost": 310.5, "impact_score": 248.4, "evidence_level": "moderate",
+     "contribution_share_pct": 41.5, "cumulative_share_pct": 41.5,
+     "contribution_rank": 1},
+    {"level": "campaign", "optimization_goal": "LEAD_GENERATION",
+     "campaign_key": "K-B", "campaign_name": "Camp B", "cpa_pct": 12.0,
+     "excess_cost": 120.0, "impact_score": 96.0, "evidence_level": "moderate",
+     "contribution_share_pct": 26.9, "cumulative_share_pct": 68.4,
+     "contribution_rank": 2},
+    {"level": "campaign", "optimization_goal": "LEAD_GENERATION",
+     "campaign_key": "K-C", "campaign_name": "Camp C", "cpa_pct": 3.0,
+     "excess_cost": 20.0, "impact_score": 10.0, "evidence_level": "directional",
+     "contribution_share_pct": 31.6, "cumulative_share_pct": 100.0,
+     "contribution_rank": 3},
+    {"level": "goal", "optimization_goal": "LINK_CLICKS", "campaign_key": None,
+     "campaign_name": None, "cpa_pct": -6.1, "evidence_level": "directional"},
+    {"level": "goal", "optimization_goal": "THRUPLAY", "campaign_key": None,
+     "campaign_name": None, "cpa_pct": 40.0,
+     "evidence_level": "insufficient"},
+]
+
+
+def _summ_issue(kind, pattern):
+    return {"recommendation": {"type": kind}, "pattern": pattern}
+
+
+def test_the_account_summary_is_built_from_sql_fields_and_counts():
+    triage = [
+        {"campaign": "Camp A", "bucket": "act",
+         "impact": {"impact_score": 248.4},
+         "issues": [_summ_issue("act", "possible_fatigue"),
+                    _summ_issue("monitor", "post_click")]},
+        {"campaign": "Camp B", "bucket": "test", "impact": {"impact_score": 50},
+         "issues": [_summ_issue("test", "post_click")]},
+        {"campaign": "Camp C", "bucket": "monitor", "impact": None,
+         "issues": [_summ_issue("monitor", "steady")]},
+        {"campaign": "Camp D", "bucket": "no_change", "issues": []},
+    ]
+    s = creative.account_summary({"impact_available": True,
+                                  "goal_impact": GOAL_ROWS}, triage,
+                                 "Start with Camp A.")
+    lead, clicks, views = s["goals"]
+    assert lead["lines"] == [
+        "Lead generation: CPA up 18.20% on the prior 7 days; 2 campaigns "
+        "account for 68.4% of that rise."]
+    assert [c["campaign"] for c in lead["contributors"]] == ["Camp A",
+                                                             "Camp B"]
+    assert clicks["lines"] == ["Link clicks: CPA down 6.10% on the prior 7 days."]
+    assert clicks["contributors"] == []
+    # A rise on insufficient evidence names no contributors.
+    assert views["lines"] == ["Thruplay: CPA up 40.00% on the prior 7 days."]
+    assert s["lines"] == [
+        "1 shows creative-side deterioration (possible_fatigue), 1 post-click.",
+        "2 have issues with low current impact."]
+    assert s["note"] == "Start with Camp A."
+    # Every figure in it is one of 018's.
+    known, _ = creative._known({"rows": GOAL_ROWS})
+    for line in s["lines"] + [x for g in s["goals"] for x in g["lines"]]:
+        assert creative.unverified_figures(line, known) == [], line
+
+
+def test_no_018_means_no_goal_lines_and_the_counts_still_read():
+    triage = [{"campaign": "A", "bucket": "test", "impact": None,
+               "issues": [_summ_issue("test", "creative_engagement")]}]
+    s = creative.account_summary({"impact_available": False,
+                                  "goal_impact": GOAL_ROWS}, triage)
+    assert s["goals"] == []
+    # Without 018's figure a test is not called low impact.
+    assert s["lines"] == [
+        "1 shows creative-side deterioration (creative_engagement)."]
+
+
+def _impact_rows():
+    return {"available": True, "pair": "last_7_vs_prior_7", "rows": [
+        {"level": "goal", "optimization_goal": "LEAD_GENERATION",
+         "cpa_pct": 4.0, "evidence_level": "moderate"},
+        {"level": "campaign", "optimization_goal": "LEAD_GENERATION",
+         "campaign_key": "X", "campaign_name": "Campaign X",
+         "excess_cost": 55.0, "impact_score": 44.0,
+         "contribution_share_pct": 100.0, "cumulative_share_pct": 100.0,
+         "contribution_rank": 1, "evidence_level": "moderate"}]}
+
+
+def test_the_pack_attaches_impact_and_movement(monkeypatch):
+    pack = _pack(monkeypatch, impact=_impact_rows())
+    x, y = pack["campaigns"]
+    assert pack["impact_available"] is True
+    assert x["impact"] == {"goal": "LEAD_GENERATION", "excess_cost": 55.0,
+                           "impact_score": 44.0,
+                           "contribution_share_pct": 100.0,
+                           "evidence": "moderate"}
+    # A campaign spanning goals has no campaign row in 018.
+    assert y["impact"] is None
+    assert x["movement"]["7v7"] == {k: STEADY_PCT[k]
+                                    for k in creative.MOVEMENT_KEYS}
+    assert set(x["movement"]) == {"7v7", "14v14"}
+    # The page has them; the model reads impact without its score, and
+    # never movement or the ledger's keys.
+    sent = creative.campaign_tier(x, "A")
+    assert sent["impact"] == {"goal": "LEAD_GENERATION", "excess_cost": 55.0,
+                              "contribution_share_pct": 100.0,
+                              "evidence": "moderate"}
+    for k in ("movement", "campaign_key", "entity_keys"):
+        assert k not in sent
+    assert not any("ad_key" in a for a in sent["where"]["ads"])
+    assert "impact" in creative.campaign_tier(x, "C")
+
+
+def test_no_018_is_a_pack_without_impact_not_a_crash(monkeypatch):
+    pack = _pack(monkeypatch)
+    assert pack["impact_available"] is False
+    assert "018" in pack["impact_why"]
+    assert all(c["impact"] is None for c in pack["campaigns"])
+    assert pack["dimensions_by_goal"] is None
+
+
+def _by_goal_rows():
+    row = {"optimization_goal": "LEAD_GENERATION", "value": "callout",
+           "ads_run": 4, "spend": 100.0, "conversions": 5,
+           "rates": {"cpa": 20.0, "link_ctr": 1.1}, "goal_cpa": 25.0,
+           "relative_pct": -20.0, "relative": "better",
+           "evidence_level": "directional", "spend_share_pct": 40.0,
+           "mixed_currency": False}
+    return {"hook": {"available": True, "rows": [row]},
+            "offer": {"available": True, "rows": []},
+            "audience": {"available": True, "rows": []}}
+
+
+def test_dimensions_by_goal_replace_dimensions_for_the_model(monkeypatch):
+    suggest = _suggest()
+    pack = _pack(monkeypatch, by_goal=_by_goal_rows())
+    dbg = pack["dimensions_by_goal"]
+    assert set(dbg) == {"LEAD_GENERATION"}
+    assert dbg["LEAD_GENERATION"]["hook"][0]["relative"] == "better"
+    facts = suggest.model_facts(pack)
+    assert "dimensions" not in facts
+    assert facts["dimensions_by_goal"] == {"LEAD_GENERATION": {"hook": [
+        {"value": "callout", "spend": 100.0, "conversions": 5, "cpa": 20.0,
+         "relative": "better", "relative_pct": -20.0,
+         "evidence_level": "directional", "spend_share_pct": 40.0}]}}
+    # Read over the 28-day settled window: the last_28 rung's dates.
+    q, sent, tier, keep = suggest.fit(pack, jsonable_encoder(facts))
+    assert '"dimensions_by_goal"' in q and '"dimensions":' not in q
+
+
+def test_dimensions_by_goal_read_the_last_28_settled_days(monkeypatch):
+    seen = []
+
+    async def spy(slug, since, until, dimension):
+        seen.append((since, until, dimension))
+        return {"available": True, "rows": []}
+
+    monkeypatch.setattr(creative.metrics, "facet_by_goal", spy)
+    w = {P28: {"cur_since": WINDOWS[P28][0], "cur_until": WINDOWS[P28][1]}}
+    assert asyncio.run(creative._dimensions_by_goal("renegade", w)) == {}
+    assert seen == [(WINDOWS[P28][0], WINDOWS[P28][1], d)
+                    for d in creative.GOAL_DIMENSIONS]
+    # No 017 windows: nothing asked, nothing built.
+    seen.clear()
+    assert asyncio.run(creative._dimensions_by_goal("renegade", None)) is None
+    assert seen == []
+
+
+def test_without_018_the_model_reads_the_old_dimensions(monkeypatch):
+    suggest = _suggest()
+    facts = suggest.model_facts(_pack(monkeypatch))
+    assert "dimensions" in facts and "dimensions_by_goal" not in facts
+
+
+def test_outcome_tags_are_read_off_the_ledger():
+    t = _r2([_issue(basis="d3", kind="act"), _issue(prio="monitor",
+                                                    kind="monitor")])
+    act = next(i for i in t["issues"]
+               if i["recommendation"]["type"] == "act")
+    ledger = {"entries": {act["id"]: {
+        "status": "measuring", "implemented_on": "2026-10-03",
+        "match": "likely", "measurement": {"settled_days": 4,
+                                           "result": "too_early"}}}}
+    assert creative.attach_outcomes([t], ledger) == 1
+    assert act["outcome"] == {"status": "measuring",
+                              "implemented_on": "2026-10-03",
+                              "match": "likely", "settled_days": 4,
+                              "result": "too_early"}
+    assert all("outcome" not in i for i in t["issues"] if i is not act)
+
+
+def test_followups_carry_no_model_text():
+    ledger = {"entries": {
+        "i1": {"id": "i1", "campaign": "Camp A", "status": "measuring",
+               "type": "test", "kind": "creative_test",
+               "action": "Model-written words with $9,999.99 in them",
+               "implemented_on": "2026-10-03", "match": "strong",
+               "measurement": {"settled_days": 4, "result": "too_early"}},
+        "i2": {"id": "i2", "campaign": "Camp A", "status": "expired"}}}
+    from intel import outcomes
+    out = creative.followups(ledger, [{"campaign": "Camp A"},
+                                      {"campaign": "Camp B"}],
+                             outcomes.for_campaign)
+    assert list(out) == ["Camp A"]
+    (row,) = out["Camp A"]
+    assert "action" not in row
+    assert row["status"] == "measuring" and row["result"] == "too_early"
+
+
+def test_both_reply_shapes_are_read():
+    rows = [{"campaign": "A"}]
+    assert creative.parse_reply({"account_note": " Start\nwith A. ",
+                                 "campaigns": rows}) == (rows, "Start with A.")
+    assert creative.parse_reply(rows) == (rows, None)
+    assert creative.parse_reply([{"campaign": "A", "account_note": "n"}])[1] \
+        == "n"
+    assert creative.parse_reply({"campaigns": "nonsense"}) == ([], None)
+    with pytest.raises(ValueError):
+        creative.parse_reply("text")
+
+
+def test_the_prompt_carries_the_round_2_rules():
+    p = " ".join(creative.SUGGESTIONS_PROMPT.split())
+    for phrase in (
+            '"account_note"', '"summary"', "at most 25 words",
+            "CPA +22%. Lower CTR appears to be the largest contributor. "
+            "Test new creative. Medium-high confidence.",
+            'A metric never "caused" anything',
+            "appears to be the largest contributor",
+            '"because of", "due to"', "SIX FIELDS ARE MANDATORY",
+            '"existing_asset"', '"new_creative"', "EXACTLY as",
+            "relabelled new_creative", "opening_line", "built_from",
+            "RELATIVE IS WITHIN ITS GOAL ONLY", "`dimensions_by_goal`",
+            "`followups`", "Do not propose a second test in an ad group "
+            "whose test is implemented or measuring",
+            "excess_cost", "Dollars may be compared across campaigns; a CPA "
+            "may not."):
+        assert phrase in p, phrase
+    # The reply is an object, and the format braces survived .format().
+    rendered = creative.SUGGESTIONS_PROMPT.format(
+        brand="b", since="s", until="u", days=28, settled="x", unsettled=3,
+        facts="{}", previous_note="n")
+    assert '{"account_note":' in rendered
+    assert "The first character is { and the last is }." in rendered
+
+
+def _publish_pack():
+    c = _keyed()
+    return {"verb": "creative_pack", "brand": "renegade", "brand_id": "B",
+            "since": "2026-09-04", "until": "2026-10-01", "days": 28,
+            "settled_through": "2026-09-28", "unsettled_days": 3,
+            "funnel_available": True, "funnel_why": None,
+            "impact_available": True, "impact_why": None,
+            "goal_impact": GOAL_ROWS,
+            "campaigns": [c, {**_keyed("Camp B"), "impact": None}],
+            "challenger_pool": POOL,
+            "windows": {"settled_through": "2026-09-28"},
+            "goals": [{"optimization_goal": "LEAD_GENERATION"}],
+            "formats": [], "dimensions": {}, "dimensions_by_goal": None,
+            "untagged": {}, "tiring": []}
+
+
+def test_publish_wires_the_ledger_the_summary_and_the_order(monkeypatch,
+                                                            tmp_path):
+    """End to end with no database, no model and no network: the ledger is
+    loaded before the prompt (followups), updated, measured and saved after
+    the file, and the doc carries account_summary, outcomes and the
+    bucket order."""
+    suggest = _suggest()
+    logged, saved, prompts = [], [], []
+    monkeypatch.setattr(suggest, "log", logged.append)
+    pack = _publish_pack()
+
+    async def fake_pack(slug, days, until):
+        return pack
+
+    async def fake_snapshot(slug, names):
+        return {}
+
+    reply = {"account_note": "Start with Camp A.",
+             "campaigns": [
+                 {"campaign": "Camp B", "rating": "yellow", "summary": "Steady.",
+                  "issues": [_issue(prio="monitor", kind="monitor")]},
+                 {"campaign": "Camp A", "rating": "red",
+                  "summary": "CPA +22.41%. Due to CTR. Act.",
+                  "issues": [_issue(basis="d3", kind="act")]}]}
+
+    async def fake_classify(prompt, *, system=None, timeout=None,
+                            expect="list"):
+        assert expect == "any"
+        prompts.append(prompt)
+        return reply
+
+    prior = {"brand": "renegade", "updated_at": "2026-09-30", "entries": {
+        "i0929-0-0": {"id": "i0929-0-0", "campaign": "Camp A",
+                      "status": "measuring", "type": "test",
+                      "kind": "creative_test", "implemented_on": "2026-09-29",
+                      "match": "strong", "last_mentioned_on": "2026-09-30",
+                      "measurement": {"settled_days": 2,
+                                      "result": "too_early"}}}}
+    measured = []
+
+    async def fake_measure(ledger, slug, settled):
+        measured.append(settled)
+        return ledger
+
+    monkeypatch.setattr(suggest.creative_mod, "creative_pack", fake_pack)
+    monkeypatch.setattr(suggest.creative_mod, "snapshot", fake_snapshot)
+    monkeypatch.setattr(suggest.creative_mod, "previous_suggestion",
+                        lambda slug, before: None)
+    monkeypatch.setattr(suggest.creative_mod, "publish_path",
+                        lambda slug, on: tmp_path / f"{on}-{slug}.json")
+    monkeypatch.setattr(suggest.chat, "classify", fake_classify)
+    monkeypatch.setattr(suggest.outcomes_mod, "load", lambda slug: prior)
+    monkeypatch.setattr(suggest.outcomes_mod, "load_overrides", lambda: {})
+    monkeypatch.setattr(suggest.outcomes_mod, "measure", fake_measure)
+    monkeypatch.setattr(suggest.outcomes_mod, "save",
+                        lambda slug, ledger: saved.append(ledger))
+
+    assert asyncio.run(suggest.publish("renegade", False, True)) == 0
+    (out,) = list(tmp_path.glob("*-renegade.json"))
+    doc = json.loads(out.read_text(encoding="utf-8"))
+
+    assert '"followups":{"Camp A":[{"id":"i0929-0-0"' in prompts[0]
+    assert [t["campaign"] for t in doc["triage"]] == ["Camp A", "Camp B"]
+    assert [t["bucket"] for t in doc["triage"]] == ["act", "monitor"]
+    assert doc["triage"][0]["causal_flags"] == ["due to"]
+    act = doc["triage"][0]["issues"][0]
+    assert act["outcome"]["status"] == "open"
+    assert doc["account_summary"]["note"] == "Start with Camp A."
+    assert doc["account_summary"]["goals"][0]["lines"]
+    assert doc["impact_available"] is True
+    assert doc["outcomes"]["available"] is True
+    assert doc["outcomes"]["scorecard"]["made"] >= 1
+    assert measured == ["2026-09-28"]
+    assert saved and act["id"] in saved[0]["entries"]
+    assert any("buckets: 1 act, 0 test, 1 monitor, 0 no_change" in m
+               for m in logged)
+    assert any("outcomes ledger, 2 entr(ies)" in m for m in logged)
+    assert any("causal phrase" in m for m in logged)
+    # What was published renders, buckets in order.
+    html = ui.templates.env.get_template("_triage.html").render(
+        published=doc)
+    assert html.index("Camp A") < html.index("Camp B")
+    assert 'data-bucket="act"' in html and 'data-bucket="monitor"' in html
+
+
+def test_a_bad_overrides_file_is_logged_and_ignored(monkeypatch):
+    suggest = _suggest()
+    logged = []
+    monkeypatch.setattr(suggest, "log", logged.append)
+
+    def bad():
+        raise ValueError("outcomes/overrides.json is not valid JSON: x")
+
+    async def broken_measure(ledger, slug, settled):
+        raise RuntimeError("no database")
+
+    monkeypatch.setattr(suggest.outcomes_mod, "load_overrides", bad)
+    monkeypatch.setattr(suggest.outcomes_mod, "measure", broken_measure)
+    t = _r2([_issue(basis="d3", kind="act")])
+    ledger, ok = asyncio.run(suggest.update_outcomes(
+        "renegade", {"entries": {}}, [t], {}, {"settled_through": "2026-09-28"}))
+    assert ok and t["issues"][0]["id"] in ledger["entries"]
+    assert any("overrides ignored" in m for m in logged)
+    assert any("not measured this run" in m for m in logged)
+
+
+def test_a_25_campaign_account_with_018_fits_the_budget(monkeypatch):
+    """The live size with everything round 2 adds: impact on every
+    campaign and a per-goal dimension table of 14 values a dimension."""
+    suggest = _suggest()
+    ents, copy, override, drop = _big_account()
+    impact = {"available": True, "rows": [
+        {"level": "campaign", "optimization_goal": "LEAD_GENERATION",
+         "campaign_key": f"C{i:02d}", "campaign_name": None,
+         "excess_cost": 123.45 + i, "impact_score": 98.76 + i,
+         "contribution_share_pct": 4.0, "cumulative_share_pct": 4.0 * i,
+         "contribution_rank": i, "evidence_level": "moderate"}
+        for i in range(25)]}
+    row = dict(_by_goal_rows()["hook"]["rows"][0])
+    by_goal = {d: {"available": True, "rows": [
+        {**row, "value": f"{d} value number {k}"} for k in range(14)]}
+        for d in creative.GOAL_DIMENSIONS}
+    pack = _pack(monkeypatch, ladder=fake_ladder(ents, override, drop),
+                 copy=copy, formats=_realistic_formats(), impact=impact,
+                 by_goal=by_goal)
+    assert all(c.get("impact") for c in pack["campaigns"])
+    facts = _sized_facts(suggest, pack)
+    assert "dimensions_by_goal" in facts and "dimensions" not in facts
+    q, sent, tier, keep = suggest.fit(pack, facts)
+    assert len(q) <= suggest.TRIAGE_BUDGET, (len(q), tier, keep)
+    assert tier == "A", (len(q), tier, keep)
+    assert len(sent["campaigns"]) == 25
+
+
+def test_the_control_cannot_be_named_as_the_existing_challenger():
+    tp = {"control": "Become an Agent | Start Franchise",
+          "challenger_kind": "existing_asset",
+          "challenger_ad": "Become an Agent | Start Franchise",
+          "brief": {"format": "static", "angle_or_hook": "ownership",
+                    "opening_line": "x", "built_from": "y"}}
+    out = creative._challenger(tp, "creative",
+                               {"Become an Agent | Start Franchise"})
+    assert out["challenger_kind"] == "new_creative"
+    assert out["challenger_kind_adjusted_from"] == "existing_asset"

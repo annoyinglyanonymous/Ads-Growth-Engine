@@ -503,3 +503,210 @@ async def funnel(slug: str, days: int = 7, until: date | None = None,
         "row_count": len(rows), "truncated": len(rows) > limit,
         "rows": rows[:limit],
     }
+
+
+# ---------------------------------------------------------------------------
+# Impact, facets by goal, and outcome readings (migration 018).
+#
+# Same stance as funnel_ladder: one round trip each, every argument cast to
+# the type 018 declares (psycopg's smallint/double guesses make Postgres
+# report "function does not exist"), jsonb decoded, nothing computed. Each
+# returns {"available": False, "why": ...} until 018 is applied, so the page
+# and the pack degrade rather than crash.
+# ---------------------------------------------------------------------------
+
+IMPACT_UNAVAILABLE = ("migration 018 is not applied "
+                      "(python ads_migrate.py --status)")
+
+#: The pairs ads.analysis_windows defines (017), short end first.
+ANALYSIS_PAIRS = ("unsettled_vs_last_7", "last_7_vs_prior_7",
+                  "last_14_vs_prior_14", "last_28_vs_prior_28",
+                  "last_7_vs_before")
+
+#: The dimensions ads.facet_by_goal accepts -- the same six as 013's
+#: facet_performance, checked here so a typo is one sentence, not a raise.
+FACET_DIMENSIONS = ("hook", "offer", "audience", "format", "family", "angle")
+
+_ARM_JSONB = ("control_m", "challenger_m", "effect_pct")
+
+
+def _refusal(exc: Exception) -> ValueError:
+    """018's own refusals (overlapping windows, the same ad on both arms) as
+    one sentence, the way funnel() reports 017's."""
+    text = str(exc).strip()
+    return ValueError(text.splitlines()[0] if text else type(exc).__name__)
+
+
+async def goal_impact(slug: str, pair: str = "last_7_vs_prior_7") -> dict:
+    """Excess dollars per goal and per single-goal campaign, for one pair.
+
+    The windows come from ads.analysis_windows in the same query, so "last 7
+    vs prior 7" here is the same fourteen days as everywhere else. Every
+    figure -- excess_cost, impact_score, contribution, its shares and its
+    rank -- is a column ads.goal_impact returned. Dollars may be ordered
+    across goals; a CPA or a contribution may not (see 018's header).
+
+    -> {"available": True, "brand", "pair", "settled_through",
+        "windows": {cur_since, cur_until, pri_since, pri_until, cur_days,
+                    pri_days, unsettled_days} | None, "rows": [...]}
+    """
+    if pair not in ANALYSIS_PAIRS:
+        raise ValueError(f"unknown pair {pair!r}. Known: "
+                         f"{', '.join(ANALYSIS_PAIRS)}")
+    b = await context.brand(slug)
+    sql = """
+        select w.pair, w.cur_since, w.cur_until, w.pri_since, w.pri_until,
+               w.cur_days, w.pri_days, w.settled_edge, w.unsettled_days,
+               gi.*
+          from ads.analysis_windows(%s::uuid, now()) w
+          left join lateral ads.goal_impact(
+                    %s::uuid,
+                    w.cur_since, w.cur_until, w.pri_since, w.pri_until,
+                    w.settled_edge) with ordinality gi on true
+         where w.pair = %s::text
+         order by gi.ordinality
+        """
+    # left join: a pair whose windows hold no goal still reports its dates.
+    # Ordinality keeps 018's own order (goals by spend, goal row first, then
+    # its campaigns by contribution), which a join does not otherwise promise.
+    try:
+        rows = await fetch_all(sql, (b["id"], b["id"], pair))
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": IMPACT_UNAVAILABLE}
+    except _pg_errors.RaiseException as exc:
+        raise _refusal(exc) from None
+
+    out: dict = {"available": True, "brand": b["slug"], "pair": pair,
+                 "settled_through": None, "windows": None, "rows": []}
+    for r in rows:
+        if out["windows"] is None:
+            out["settled_through"] = r.get("settled_edge")
+            out["windows"] = {k: r.get(k) for k in _WINDOW_COLS
+                              if k not in ("pair", "settled_edge")}
+        if r.get("level") is None:
+            continue  # the pair's dates, with no goal in either window
+        out["rows"].append({k: v for k, v in r.items()
+                            if k not in _WINDOW_COLS and k != "ordinality"})
+    return out
+
+
+async def facet_by_goal(slug: str, since: date, until: date,
+                        dimension: str) -> dict:
+    """One facet dimension per optimization goal, each value against its own
+    goal's CPA. value None is the untagged bucket; nothing crosses goals.
+
+    -> {"available": True, "brand", "dimension", "since", "until",
+        "rows": [...]}
+    """
+    if dimension not in FACET_DIMENSIONS:
+        raise ValueError(f"unknown dimension {dimension!r}. Known: "
+                         f"{', '.join(FACET_DIMENSIONS)}")
+    b = await context.brand(slug)
+    try:
+        rows = await fetch_all(
+            """
+            select fg.optimization_goal, fg.value, fg.ads_run, fg.spend,
+                   fg.conversions, fg.rates, fg.goal_cpa, fg.relative_pct,
+                   fg.relative, fg.evidence_level, fg.spend_share_pct,
+                   fg.mixed_currency
+              from ads.facet_by_goal(%s::uuid, %s::date, %s::date, %s::text) fg
+            """,
+            (b["id"], since, until, dimension),
+        )
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": IMPACT_UNAVAILABLE}
+    except _pg_errors.RaiseException as exc:
+        raise _refusal(exc) from None
+    out_rows = []
+    for r in rows:
+        row = dict(r)
+        row["rates"] = _decoded(row.get("rates"))
+        out_rows.append(row)
+    return {"available": True, "brand": b["slug"], "dimension": dimension,
+            "since": since, "until": until, "rows": out_rows}
+
+
+async def entity_outcome(slug: str, level: str, entity_key: str,
+                         before_since: date, before_until: date,
+                         after_since: date, after_until: date) -> dict:
+    """One entity's 017 funnel row with current = after, prior = before.
+
+    The settled edge is read in the same query and handed to 018, so
+    after_settled_days and the evidence cap agree with `settled_through`.
+
+    -> {"available": True, "brand", "settled_through", "row": {...} | None}
+    (row None: the entity ran in neither window.)
+    """
+    if level not in FUNNEL_LEVELS:
+        raise ValueError(f"unknown level {level!r}. Known: "
+                         f"{', '.join(FUNNEL_LEVELS)} (Meta's adset is "
+                         f"ad_group here)")
+    b = await context.brand(slug)
+    sql = """
+        with edge as (select ads.settled_through(%s::uuid, now()) as settled)
+        select e.settled as settled_through, eo.*
+          from edge e
+          left join lateral ads.entity_outcome(
+                    %s::uuid, %s::text, %s::uuid,
+                    %s::date, %s::date, %s::date, %s::date,
+                    e.settled) eo on true
+        """
+    params = (b["id"], b["id"], level, entity_key,
+              before_since, before_until, after_since, after_until)
+    try:
+        rows = await fetch_all(sql, params)
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": IMPACT_UNAVAILABLE}
+    except _pg_errors.RaiseException as exc:
+        raise _refusal(exc) from None
+
+    settled = rows[0].get("settled_through") if rows else None
+    row = None
+    for r in rows:
+        if r.get("level") is None:
+            continue  # the edge, with no row for the entity
+        row = {k: v for k, v in r.items() if k != "settled_through"}
+        for k in _JSONB_COLS:
+            row[k] = _decoded(row.get(k))
+        break
+    return {"available": True, "brand": b["slug"],
+            "settled_through": settled, "row": row}
+
+
+async def arm_compare(slug: str, control_ad_key: str, challenger_ad_key: str,
+                      since: date, until: date,
+                      decision_spend=None) -> dict:
+    """A test's two arms over one window: each arm's figures and rates, the
+    challenger's percent effect against the control, evidence from the
+    smaller arm, and whether both reached `decision_spend` (None: not asked,
+    and spend_sufficient comes back None).
+
+    -> {"available": True, "brand", "settled_through", "row": {...} | None}
+    """
+    b = await context.brand(slug)
+    sql = """
+        with edge as (select ads.settled_through(%s::uuid, now()) as settled)
+        select e.settled as settled_through, ac.*
+          from edge e
+          cross join lateral ads.arm_compare(
+                    %s::uuid, %s::uuid, %s::uuid,
+                    %s::date, %s::date, e.settled, %s::numeric) ac
+        """
+    params = (b["id"], b["id"], control_ad_key, challenger_ad_key,
+              since, until, decision_spend)
+    try:
+        rows = await fetch_all(sql, params)
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": IMPACT_UNAVAILABLE}
+    except _pg_errors.RaiseException as exc:
+        raise _refusal(exc) from None
+
+    if not rows:
+        return {"available": True, "brand": b["slug"],
+                "settled_through": None, "row": None}
+    r = rows[0]
+    row = {k: v for k, v in r.items() if k != "settled_through"}
+    for k in _ARM_JSONB:
+        row[k] = _decoded(row.get(k))
+    return {"available": True, "brand": b["slug"],
+            "settled_through": r.get("settled_through"), "row": row}

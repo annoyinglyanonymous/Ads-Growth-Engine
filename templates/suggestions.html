@@ -33,6 +33,16 @@
     "Wearing out" went: it was the Fatigue page's table, shorter. One line
     points there instead. So did the format table and the coverage cards --
     the brief carries both.
+
+    ROUND 2 (2026-10). Above the campaign groups, two panels from the
+    published file: "What matters today" (account_summary -- per goal, the
+    CPA move and the campaigns that account for it) and "Recommendations
+    followed up" (outcomes.scorecard -- what the account shows was done, and
+    what the numbers read afterwards). Each renders nothing when its field is
+    absent. The hook / offer / audience tables moved inside the goal tabs:
+    when the live pack has `dimensions_by_goal` for the open tab, each label
+    is read under that goal alone, so it carries a CPA and a relative word;
+    otherwise the old mixed-goal spend panels render as before.
     ===================================================================== -#}
 
 {% block toolbar %}
@@ -40,6 +50,152 @@
 {% endblock %}
 
 {% block body %}
+
+{#- Navy only: this page is under the blue-and-white rule. Severity is weight
+    and merit is a word. -#}
+<style>
+  .today, .followed { border:1px solid var(--line); border-radius:var(--radius);
+    background:var(--surface); padding:12px 16px; margin:0 0 12px; }
+  .today h3, .followed h3 { font-size:12px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--accent); margin:0 0 8px; display:flex;
+    flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
+  .today h3 .state, .followed h3 .state { text-transform:none; letter-spacing:0;
+    font-weight:500; color:var(--muted); font-size:12px; }
+  .today p, .followed p { margin:4px 0 0; font-size:13px; }
+  .today-goals { display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
+    margin:0 0 6px; }
+  .today-goal { border:1px solid var(--line); border-radius:var(--radius-sm);
+    padding:8px 12px; background:var(--surface-2); }
+  .tg-head { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
+  .tg-head b { color:var(--ink-2); }
+  .tg-move { font-size:16px; font-weight:800; color:var(--accent);
+    font-variant-numeric:tabular-nums; }
+  .contrib { margin:6px 0 0; padding-left:18px; font-size:12.5px; }
+  .contrib li + li { margin-top:2px; }
+  .today-note { border-top:1px dashed var(--line-2); padding-top:6px; margin-top:8px !important; }
+  .today-note .k, .sc-k { font-size:10.5px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.05em; color:var(--muted); margin-right:4px; }
+  .sc-row { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 8px; }
+  .sc { border:1px solid var(--line); border-radius:var(--radius-sm); padding:6px 12px;
+    min-width:88px; }
+  .sc b { display:block; font-size:18px; font-weight:800; color:var(--accent);
+    font-variant-numeric:tabular-nums; }
+  .sc span { font-size:11px; color:var(--muted); }
+  .followed table, .goal-dims table { font-size:12.5px; }
+  .followed th, .followed td, .goal-dims th, .goal-dims td { padding:5px 10px; }
+  .recent { margin:8px 0 0; padding-left:18px; font-size:12.5px; }
+  .recent li + li { margin-top:4px; }
+  .goal-dims { margin-top:16px; }
+  .goal-dims .grid { grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
+  .goal-dims .card { padding:12px 14px; }
+  .goal-dims .card .table-wrap { margin:6px 0 0; }
+  .rel { font-weight:700; color:var(--ink-2); }
+  .rel.worse { color:var(--accent); }
+  .ev { display:inline-block; font-size:10px; font-weight:700; padding:0 6px;
+    border-radius:999px; border:1px dashed var(--line-2); color:var(--muted);
+    margin-left:4px; white-space:nowrap; }
+  @media (max-width:600px) {
+    .today, .followed { padding:10px; }
+    .today-goals, .goal-dims .grid { grid-template-columns:1fr; }
+    .sc { min-width:72px; padding:5px 9px; }
+  }
+</style>
+
+{#- WHAT MATTERS TODAY. `published.account_summary` (contracts2 D4), built by
+    creative.account_summary from SQL fields and counts; the one model-written
+    sentence is labelled as the review's. Nothing at all when it is absent, so
+    an older file renders as it did. -#}
+{% macro today_panel(acc) -%}
+{% if acc is mapping and (acc.goals or acc.lines or acc.note) %}
+<section class="today" aria-label="What matters today">
+  <h3>What matters today <span class="state">last 7 settled days against the 7 before, per goal</span></h3>
+  {% if acc.goals %}
+  <div class="today-goals">
+    {% for gb in acc.goals %}
+    <div class="today-goal">
+      <div class="tg-head"><b>{{ words(gb.goal) }}</b>
+        {%- if gb.cpa_pct is not none %}<span class="tg-move">CPA {{ signed_pct(gb.cpa_pct) }}</span>{% endif %}
+        {%- if gb.evidence %}<span class="small muted">evidence: {{ gb.evidence }}</span>{% endif %}</div>
+      {% for l in gb.lines or [] %}<p>{{ l }}</p>{% endfor %}
+      {% if gb.contributors %}
+      <ol class="contrib">
+        {% for x in gb.contributors %}
+        <li>{{ x.campaign }} <span class="muted">&middot; {{ pct(x.contribution_share_pct, 1) }} of the change
+          {%- if x.cumulative_share_pct is not none %} &middot; {{ pct(x.cumulative_share_pct, 1) }} together{% endif %}</span></li>
+        {% endfor %}
+      </ol>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% for l in acc.lines or [] %}<p>{{ l }}</p>{% endfor %}
+  {% if acc.note %}<p class="today-note"><span class="k">The review&rsquo;s read</span>{{ acc.note }}</p>{% endif %}
+</section>
+{% endif %}
+{%- endmacro %}
+
+{#- RECOMMENDATIONS FOLLOWED UP. `published.outcomes.scorecard` (D3): counts
+    of what the account shows was done and what the numbers read afterwards.
+    A reading, never a conclusion -- nothing here writes
+    ads.experiment.conclusion. -#}
+{% set KIND = {'creative_test': 'Creative test', 'creative_refresh': 'Creative refresh',
+               'delivery_cut': 'Delivery cut', 'budget': 'Budget',
+               'post_click': 'Post-click', 'other': 'Other'} %}
+{% set RESULT = {'improved': 'improved', 'neutral': 'no clear change',
+                 'worse': 'worse', 'too_early': 'too early to read'} %}
+{% macro followed_panel(oc) -%}
+{% if oc is mapping %}
+{% set sc = oc.scorecard if oc.scorecard is mapping else {} %}
+{% set br = sc.by_result if sc.by_result is mapping else {} %}
+<section class="followed" aria-label="Recommendations followed up">
+  <h3>Recommendations followed up <span class="state">last 90 days &middot; read off the
+    account&rsquo;s own changes &middot; a reading, not a conclusion</span></h3>
+  {% if not sc.implemented %}
+    {% if sc.made %}<p>{{ num(sc.made) }} act or test recommendation(s) made.</p>{% endif %}
+    <p class="muted">No recommendation has been implemented yet.</p>
+  {% else %}
+    <div class="sc-row">
+      <div class="sc"><b>{{ num(sc.made) }}</b><span>made</span></div>
+      <div class="sc"><b>{{ num(sc.implemented) }}</b><span>implemented</span></div>
+      {% for key in ('improved', 'neutral', 'worse', 'too_early') %}
+        <div class="sc"><b>{{ num(br.get(key) or 0) }}</b><span>{{ RESULT[key] }}</span></div>
+      {% endfor %}
+    </div>
+    {% if sc.by_kind is mapping and sc.by_kind %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Kind</th><th class="num">Made</th><th class="num">Implemented</th>
+        <th class="num">Improved</th><th class="num">No clear change</th>
+        <th class="num">Worse</th><th class="num">Too early</th></tr></thead>
+      <tbody>
+      {% for kind, v in sc.by_kind.items() if v is mapping %}
+        {% set r = v.by_result if v.by_result is mapping else v %}
+        <tr><td>{{ KIND.get(kind, words(kind)) }}</td>
+          <td class="num">{{ num(v.made or 0) }}</td><td class="num">{{ num(v.implemented or 0) }}</td>
+          <td class="num">{{ num(r.improved or 0) }}</td><td class="num">{{ num(r.neutral or 0) }}</td>
+          <td class="num">{{ num(r.worse or 0) }}</td><td class="num">{{ num(r.too_early or 0) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% endif %}
+    {% if sc.recent %}
+    <p style="margin-top:10px"><span class="sc-k">Last measured</span></p>
+    <ul class="recent">
+      {% for e in sc.recent %}
+        {% set m = e.measurement if e.measurement is mapping else {} %}
+        <li><b>{{ e.campaign }}</b> &middot; {{ e.action or KIND.get(e.kind, '--') }}
+          <span class="muted">&middot; implemented {{ e.implemented_on or '--' }}
+          {%- if e.match %} ({{ 'set by a person' if e.match == 'person' else e.match }}){% endif %}
+          {%- if m.result %} &middot; <b>{{ RESULT.get(m.result, m.result) }}</b>{% endif %}
+          {%- if m.settled_days is defined and m.settled_days is not none %} after {{ m.settled_days }} settled days{% endif %}</span>
+          {%- if m.basis %}<div class="small muted">{{ m.basis }}</div>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+{%- endmacro %}
 
 {#- ============================================================== THE AI READ -#}
 <section class="ai-read" aria-label="Worth writing next">
@@ -59,6 +215,8 @@
       same pill and stamp. `ignore missing` keeps the page rendering on a
       checkout that predates the partial. -#}
   {% if published and published.triage %}
+    {{ today_panel(published.account_summary) }}
+    {{ followed_panel(published.outcomes) }}
     {% include "_triage.html" ignore missing %}
   {% elif published and published.suggestion %}
     {% for para in published.suggestion.split('\n\n') if para.strip() %}
@@ -88,6 +246,37 @@
 {% set goals = d.goals or [] %}
 {% set names = goals | map(attribute='optimization_goal') | list %}
 {% set g = (goals | selectattr('optimization_goal', 'equalto', asked) | first) if asked in names else (goals | first) %}
+{% set dbg = d.dimensions_by_goal if d.dimensions_by_goal is mapping else {} %}
+{% set gdims = dbg.get(g.optimization_goal) if g and dbg.get(g.optimization_goal) is mapping else none %}
+
+{#- One label table for one goal. Every figure is facet_by_goal's; the
+    template only formats and picks the word's emphasis. -#}
+{% macro goal_dim_table(title, rows) -%}
+{% set rows = rows or [] %}
+<section class="card" aria-label="{{ title }}">
+  <div class="card-head"><h2 class="card-t">{{ title }}</h2></div>
+  {% if not rows %}
+    <p class="small muted" style="margin:8px 0 0">No ad under this goal carries this label yet.</p>
+  {% else %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Label</th><th class="num">Spend</th><th class="num">Conv</th>
+        <th class="num">CPA</th><th>Relative</th></tr></thead>
+      <tbody>
+      {% for r in rows[:8] %}
+        {% set rates = r.rates if r.rates is mapping else {} %}
+        <tr><td class="name">{% if r.value is none %}<span class="muted">Not tagged</span>{% else %}{{ r.value }}{% endif %}</td>
+          <td class="num">{{ money(r.spend) }}</td>
+          <td class="num">{{ num(r.conversions) }}</td>
+          <td class="num">{{ money(rates.get('cpa')) }}</td>
+          <td>{% if r.relative %}<span class="rel {{ r.relative }}">{{ r.relative }}</span>{% else %}<span class="muted">--</span>{% endif %}
+            {%- if r.relative_pct is defined and r.relative_pct is not none %} <span class="small">{{ signed_pct(r.relative_pct) }}</span>{% endif %}
+            {%- if r.evidence_level in ('insufficient', 'directional') %}<span class="ev">{{ r.evidence_level }}</span>{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  {% endif %}
+</section>
+{%- endmacro %}
 
 {% macro copy_card(r, top) -%}
 {% set body = (r.body or '') | replace('\n', ' ') | trim %}
@@ -144,6 +333,26 @@
         {% for r in g.by_spend_only or [] %}{{ copy_card(r, none) }}{% endfor %}
       </div>
     {% endif %}
+
+    {#- WHAT THE WRITING IS DOING, under this goal only. ads.facet_by_goal
+        (018) reads each label inside one goal, so a cost per result and a
+        relative word are fair here: "baseline" is the goal's largest-spend
+        label, and better / similar / worse is the SQL's own comparison with
+        the goal's CPA. Few conversions are marked rather than hidden. -#}
+    {% if gdims %}
+      <div class="goal-dims" aria-label="What the writing is doing under this goal">
+        <div class="stage-head">
+          <h2>What the writing is doing</h2>
+          <span class="state">under {{ words(g.optimization_goal) | lower }} only &middot;
+            relative to this goal&rsquo;s CPA &middot; Source: <code>ads.facet_by_goal</code></span>
+        </div>
+        <div class="grid">
+          {{ goal_dim_table('Hook it opens with', gdims.get('hook')) }}
+          {{ goal_dim_table('Offer it asks for', gdims.get('offer')) }}
+          {{ goal_dim_table('Who it addresses', gdims.get('audience')) }}
+        </div>
+      </div>
+    {% endif %}
   {% endif %}
 </section>
 
@@ -151,8 +360,9 @@
 {#- ================================================ WHAT THE WRITING IS DOING
     Spend by label, from ads.facet_performance. The labels ran under several
     goals, so the function declines to rank them on cost -- that is a refusal
-    to compare two things measured differently, not a missing number. -#}
-{% set dims = d.dimensions or {} %}
+    to compare two things measured differently, not a missing number. Shown
+    only when the live pack has no per-goal tables for the open tab. -#}
+{% set dims = {} if gdims else (d.dimensions or {}) %}
 {% macro dim_panel(title, key) -%}
 {% set rows = (dims.get(key) or []) | rejectattr('value', 'none') | rejectattr('value', 'equalto', 'none') | list %}
 {% set tops = rows[:5] | map(attribute='spend') | list %}
