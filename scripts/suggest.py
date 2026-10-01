@@ -129,6 +129,17 @@ NO_FUNNEL = ("migration 017 is not applied -- apply it (python ads_migrate.py "
 #: Re-measure with --dry-run once 018 is applied and the ledger has a week.
 TRIAGE_BUDGET = 140000
 
+#: Campaigns per model call. One call for all 25 timed out at 900s on
+#: 2026-10-01: round 2's reply (a summary, six fields per issue, briefs and
+#: followups per campaign) is too long to write in one go. Batches run in
+#: parallel, so the wall time is the slowest batch, not the sum, and a batch
+#: that fails costs its own campaigns (shown unrated), not the review.
+BATCH_SIZE = 7
+
+#: Per batch. Seven campaign reports took well under this in testing; the
+#: whole script still sits inside scripts/sync.py's 1200s.
+BATCH_TIMEOUT = 720
+
 #: The window `dimensions` and the page's evidence read. Four weeks, matching
 #: /suggestions and the brief. The campaign analysis reads 017's named window
 #: pairs instead, all ending at the settled edge.
@@ -247,23 +258,41 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
             + ("" if prev.get("snapshot") is not None else
                "; no snapshot in it, so wording is compared on leading ads only"))
 
-    question, sent, tier, keep = fit(pack, facts, note)
-    log(f"{slug}: prompt {len(question)} chars (campaign tier {tier}, "
-        f"other sections at {keep} row(s))")
+    batches = batch_facts(facts)
+    asked = [fit(pack, b, note) for b in batches]
+    sent = merge_sent([a[1] for a in asked])
+    tier = max(a[2] for a in asked)
+    log(f"{slug}: {len(batches)} batch(es) of up to {BATCH_SIZE} campaign(s); "
+        f"prompts {', '.join(str(len(a[0])) for a in asked)} chars "
+        f"(campaign tier {tier} at worst)")
 
     if dry_run:
         log(f"{slug}: --dry-run, so nobody was asked")
         return 0
 
     started = datetime.now(timezone.utc)
-    try:
-        # 25 campaign reports of JSON is many minutes of writing, not one.
-        # scripts/sync.py gives this whole script 1200s, so this stays under.
-        reply = await chat.classify(question, system=creative_mod.TRIAGE_SYSTEM,
-                                    timeout=900, expect="any")
-        rows, account_note = creative_mod.parse_reply(reply)
-    except (ValueError, chat.ChatUnavailable) as exc:
-        log(f"{slug}: FAILED  {exc}")
+    replies = await asyncio.gather(
+        *[chat.classify(q, system=creative_mod.TRIAGE_SYSTEM,
+                        timeout=BATCH_TIMEOUT, expect="any")
+          for q, *_ in asked],
+        return_exceptions=True)
+    rows, account_note, failed = [], None, 0
+    for i, reply in enumerate(replies):
+        try:
+            if isinstance(reply, BaseException):
+                raise reply
+            got, got_note = creative_mod.parse_reply(reply)
+        except (ValueError, chat.ChatUnavailable, Exception) as exc:  # noqa: BLE001
+            failed += 1
+            log(f"{slug}: batch {i + 1} of {len(asked)} FAILED  "
+                f"{type(exc).__name__}: {str(exc)[:300]}")
+            continue
+        rows += got
+        # The first batch holds the highest-impact campaigns (batch_facts),
+        # so its note is the one about where to start.
+        account_note = account_note or got_note
+    if failed == len(asked):
+        log(f"{slug}: FAILED  every batch failed")
         return 1
     triage = creative_mod.triage_from(rows, pack["campaigns"], previous,
                                       data_changed, date.today(),
@@ -512,6 +541,54 @@ def fit(pack: dict, facts: dict, previous_note: str = "") -> tuple:
 def build_question(pack: dict, facts: dict, previous_note: str = "") -> str:
     """The prompt alone, as fit() shrinks it."""
     return fit(pack, facts, previous_note)[0]
+
+
+#: Sections keyed by campaign name: each batch gets only its own campaigns'.
+PER_CAMPAIGN = ("changes_since_last_review", "previous_issues", "followups")
+
+
+def batch_facts(facts: dict) -> list:
+    """The facts split into BATCH_SIZE-campaign batches, highest impact first.
+
+    Every batch carries the shared sections whole (challenger pool,
+    dimensions, windows, untagged) and only its own campaigns' entries of the
+    per-campaign ones, so a campaign's previous issues and changes travel with
+    it. Ordered by impact_score (None last, stable) so the first batch -- whose
+    account_note is used -- is the one with the most money at stake.
+    """
+    camps = list(facts.get("campaigns") or [])
+    camps.sort(key=lambda c: ((c.get("impact") or {}).get("impact_score")
+                              is None,
+                              -((c.get("impact") or {}).get("impact_score")
+                                or 0)))
+    groups = [camps[i:i + BATCH_SIZE]
+              for i in range(0, len(camps), BATCH_SIZE)] or [[]]
+    out = []
+    for g in groups:
+        names = {c.get("campaign") for c in g}
+        b = {k: v for k, v in facts.items() if k != "campaigns"}
+        b["campaigns"] = g
+        for k in PER_CAMPAIGN:
+            if isinstance(facts.get(k), dict):
+                b[k] = {n: v for n, v in facts[k].items() if n in names}
+        out.append(b)
+    return out
+
+
+def merge_sent(sents: list) -> dict:
+    """One record of what was sent: the shared sections as the first batch
+    sent them, and every batch's campaigns and per-campaign entries. Stored as
+    the published `pack` and used by check_figures, so a card is checked
+    against the facts the model actually had."""
+    if not sents:
+        return {}
+    merged = dict(sents[0])
+    merged["campaigns"] = [c for s in sents for c in s.get("campaigns") or []]
+    for k in PER_CAMPAIGN:
+        if any(isinstance(s.get(k), dict) for s in sents):
+            merged[k] = {n: v for s in sents
+                         for n, v in (s.get(k) or {}).items()}
+    return merged
 
 
 async def run(only: str | None, dry_run: bool, force: bool) -> int:

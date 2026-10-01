@@ -1638,8 +1638,31 @@ def test_the_model_call_fits_inside_syncs_timeout():
     inside it -- so a slow reply was killed from outside with no log line."""
     s = (ROOT / "scripts" / "suggest.py").read_text(encoding="utf-8")
     y = (ROOT / "scripts" / "sync.py").read_text(encoding="utf-8")
-    assert "timeout=900" in s
+    assert "timeout=BATCH_TIMEOUT" in s
     assert '_run_after("suggest.py", a.brand, extra=("--force",), timeout=1200' in y
+    from scripts import suggest  # noqa: PLC0415
+    # Batches run in parallel, so the slowest one is the wall time.
+    assert suggest.BATCH_TIMEOUT < 1200
+
+
+def test_batches_carry_their_own_campaigns_and_the_shared_sections():
+    from scripts import suggest  # noqa: PLC0415
+    camps = [{"campaign": f"C{i}", "impact": {"impact_score": i}}
+             for i in range(10)]
+    facts = {"campaigns": camps, "challenger_pool": ["pool"],
+             "previous_issues": {f"C{i}": [i] for i in range(10)},
+             "followups": {"C9": ["f"]}}
+    batches = suggest.batch_facts(facts)
+    assert [len(b["campaigns"]) for b in batches] == [7, 3]
+    # Highest impact first, so the first batch's account_note is about them.
+    assert batches[0]["campaigns"][0]["campaign"] == "C9"
+    for b in batches:
+        names = {c["campaign"] for c in b["campaigns"]}
+        assert set(b["previous_issues"]) == names
+        assert b["challenger_pool"] == ["pool"]
+    merged = suggest.merge_sent(batches)
+    assert len(merged["campaigns"]) == 10
+    assert set(merged["previous_issues"]) == {f"C{i}" for i in range(10)}
 
 
 # ---------------------------------------------------------------------------
