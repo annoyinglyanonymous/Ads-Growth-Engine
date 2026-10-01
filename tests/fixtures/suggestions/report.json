@@ -1,0 +1,121 @@
+{
+  "published_at": "2026-10-01T09:00:00",
+  "until": "2026-09-30",
+  "previous_file": "2026-09-30-sample.json",
+  "data_changed": true,
+  "triage": [
+    {"shape": 2, "campaign": "Campaign Alpha", "rating": "red",
+     "rating_adjusted_from": "yellow", "rating_reasons": ["CPA rose with moderate evidence"],
+     "headline": "CPA rose because post-click conversion fell.",
+     "why": "CPA rose because post-click conversion fell.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["OFFSITE_CONVERSIONS"],
+     "spend": 1240.50, "conversions": 14, "cpa": 88.61,
+     "unverified_figures": [],
+     "ladder": [
+       {"key": "unsettled", "label": "Last 3 days", "since": "2026-09-28", "until": "2026-09-30", "provisional": true,
+        "spend": 150.00, "conversions": 1, "cpa": 150.00, "cpm": 21.40, "link_ctr": 0.91, "cvr": 4.20, "daily_frequency": 1.21},
+       {"key": "last_7", "label": "Last 7 days", "since": "2026-09-21", "until": "2026-09-27", "provisional": false,
+        "spend": 420.00, "conversions": 4, "cpa": 105.00, "cpm": 20.10, "link_ctr": 0.95, "cvr": 4.80, "daily_frequency": 1.18},
+       {"key": "prior_7", "label": "Prior 7 days", "since": "2026-09-14", "until": "2026-09-20", "provisional": false,
+        "spend": 390.00, "conversions": 6, "cpa": 65.00, "cpm": 19.80, "link_ctr": 1.00, "cvr": 7.10, "daily_frequency": 1.12},
+       {"key": "last_14", "label": "Last 14 days", "since": "2026-09-14", "until": "2026-09-27", "provisional": false,
+        "spend": 810.00, "conversions": 10, "cpa": 81.00, "cpm": 19.95, "link_ctr": 0.97, "cvr": 5.90, "daily_frequency": 1.15},
+       {"key": "prior_14", "label": "Prior 14 days", "since": "2026-08-31", "until": "2026-09-13", "provisional": false,
+        "spend": 700.00, "conversions": 12, "cpa": 58.33, "cpm": 18.90, "link_ctr": 1.05, "cvr": 7.40, "daily_frequency": 1.10},
+       {"key": "last_28", "label": "Last 28 days", "since": "2026-08-31", "until": "2026-09-27", "provisional": false,
+        "spend": 1510.00, "conversions": 22, "cpa": 68.64, "cpm": 19.40, "link_ctr": 1.01, "cvr": 6.60, "daily_frequency": 1.13},
+       {"key": "before", "label": "Before", "since": "2026-06-01", "until": "2026-08-30", "provisional": false,
+        "spend": 4200.00, "conversions": 70, "cpa": 60.00, "cpm": 18.50, "link_ctr": 1.08, "cvr": 7.20, "daily_frequency": 1.09}
+     ],
+     "funnel": {
+       "cur": {"since": "2026-09-21", "until": "2026-09-27"},
+       "prior": {"since": "2026-09-14", "until": "2026-09-20"},
+       "metrics": [
+         {"metric": "cpm", "cur": 20.10, "prior": 19.80, "pct_change": 1.52},
+         {"metric": "link_ctr", "cur": 0.95, "prior": 1.00, "pct_change": -5.0},
+         {"metric": "cpc", "cur": 2.12, "prior": 1.98, "pct_change": 7.07},
+         {"metric": "cvr", "cur": 4.80, "prior": 7.10, "pct_change": -32.39},
+         {"metric": "cpa", "cur": 105.00, "prior": 65.00, "pct_change": 61.54},
+         {"metric": "frequency", "cur": 1.18, "prior": 1.12, "pct_change": 5.36}
+       ],
+       "shares": {"auction_cost": 4.1, "click_through": 11.2, "post_click": 84.7},
+       "primary_driver": "post_click", "evidence": "moderate",
+       "spend_to_baseline_cpa": 6.5, "fatigue_consistent": false
+     },
+     "where": {
+       "ad_groups": [
+         {"name": "Group One", "goal": "OFFSITE_CONVERSIONS", "spend": 900.00, "share_pct": 72.6, "cpa": 95.00, "rank": 2, "of": 2, "same_as_campaign": true},
+         {"name": "Group Two", "goal": "OFFSITE_CONVERSIONS", "spend": 340.50, "share_pct": 27.4, "cpa": 70.00, "rank": 1, "of": 2, "same_as_campaign": true}
+       ],
+       "ads": [
+         {"name": "Ad A1", "role": "leader", "spend": 610.00, "share_pct": 49.2, "cpa": 87.14, "conversions": 7, "link_ctr": 0.98},
+         {"name": "Ad A2", "role": "spending, no conversions", "spend": 210.00, "share_pct": 16.9, "cpa": null, "conversions": 0, "link_ctr": 0.71}
+       ]
+     },
+     "issues": [
+       {"id": "i1001-0-0", "status": "still_open", "open_since": "2026-09-29", "priority": "primary", "basis": "d1",
+        "observation": "Conversion rate after the click fell by about a third week on week.",
+        "evidence": "CVR moved from 7.10% to 4.80% while CPM and link CTR held roughly level.",
+        "diagnosis": "The landing step changed or the traffic the ads attract converts worse.",
+        "recommendation": {"type": "test", "action": "Test the previous landing page against the current one.",
+                           "expected_outcome": "If the page is the cause, CVR returns toward its prior level."},
+        "test_plan": {"variable": "landing page", "control": "Current landing page",
+                      "challenger": "Previous landing page", "hold_constant": ["audience", "budget", "creative"],
+                      "evaluate_on": ["CPA", "conversion rate"], "decide_when": "Each arm has 10 conversions or $650 spend."},
+        "confidence": {"level": "medium", "reason": "Held over 7 and 14 days; evidence is moderate."},
+        "type_adjusted_from": "act"},
+       {"id": "i1001-0-1", "status": "new", "open_since": "2026-10-01", "priority": "secondary", "basis": "d2",
+        "observation": "One ad takes a sixth of the spend with no conversions.",
+        "evidence": "Ad A2: $210.00 spent, 0 conversions.",
+        "diagnosis": "The ad attracts clicks that do not convert.",
+        "recommendation": {"type": "act", "action": "Pause Ad A2.",
+                           "expected_outcome": "Spend moves to ads that convert."},
+        "test_plan": null,
+        "confidence": {"level": "high", "reason": "Spend is several times the baseline CPA."}},
+       {"id": "i1001-0-2", "status": "new", "open_since": "2026-10-01", "priority": "monitor", "basis": "d3",
+        "observation": "Daily frequency is creeping up.",
+        "evidence": "Daily frequency 1.12 to 1.18.",
+        "diagnosis": "Possibly early fatigue; click-through has not fallen enough to confirm it.",
+        "recommendation": {"type": "monitor", "action": "Watch daily frequency and link CTR next week.",
+                           "expected_outcome": "A clearer read once another week settles."},
+        "test_plan": null,
+        "confidence": {"level": "low", "reason": "Only one leg of the fatigue pattern moved."},
+        "confidence_adjusted_from": "medium", "test_plan_dropped": "the evidence does not support a test yet"}
+     ],
+     "not_yet": ["Do not raise the budget until CVR recovers."],
+     "resolved": [{"id": "i0930-0-5", "by": "numbers", "problem": "CPM spike", "open_since": "2026-09-29",
+                   "evidence": "CPM is back near its prior level."}],
+     "dropped": [],
+     "diagnosis": {"evidence": "moderate", "findings": [], "max_priority": "primary", "not_yet": []}},
+    {"shape": 2, "campaign": "Campaign Beta", "rating": "yellow",
+     "headline": "",
+     "why": "Steady, with too little data to call a change.",
+     "status": "ACTIVE", "running": true, "optimization_goals": ["LINK_CLICKS"],
+     "spend": 230.00, "conversions": 3, "cpa": 76.67,
+     "ladder": [
+       {"key": "unsettled", "label": "Last 3 days", "since": "2026-09-28", "until": "2026-09-30", "provisional": true,
+        "spend": 30.00, "conversions": 0, "cpa": null, "cpm": 12.00, "link_ctr": 1.40, "cvr": null, "daily_frequency": 1.05},
+       {"key": "last_7", "label": "Last 7 days", "since": "2026-09-21", "until": "2026-09-27", "provisional": false,
+        "spend": 80.00, "conversions": 1, "cpa": 80.00, "cpm": 11.50, "link_ctr": 1.45, "cvr": 1.10, "daily_frequency": 1.04}
+     ],
+     "funnel": null,
+     "where": null,
+     "spend_spread": {"ads_with_spend": 3, "top_two_ads_share_pct": 91.0,
+                      "ads_with_no_conversions": 1, "share_on_ads_with_no_conversions_pct": 9.0},
+     "issues": [
+       {"id": "i1001-1-0", "status": "new", "open_since": "2026-10-01", "priority": "monitor",
+        "observation": "Too few conversions to read a trend.",
+        "evidence": "3 conversions in 28 days.",
+        "diagnosis": "Low volume.",
+        "recommendation": {"type": "monitor", "action": "Wait for more conversions.", "expected_outcome": "A readable trend."},
+        "test_plan": null, "confidence": {"level": "low", "reason": "Insufficient evidence."}}
+     ],
+     "not_yet": ["Do not judge the creative on three conversions."],
+     "resolved": [], "dropped": []},
+    {"shape": 2, "campaign": "Campaign Gamma", "rating": "green",
+     "headline": "Stable and cheaper than its own baseline.",
+     "status": "PAUSED", "running": false, "optimization_goals": ["OFFSITE_CONVERSIONS"],
+     "spend": 95.00, "conversions": 4, "cpa": 23.75,
+     "issues": [], "not_yet": [], "resolved": [], "dropped": []}
+  ]
+}

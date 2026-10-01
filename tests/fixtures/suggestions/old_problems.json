@@ -1,0 +1,32 @@
+{
+  "published_at": "2026-09-25T09:00:00",
+  "until": "2026-09-24",
+  "previous_file": "2026-09-24-sample.json",
+  "data_changed": true,
+  "triage": [
+    {"campaign": "Campaign Alpha", "rating": "red", "rating_adjusted_from": "yellow",
+     "rating_reasons": ["the dearest third with enough spend"],
+     "why": "Cost per result doubled.\\nThe lead ad is tiring.",
+     "spend": 812.40, "conversions": 9, "cpa": 90.27,
+     "optimization_goals": ["OFFSITE_CONVERSIONS"], "status": "ACTIVE",
+     "unverified_figures": ["$45.10"],
+     "problems": [
+       {"id": "p0925-0-0", "status": "still_open", "open_since": "2026-09-23",
+        "problem": "The lead ad's click-through fell for two weeks.",
+        "fix": "Write a new opening line for it."},
+       {"id": "p0925-0-1", "status": "new", "open_since": "2026-09-25",
+        "problem": "Two ad groups target the same audience.",
+        "fix": "Merge them."}],
+     "resolved": [{"id": "p0923-0-2", "by": "you", "problem": "No headline on the second ad",
+                   "open_since": "2026-09-22", "change": "headline added",
+                   "evidence": "The ad now carries a headline."}],
+     "dropped": [{"id": "p0923-0-3", "problem": "Budget too thin", "open_since": "2026-09-23"}]},
+    {"campaign": "Campaign Beta", "rating": "yellow",
+     "why": "Fine, with one weak ad.",
+     "spend": 220.00, "conversions": 8, "cpa": 27.50,
+     "optimization_goals": ["OFFSITE_CONVERSIONS"], "status": "ACTIVE",
+     "problems": [{"id": "p0925-1-0", "status": "new", "open_since": "2026-09-25",
+                   "problem": "One ad has spent with no conversions.",
+                   "fix": "Pause it."}]}
+  ]
+}

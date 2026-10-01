@@ -1,0 +1,22 @@
+{
+  "published_at": "2026-09-22T09:00:00",
+  "until": "2026-09-21",
+  "triage": [
+    {"campaign": "Campaign Alpha", "rating": "red",
+     "why": "Spend is rising while conversions fall.",
+     "spend": 812.40, "conversions": 9, "cpa": 90.27,
+     "optimization_goals": ["OFFSITE_CONVERSIONS"], "status": "ACTIVE",
+     "changes": ["Pause the weakest ad in the main ad group.",
+                 "Move budget to the ad group with the lower CPA."]},
+    {"campaign": "Campaign Beta", "rating": "green",
+     "why": "Steady and cheap.",
+     "spend": 120.00, "conversions": 6, "cpa": 20.00,
+     "optimization_goals": ["OFFSITE_CONVERSIONS"], "status": "ACTIVE",
+     "changes": []},
+    {"campaign": "Campaign Gamma",
+     "why": "Not enough data to rate.",
+     "spend": 15.10, "conversions": 0, "cpa": null,
+     "optimization_goals": ["LINK_CLICKS"], "status": "PAUSED",
+     "changes": ["Leave it until it has spent more."]}
+  ]
+}
