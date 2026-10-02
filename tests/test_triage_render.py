@@ -306,6 +306,27 @@ def test_lead_issue_is_the_one_the_bucket_came_from():
     assert ui.lead_issue({"bucket": "no_change", "issues": []}) == {}
 
 
+def test_a_test_card_puts_the_tag_to_copy_beside_the_action():
+    """The tag is what ties the new ad back to the recommendation, so a card
+    led by a test shows it where the action is, not only three folds down."""
+    html = _render(_load("report_v3"))
+    echo = _between(html, 'class="ttl">Campaign Echo</span>', 'aria-label="How CPA moved"')
+    do = _between(echo, 'aria-label="What to do"', "</section>")
+    assert re.search(r'<p class="tp-tag"><span>Tag the new ad</span><code[^>]*>'
+                     r'utm_content=EXP-i0920-3-0</code>', do)
+    # Delta is led by its act issue; its test's tag stays in the test plan.
+    delta = _between(html, 'class="ttl">Campaign Delta</span>', 'class="ttl">Campaign Hotel</span>')
+    assert 'class="tp-tag"' not in _between(delta, 'aria-label="What to do"', "</section>")
+    assert "utm_content=EXP-i1005-0-1" in delta, "the test plan lost its tag"
+    # A test with no tag in its plan shows no empty line.
+    pub = _load("report_v3")
+    for c in pub["triage"]:
+        for i in c.get("issues") or []:
+            if isinstance(i.get("test_plan"), dict):
+                i["test_plan"].pop("tag", None)
+    assert 'class="tp-tag"' not in _render(pub)
+
+
 def test_the_opened_card_draws_cpa_by_window_and_what_moved():
     html = _render(_load("report_v3"))
     delta = _between(html, 'class="ttl">Campaign Delta</span>', 'class="ttl">Campaign Hotel</span>')

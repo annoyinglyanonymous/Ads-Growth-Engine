@@ -311,6 +311,11 @@
   .tp-h .key i { display:inline-block; width:9px; height:5px; border-radius:1px; }
   .tp-act { margin:4px 0 0; font-size:14px; font-weight:700; color:var(--ink); }
   .tp-out { margin:6px 0 0; font-size:12.5px; color:var(--ink-2); }
+  .tp-tag { margin:10px 0 0; display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px;
+    font-size:12.5px; font-weight:600; color:var(--ink-2); }
+  .tp-tag code { user-select:all; cursor:text; padding:3px 9px; border-radius:var(--radius-sm);
+    border:1px dashed var(--focus); background:var(--surface); color:var(--accent);
+    font-weight:600; overflow-wrap:anywhere; }
   .tp-conf { margin:10px 0 0; font-size:12px; color:var(--muted); display:flex;
     flex-wrap:wrap; align-items:center; gap:6px 10px; }
   .sw-row { display:flex; align-items:center; gap:8px; font-size:12px; margin-top:6px; }
@@ -849,6 +854,13 @@
         {% if rec.type %}<span class="rtype {{ rec.type }}">{{ rec.type | upper }}</span>{% endif %}
         <p class="tp-act">{{ rec.action }}</p>
         {% if rec.expected_outcome %}<p class="tp-out">{{ rec.expected_outcome }}</p>{% endif %}
+        {#- The one thing a test needs copied into Ads Manager, so the next
+            import can tie the new ad to this recommendation. Shown only when
+            the issue leading the card is a test; one click selects it whole. -#}
+        {% set tp = p.test_plan if p.test_plan is mapping else {} %}
+        {% if rec.type == 'test' and tp.tag %}
+        <p class="tp-tag"><span>Tag the new ad</span><code title="Add to the new ad's URL parameters">utm_content={{ tp.tag }}</code></p>
+        {% endif %}
         <p class="tp-conf">
           {%- if conf.level %}<span>{{ conf_dots(conf) }}</span>{% endif %}
           {%- if iss | length > 1 %}<span>{{ iss | length - 1 }} more issue{{ '' if iss | length == 2 else 's' }}</span>{% endif %}
