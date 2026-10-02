@@ -2709,6 +2709,10 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
                 "where": c.get("where"),
                 "spend_spread": c.get("spend_spread"),
                 "diagnosis": c.get("diagnosis"),
+                # The typical range for this kind of campaign (019), as the
+                # pack read it: the page's "Typical for ..." line reads it
+                # off the published entry, not off the model's view.
+                "family": c.get("family"),
             })
         out.append(entry)
     return out

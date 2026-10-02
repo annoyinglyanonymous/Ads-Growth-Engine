@@ -3018,3 +3018,21 @@ def test_changes_since_items_carry_utm_content():
     gone = creative.changes_since({"pack": {"campaigns": [was]},
                                    "snapshot": old_only}, [was], {"A": {}})["A"]
     assert gone[0]["kind"] == "ad_gone" and gone[0]["utm_content"] is None
+
+
+def test_the_published_entry_carries_its_family_range():
+    # 2026-10-02: the model saw `family` but the published cards did not carry
+    # it, so the page's "Typical for ..." line never rendered.
+    fam = {"family": "franchise", "audience": "retargeting",
+           "goal": "LEAD_GENERATION", "band_level": "family_audience",
+           "campaign_weeks": 21,
+           "metrics": {"cpa": {"cur": 31.35, "p25": 19.27, "p50": 24.0,
+                               "p75": 30.07, "position": "above",
+                               "percentile": 80.95}}}
+    c = {"campaign": "Camp A", "family": fam,
+         "diagnosis": {"findings": [], "max_priority": "monitor",
+                       "not_yet": []}}
+    r = {"campaign": "Camp A", "rating": "yellow", "summary": "s",
+         "issues": [], "not_yet": [], "resolved": []}
+    entry = creative.triage_from([r], [c])[0]
+    assert entry["family"] == fam
