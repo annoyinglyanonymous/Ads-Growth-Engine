@@ -113,7 +113,8 @@ LEVELS = ("campaign", "ad_group", "ad")
 SPECIFICITY = ("post_click", "clickier_poorer_intent", "possible_fatigue",
                "audience_saturation", "auction_cost", "creative_engagement",
                "diminishing_returns", "no_conversions_spend",
-               "scaling_opportunity", "steady", "insufficient_evidence")
+               "scaling_opportunity", "outside_family_norm", "steady",
+               "insufficient_evidence")
 
 #: What a test of each pattern may change. Empty means nothing in the account
 #: is the cause, so there is nothing to test: auction cost is the market.
@@ -127,6 +128,8 @@ TEST_VARIABLES = {
     "diminishing_returns": ["budget"],
     "scaling_opportunity": ["budget"],
     "no_conversions_spend": ["tracking", "audience", "creative"],
+    # The widest it can be; family_finding() narrows it to the bad legs.
+    "outside_family_norm": ["creative", "form", "landing_page", "offer"],
     "steady": [],
     "insufficient_evidence": [],
 }
@@ -175,6 +178,30 @@ SUBSUMES = {"possible_fatigue": "creative_engagement",
             "audience_saturation": "auction_cost"}
 
 MAX_FINDINGS = 4
+
+# ------------------------------------------------------ family context --
+# "What is normal for this kind of campaign in this account": migration 019's
+# ads.campaign_vs_family, attached to each pack campaign as `family`
+# ({"family", "audience", "goal", "band_level", "campaign_weeks", "metrics":
+# {metric: {"cur", "p25", "p50", "p75", "position", "percentile"}}}). Every
+# figure and every position is SQL's; this module only reads `position`.
+# It is CONTEXT. The campaign's own earlier windows stay the judgement, so a
+# family finding never allows act, never makes red, never makes a finding
+# primary, and blocks green only through the CPA band (rating_rule).
+
+#: Under this many baseline campaign-weeks a band is too thin to read. The
+#: SQL's band_level already needs as many; this is the same floor, held here.
+FAMILY_MIN_WEEKS = 8
+#: The bad side of each band. Lower is better for CPA, higher for link CTR
+#: and conversion rate. CPM and cost per link click are the auction's and are
+#: not read as a fault of the campaign.
+FAMILY_BAD = {"cpa": "above", "link_ctr": "below", "conversion_rate": "below"}
+#: What a test of each bad leg may change. A CPA leg alone has nothing to
+#: test: which stage made it dear is the own-window decomposition's question.
+FAMILY_TEST_VARIABLES = {"cpa": [], "link_ctr": ["creative"],
+                         "conversion_rate": ["form", "landing_page", "offer"]}
+#: Patterns that are context, not a reading of the campaign's own change.
+CONTEXTUAL = ("outside_family_norm",)
 
 
 # ------------------------------------------------------------- readers --
@@ -441,6 +468,39 @@ def _entity_findings(entity, level: str, unreadable: list) -> list:
             if not any(SUBSUMES.get(p) == f["pattern"] for p in patterns)]
 
 
+def family_finding(camp, family) -> dict | None:
+    """outside_family_norm, or None.
+
+    Only when the band exists (band_level not null) on at least
+    FAMILY_MIN_WEEKS campaign-weeks, the campaign's own 7-day evidence is
+    moderate or better, and CPA sits above its band or link CTR / conversion
+    rate below theirs. `legs` names each bad metric and its side.
+    """
+    if not family or family.get("band_level") is None:
+        return None
+    weeks = family.get("campaign_weeks")
+    if weeks is None or weeks < FAMILY_MIN_WEEKS:
+        return None
+    if not _at_least((_row(camp, P7) or {}).get("evidence_level"),
+                     "moderate"):
+        return None
+    bands = family.get("metrics") or {}
+    legs, variables = {}, []
+    for metric, bad in FAMILY_BAD.items():
+        if (bands.get(metric) or {}).get("position") != bad:
+            continue
+        legs[metric] = bad
+        for v in FAMILY_TEST_VARIABLES[metric]:
+            if v not in variables:
+                variables.append(v)
+    if not legs:
+        return None
+    f = _finding(camp, "campaign", "outside_family_norm", ["7v7"], [], legs)
+    f["allowed"] = ["monitor", "test"] if variables else ["monitor"]
+    f["test_variables"] = variables
+    return f
+
+
 def _fallback(camp) -> dict:
     row7 = _row(camp, P7) or {}
     if _at_least(row7.get("evidence_level"), "directional"):
@@ -634,6 +694,10 @@ def not_yet_seeds(findings, conc) -> list:
     if "post_click" in patterns:
         out.append("Replacing ads that still earn their clicks: the drop is "
                    "after the click.")
+    if "outside_family_norm" in patterns:
+        out.append("Treating the typical range for this kind of campaign as "
+                   "a target: it is context, and the campaign's own earlier "
+                   "windows come first.")
     for f in findings:
         if f["held_in"] == ["7v7"] and f.get("_has_14") and f["pattern"] not in (
                 "steady", "insufficient_evidence"):
@@ -651,11 +715,12 @@ def not_yet_seeds(findings, conc) -> list:
 
 # ------------------------------------------------------------ campaign --
 
-def diagnose_campaign(camp, groups, ads, spread=None) -> dict:
+def diagnose_campaign(camp, groups, ads, spread=None, family=None) -> dict:
     """The C3 diagnosis for one campaign.
 
     camp, each of groups and each of ads: {"name", "key", "goal", "status",
     "rows": {pair: ads.funnel_change row or None}}. spread: 016's row or None.
+    family: the pack campaign's `family` (019) or None; see family_finding.
 
     Besides the C3 keys the result carries "unreadable_legs": every pattern a
     NULL percentage stopped from being read, so "not found" and "could not be
@@ -679,6 +744,11 @@ def diagnose_campaign(camp, groups, ads, spread=None) -> dict:
 
     if not all_findings and _row(camp, P7):
         all_findings = [_fallback(camp)]
+    # After the fallback, so a campaign whose own windows are steady still
+    # says so beside the family context.
+    fam = family_finding(camp, family)
+    if fam:
+        all_findings.append(fam)
     # Level, then the entity's place by spend, then the most specific pattern.
     ordered = sorted(all_findings, key=lambda f: (
         LEVELS.index(f["level"]), f.get("_order", 0),
@@ -693,7 +763,8 @@ def diagnose_campaign(camp, groups, ads, spread=None) -> dict:
 
     real = [f for f in shown
             if f["pattern"] not in ("steady", "insufficient_evidence")]
-    if any(_at_least(f["evidence"], "moderate") for f in real):
+    own = [f for f in real if f["pattern"] not in CONTEXTUAL]
+    if any(_at_least(f["evidence"], "moderate") for f in own):
         max_priority = "primary"
     elif any(_at_least(f["evidence"], "directional") for f in real):
         max_priority = "secondary"
@@ -796,7 +867,9 @@ def rating_rule(entry) -> dict:
     Without "rows" it falls back to the pack's own copies of the same SQL
     figures: funnel.evidence / funnel.metrics[cpa].pct_change /
     funnel.spend_to_baseline_cpa (7v7), pct_14.cpa and evidence_14 (14v14),
-    and the ladder's last_7 and last_28 conversions.
+    and the ladder's last_7 and last_28 conversions. entry["family"] (019,
+    or None) is read for one thing: green also needs this week's CPA not
+    'above' its family band, when that band exists. It never makes red.
 
     Red is about cost only. Fatigue, concentration and rank in goal never
     make a campaign red: they are reasons to look, not evidence of loss.
@@ -849,9 +922,16 @@ def rating_rule(entry) -> dict:
     elif cpa7 > STABLE_HI or cpa14 > STABLE_HI:
         blockers.append(f"CPA {_signed(cpa7)} over 7 days and "
                         f"{_signed(cpa14)} over 14")
+    fam = entry.get("family") or {}
+    band = (fam.get("metrics") or {}).get("cpa") or {}
+    if fam.get("band_level") is not None and band.get("position") == "above":
+        blockers.append(f"CPA {_money(band.get('cur'))} sits above the "
+                        f"typical {_money(band.get('p25'))} to "
+                        f"{_money(band.get('p75'))} for this kind of "
+                        f"campaign")
     for f in (entry.get("diagnosis") or {}).get("findings") or []:
         if (f.get("pattern") not in ("steady", "scaling_opportunity",
-                                     "insufficient_evidence")
+                                     "insufficient_evidence", *CONTEXTUAL)
                 and _at_least(f.get("evidence"), "moderate")):
             blockers.append(f'{f.get("pattern", "").replace("_", " ")} in '
                             f'"{f.get("entity")}" on {f.get("evidence")} '

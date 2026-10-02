@@ -89,6 +89,14 @@
 {% set WINDOWS = [('before', 'Before'), ('last_28', '28d'), ('prior_14', 'Prior 14'),
                   ('last_14', 'Last 14'), ('prior_7', 'Prior 7'), ('last_7', 'Last 7'),
                   ('unsettled', 'Unsettled')] %}
+{#- A campaign family as the page says it, the metrics its typical range is
+    quoted on (metric, label, fv unit), and where this week sits in it. -#}
+{% set FAMILY_WORDS = {'franchise': 'franchise', 'm_and_a': 'M&A / book roll',
+                       'b_roll': 'B-roll', 'hiring': 'hiring', 'other': 'other'} %}
+{% set FAMILY_METRICS = [('cpa', 'CPA', 'cpa'), ('link_ctr', 'link CTR', 'link_ctr'),
+                         ('conversion_rate', 'CVR', 'cvr'), ('cpm', 'CPM', 'cpm')] %}
+{% set POSITION_WORDS = {'below': 'below the range', 'within': 'within the range',
+                         'above': 'above the range'} %}
 
 <style>
   .tgroup { border:1px solid var(--line); border-left-width:5px;
@@ -646,6 +654,51 @@
       <p class="tnote">Provisional: Meta can still restate the last three days.</p>
     {% endif %}
   {% endif %}
+  {#- Typical for this kind of campaign: context under the campaign's own
+      windows, never instead of them. -#}
+  {% set fam = family_line(c) | trim %}
+  {% if fam %}
+    {% if not c.ladder %}<h4 class="tsec">What changed</h4>{% endif %}
+    {{ fam | safe }}
+  {% endif %}
+{%- endmacro %}
+
+{#- TYPICAL FOR THIS KIND OF CAMPAIGN. `c.family` (contracts-baselines E2):
+    the typical range of campaigns of the same family and the same goal in
+    this account, over the last 26 weeks, the current window left out. The
+    quartiles and the position are the SQL's (ads.campaign_vs_family); this
+    only formats them. No band, or no figure in it, prints nothing. -#}
+{% macro family_line(c) -%}
+  {%- set f = c.family if c.family is defined and c.family is mapping else {} -%}
+  {%- set fm = f.metrics if f.metrics is mapping else {} -%}
+  {%- set parts = [] -%}
+  {%- set at = namespace(label=none, unit=none, m=none) -%}
+  {%- for key, label, unit in FAMILY_METRICS -%}
+    {%- set m = fm.get(key) if fm.get(key) is mapping else {} -%}
+    {%- if m.p25 is defined and m.p75 is defined and m.p25 is not none and m.p75 is not none -%}
+      {%- if unit in ('link_ctr', 'cvr') -%}
+        {%- set _ = parts.append(label ~ ' ' ~ num(m.p25, 2) ~ '–' ~ pct(m.p75, 2)) -%}
+      {%- else -%}
+        {%- set _ = parts.append(label ~ ' ' ~ money(m.p25) ~ '–' ~ money(m.p75)) -%}
+      {%- endif -%}
+      {#- Where this week sits: CPA's position when it has one, else the
+          first metric that does. -#}
+      {%- if at.m is none and m.position -%}
+        {%- set at.label = label -%}{%- set at.unit = unit -%}{%- set at.m = m -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- if f.band_level and parts -%}
+    <p class="tnote tfam">Typical for {{ FAMILY_WORDS.get(f.family, words(f.family) | lower) }}
+      {%- if f.goal %} &middot; {{ words(f.goal) | lower }}{% endif %}
+      ({% if f.band_level == 'family_audience' and f.audience %}{{ f.audience }} audiences only{% else %}all audiences{% endif %}
+      {%- if f.campaign_weeks is not none %}, {{ num(f.campaign_weeks) }} campaign-weeks{% endif %}):
+      {{ parts | join(' · ') }}
+      {%- if at.m is not none %}; this week&rsquo;s {{ at.label }}
+        {%- if at.m.cur is not none %} of {{ fv(at.unit, at.m.cur) }}{% endif %}
+        sits {{ POSITION_WORDS.get(at.m.position, at.m.position) }}
+        {%- if at.m.percentile is not none %} (percentile {{ num(at.m.percentile, 0) }}){% endif %}{% endif %}.</p>
+  {%- endif -%}
 {%- endmacro %}
 
 {#- WHAT'S CAUSING IT -- in round 2, WHERE THE CHANGE CAME FROM, because a
@@ -901,7 +954,8 @@
   {% set m14 = mv.get('14v14') if mv.get('14v14') is mapping else {} %}
   {% set imp = c.impact if c.impact is mapping else {} %}
   {% set iss = c.issues or [] %}
-  {% set has_numbers = c.ladder or c.funnel is mapping or c.where is mapping or c.spend_spread is mapping %}
+  {% set has_numbers = c.ladder or c.funnel is mapping or c.where is mapping or c.spend_spread is mapping
+                       or family_line(c) | trim %}
   <details class="tcamp">
     <summary>
       <span class="tc-name" title="{{ c.campaign }}"><span class="ttl">{{ c.campaign }}</span>

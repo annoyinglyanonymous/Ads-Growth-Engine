@@ -463,3 +463,94 @@ def test_a_campaign_level_wobble_is_worded_as_this_campaign():
             "comparison does not show it yet.") in seeds
     assert any('"Become an Agent | Static"' in s for s in seeds)
     assert not any("07082025" in s for s in seeds)
+
+
+# --------------------------------------------------- family context (019) --
+
+def fam(cpa=None, link_ctr=None, conversion_rate=None, weeks=12,
+        band_level="family"):
+    """A pack campaign's `family` (contracts E2); each metric is a position."""
+    metrics = {}
+    for m, pos in (("cpa", cpa), ("link_ctr", link_ctr),
+                   ("conversion_rate", conversion_rate)):
+        metrics[m] = {"cur": 44.67, "p25": 28.1, "p50": 31.2, "p75": 36.4,
+                      "position": pos, "percentile": 91.5}
+    return {"family": "m_and_a", "audience": None, "goal":
+            "OFFSITE_CONVERSIONS", "band_level": band_level,
+            "campaign_weeks": weeks, "metrics": metrics}
+
+
+def _fam_findings(family, ev="moderate"):
+    out = d.diagnose_campaign(both(ev=ev), [], [], family=family)
+    return out, [f for f in out["findings"]
+                 if f["pattern"] == "outside_family_norm"]
+
+
+def test_cpa_above_its_family_band_is_a_monitor_only_context_finding():
+    out, (f,) = _fam_findings(fam(cpa="above", link_ctr="within"))
+    assert f["level"] == "campaign" and f["held_in"] == ["7v7"]
+    assert f["legs"] == {"cpa": "above"}
+    assert f["allowed"] == ["monitor"] and f["test_variables"] == []
+    # The campaign's own windows still speak: steady sits beside it.
+    assert "steady" in patterns(out)
+    assert any("typical range" in s for s in out["not_yet"])
+
+
+@pytest.mark.parametrize("spec,legs,variables", [
+    ({"link_ctr": "below"}, {"link_ctr": "below"}, ["creative"]),
+    ({"conversion_rate": "below"}, {"conversion_rate": "below"},
+     ["form", "landing_page", "offer"]),
+    ({"cpa": "above", "link_ctr": "below", "conversion_rate": "below"},
+     {"cpa": "above", "link_ctr": "below", "conversion_rate": "below"},
+     ["creative", "form", "landing_page", "offer"]),
+])
+def test_a_ctr_or_cvr_below_its_band_may_be_tested(spec, legs, variables):
+    _, (f,) = _fam_findings(fam(**spec), ev="strong")
+    assert f["legs"] == legs
+    assert f["test_variables"] == variables
+    # Never act, however strong the evidence.
+    assert f["allowed"] == ["monitor", "test"]
+
+
+@pytest.mark.parametrize("family,ev", [
+    (None, "moderate"),                                    # before 019
+    (fam(cpa="above", band_level=None), "moderate"),       # no band
+    (fam(cpa="above", weeks=7), "moderate"),               # thin band
+    (fam(cpa="above"), "directional"),                     # thin week
+    (fam(cpa="below", link_ctr="above",
+         conversion_rate="above"), "strong"),              # the good side
+    (fam(cpa="within", link_ctr="within"), "strong"),
+    (fam(), "strong"),                                     # positions null
+])
+def test_no_family_finding_without_a_band_evidence_and_a_bad_side(family, ev):
+    _, found = _fam_findings(family, ev=ev)
+    assert found == []
+
+
+def test_a_family_finding_never_makes_a_campaign_primary():
+    out, (f,) = _fam_findings(fam(cpa="above", link_ctr="below"),
+                              ev="strong")
+    assert out["max_priority"] == "secondary"
+
+
+def test_cpa_above_its_band_blocks_green_and_never_makes_red():
+    diag = {"findings": [{"pattern": "outside_family_norm",
+                          "evidence": "strong"}]}
+    green = _entry(r7={}, r14={}, r28={"conv": 60}, diagnosis=diag,
+                   family=fam(link_ctr="below", conversion_rate="below"))
+    # CTR and CVR below their bands are context, not a green blocker.
+    assert d.rating_rule(green)["allowed"] == ["yellow", "green"]
+    above = _entry(r7={}, r14={}, r28={"conv": 60}, diagnosis=diag,
+                   family=fam(cpa="above"))
+    rule = d.rating_rule(above)
+    assert rule["allowed"] == ["yellow"]
+    assert ("CPA $44.67 sits above the typical $28.10 to $36.40 for this "
+            "kind of campaign") in rule["reasons"][0]
+    # No band, no requirement.
+    unbanded = _entry(r7={}, r14={}, r28={"conv": 60},
+                      family=fam(cpa="above", band_level=None))
+    assert d.rating_rule(unbanded)["allowed"] == ["yellow", "green"]
+    # And a band never turns a strong persistent rise into anything but red.
+    red = _entry(r7={"pct": {"cpa": 30.0}, "ev": "strong"},
+                 r14={"pct": {"cpa": 12.0}}, family=fam(cpa="below"))
+    assert d.rating_rule(red)["allowed"] == ["red"]

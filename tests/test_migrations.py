@@ -342,3 +342,110 @@ def test_018_contribution_and_excess_follow_the_header():
             "- p.p_spend / nullif(p.g_p_conv, 0) end as contrib_u") in flat
     # The running share is over an explicit ROWS frame, so ties do not merge.
     assert "rows between unbounded preceding and current row" in flat
+
+
+# ---------------------------------------------------------------------------
+# 019: typical ranges by campaign family.
+# ---------------------------------------------------------------------------
+
+M019 = ROOT / "migrations" / "019_ads_family_baselines.sql"
+
+
+def test_019_bodies_qualify_against_their_out_columns():
+    """Every RETURNS TABLE column is a plpgsql variable (017's pragma)."""
+    bodies = re.findall(r"\$fn\$(.*?)\$fn\$", M019.read_text(encoding="utf-8"),
+                        re.DOTALL)
+    assert len(bodies) == 4, len(bodies)
+    for body in bodies:
+        assert body.lstrip().startswith("#variable_conflict use_column"), (
+            body.lstrip()[:80])
+
+
+def test_019_has_no_window_at_all():
+    """Bands are ordered-set aggregates per (family, goal); nothing is ranked."""
+    assert _windows(M019) == []
+
+
+def test_019_the_current_window_is_never_in_its_band():
+    flat = re.sub(r"\s+", " ", _strip_comments(
+        M019.read_text(encoding="utf-8")).lower())
+    assert "v_before := p_cur_since - 1;" in flat
+    # Both reads of the sample are anchored on that day, not on the window.
+    assert flat.count("(p_brand_id, v_before, p_weeks,") == 2
+    # Bands are percentile_cont, rounded back to ads.rate's four places.
+    for q in ("0.25", "0.50", "0.75"):
+        assert (f"percentile_cont({q}) within group "
+                f"(order by w.val::double precision)") in flat
+    assert flat.count("round(a.q") == 3 and "::numeric, 4)" in flat
+
+
+def _seeded_rules() -> list[tuple[str, str, str, int]]:
+    code = _strip_comments(M019.read_text(encoding="utf-8"))
+    block = re.search(r"insert into ads\.campaign_family_rule.*?\) as v\(",
+                      code, re.DOTALL | re.IGNORECASE)
+    assert block, "019 seeds no rules"
+    return [(d, p, v, int(n)) for d, p, v, n in re.findall(
+        r"\('(\w+)',\s*'([^']+)',\s*'(\w+)',\s*(\d+)\)", block.group(0))]
+
+
+def _classify(name: str, rules, dimension: str):
+    """The function's rule, in Python: highest-priority `~*` match wins.
+
+    The seeded patterns are plain literals, which read the same in POSIX
+    and Python regular expressions.
+    """
+    hits = [(n, v) for d, p, v, n in rules
+            if d == dimension and re.search(p, name, re.IGNORECASE)]
+    return max(hits)[1] if hits else None
+
+
+def test_019_rules_are_case_insensitive_and_highest_priority_wins():
+    flat = re.sub(r"\s+", " ", _strip_comments(
+        M019.read_text(encoding="utf-8")).lower())
+    assert flat.count("c.name ~* r.pattern") == 2
+    assert flat.count("order by r.priority desc limit 1") == 2
+    assert "unique (brand_id, dimension, priority)" in flat
+    assert "where b.slug = 'renegade'" in flat
+
+
+def test_019_seeded_priorities_follow_the_contract():
+    rules = _seeded_rules()
+    assert len(rules) == 10, rules
+    top = {(d, v): max(n for dd, _, vv, n in rules if (dd, vv) == (d, v))
+           for d, _, v, _n in rules}
+    lowest = {(d, v): min(n for dd, _, vv, n in rules if (dd, vv) == (d, v))
+              for d, _, v, _n in rules}
+    order = ["hiring", "b_roll", "m_and_a", "franchise"]
+    for hi, lo in zip(order, order[1:]):
+        assert lowest[("family", hi)] > top[("family", lo)], (hi, lo)
+    assert lowest[("audience", "retargeting")] > top[("audience", "prospecting")]
+
+
+@pytest.mark.parametrize("name, family, audience", [
+    ("Renegade | Hiring Ads | Open Audience", "hiring", "prospecting"),
+    ("Renegade | B-Roll | Retargeting", "b_roll", "retargeting"),
+    ("Renegade | M&A | Core States", "m_and_a", "prospecting"),
+    ("Renegade | book roll | Custom List", "m_and_a", "retargeting"),
+    ("Renegade | FRANCHISE | Custom Audience", "franchise", "retargeting"),
+    ("Renegade | Franchise | Hiring Ads", "hiring", None),
+    ("Renegade | M&A | B-Roll", "b_roll", None),
+    ("Renegade | Franchise | Retarget | Open Audience", "franchise", "retargeting"),
+    ("Renegade | Brand Awareness", None, None),
+])
+def test_019_seed_reads_live_names_as_the_contract_says(name, family, audience):
+    rules = _seeded_rules()
+    assert _classify(name, rules, "family") == family  # None reads 'other'
+    assert _classify(name, rules, "audience") == audience
+    assert "coalesce(fr.v, 'other')" in _strip_comments(
+        M019.read_text(encoding="utf-8"))
+
+
+def test_019_the_rule_table_is_owned_and_readable():
+    joined = re.sub(r"\s+", " ", _joined_literals(_strip_comments(
+        M019.read_text(encoding="utf-8")))).lower()
+    assert "alter table ads.campaign_family_rule owner to ads_owner" in joined
+    assert "grant select on ads.campaign_family_rule to ads_reader" in joined
+    assert "references public.brands (id) on delete cascade" in joined
+    # The reader is granted nothing that writes.
+    assert not re.search(r"grant (insert|update|delete|all)[^;]*campaign_family_rule",
+                         joined)

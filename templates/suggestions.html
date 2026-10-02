@@ -476,6 +476,51 @@
   </div>
 </section>
 {% endif %}
+
+{#- TYPICAL RANGES. `published.family_bands` (contracts-baselines E2): the
+    middle half (p25–p75) of campaign-weeks per campaign family and goal over
+    the last 26 weeks, from ads.family_baseline, all audiences. Context for a
+    campaign's own windows, never a target, and never read across goals: each
+    row is one family under one goal. The template groups and formats; the
+    figures are the SQL's. Closed until opened, inside a fold that is too. -#}
+{% set fbands = (published.family_bands if published and published.family_bands is defined
+                 and published.family_bands else []) | selectattr('audience', 'none') | list %}
+{% if fbands %}
+  {% set FAM_WORDS = {'franchise': 'Franchise', 'm_and_a': 'M&A / book roll',
+                      'b_roll': 'B-roll', 'hiring': 'Hiring', 'other': 'Other'} %}
+  {% set fkeys = [] %}
+  {% for b in fbands %}{% if (b.family, b.optimization_goal) not in fkeys %}{% set _ = fkeys.append((b.family, b.optimization_goal)) %}{% endif %}{% endfor %}
+  {% macro band_cell(rows, metric) -%}
+    {%- set b = rows | selectattr('metric', 'equalto', metric) | first -%}
+    {%- if b and b.p25 is not none and b.p75 is not none -%}
+      {%- if metric in ('link_ctr', 'conversion_rate') %}{{ num(b.p25, 2) }}–{{ pct(b.p75, 2) }}
+      {%- else %}{{ money(b.p25) }}–{{ money(b.p75) }}{% endif -%}
+    {%- else %}--{% endif -%}
+  {%- endmacro %}
+  <details class="fu-more family-bands" aria-label="Typical ranges">
+    <summary>Typical ranges by kind of campaign</summary>
+    <p class="small muted" style="margin:8px 0 0">The middle half of campaign-weeks for each kind
+      of campaign under one goal{% if fbands[0].since %}, {{ fbands[0].since }} – {{ fbands[0].until }}{% endif %}.
+      Context for a campaign&rsquo;s own weeks, not a target; never compare across goals.
+      Source: <code>ads.family_baseline</code></p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Kind</th><th>Goal</th><th class="num">CPA</th><th class="num">Link CTR</th>
+        <th class="num">CVR</th><th class="num">CPM</th><th class="num" title="The largest sample among the ranges on the row">Campaign-weeks</th></tr></thead>
+      <tbody>
+      {% for fam, goal in fkeys %}
+        {% set rows = fbands | selectattr('family', 'equalto', fam) | selectattr('optimization_goal', 'equalto', goal) | list %}
+        {% set ns = rows | map(attribute='campaign_weeks') | select | list %}
+        <tr><td class="name">{{ FAM_WORDS.get(fam, words(fam)) }}</td><td>{{ words(goal) }}</td>
+          <td class="num">{{ band_cell(rows, 'cpa') }}</td>
+          <td class="num">{{ band_cell(rows, 'link_ctr') }}</td>
+          <td class="num">{{ band_cell(rows, 'conversion_rate') }}</td>
+          <td class="num">{{ band_cell(rows, 'cpm') }}</td>
+          <td class="num">{% if ns %}{{ num(ns | max) }}{% else %}--{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </details>
+{% endif %}
   </div>
 </details>
 

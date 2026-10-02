@@ -468,7 +468,8 @@ def short_diagnosis() -> dict:
     return {"findings": [], "max_priority": "monitor", "not_yet": []}
 
 
-async def _campaigns(ladder: dict, brand_id) -> tuple:
+async def _campaigns(ladder: dict, brand_id, families: dict | None = None
+                     ) -> tuple:
     """(campaigns, challenger_pool, windows) from one funnel_ladder answer.
 
     A campaign is in the pack when it spent in the last 28 settled days, in
@@ -533,7 +534,11 @@ async def _campaigns(ladder: dict, brand_id) -> tuple:
                 "spend": m28.get("spend"),
                 "conversions": m28.get("conversions"),
                 "cpa": _rate(m28) if one_goal else None,
-                "link_ctr": _rate(m28, "link_ctr")}
+                "link_ctr": _rate(m28, "link_ctr"),
+                # Typical ranges for this kind of campaign (019), or None:
+                # context beside its own windows, read by diagnose and
+                # rating_rule. See _families.
+                "family": (families or {}).get(key)}
 
         if not _spent(rows, P7):
             entry = {**base, "running": False,
@@ -544,7 +549,8 @@ async def _campaigns(ladder: dict, brand_id) -> tuple:
 
         ads = ads_of.get(key, [])
         camp = _entity(key, rows)
-        diag = diagnose.diagnose_campaign(camp, mine, ads, spread.get(key))
+        diag = diagnose.diagnose_campaign(camp, mine, ads, spread.get(key),
+                                          base["family"])
         row7, row14 = rows.get(P7), rows.get(P14)
         many = len(mine) > 1
         spending = [g for g in mine if _spent(g["rows"], P7)]
@@ -663,6 +669,95 @@ async def _impact(brand: str, campaigns: list) -> tuple:
                         **{k: r.get(k) for k in IMPACT_FIELDS},
                         "evidence": r.get("evidence_level")} if r else None)
     return bool(res.get("available")), res.get("why"), rows
+
+
+# ------------------------------------------------- family bands (019) --
+# WHAT IS NORMAL FOR THIS KIND OF CAMPAIGN IN THIS ACCOUNT: per campaign
+# family (hiring, B-roll, M&A, franchise, other), audience temperature and
+# optimization goal, the p25-p75 of 26 weeks of campaign-weeks, from
+# ads.campaign_vs_family. Context only: each campaign is still judged against
+# its own earlier windows first, and a band is never read across goals (the
+# SQL keys every band by goal). Every figure is a column 019 returned.
+
+#: The pair the family comparison is read on: this week, as the ladder's.
+FAMILY_PAIR = P7
+#: The metrics a family band carries, and the fields each one keeps.
+FAMILY_METRICS = ("cpa", "cpm", "link_ctr", "cost_per_link_click",
+                  "conversion_rate")
+FAMILY_BAND_FIELDS = ("cur", "p25", "p50", "p75", "position", "percentile")
+
+
+async def _call_019(name: str, *args) -> dict:
+    """metrics.<name>(*args), or "not available" -- before 019 is applied,
+    and before intel/metrics.py has the wrapper at all."""
+    fn = getattr(metrics, name, None)
+    if fn is None:
+        return {"available": False, "why": f"metrics.{name} does not exist"}
+    try:
+        return await fn(*args) or {"available": False}
+    except ValueError as exc:
+        return {"available": False, "why": str(exc)}
+
+
+def family_of(rows: list) -> dict | None:
+    """One campaign's `family` from its campaign_vs_family rows (one per
+    metric). The header is the CPA row's -- its sample is the conversion-gated
+    one diagnose's floor is about -- else the first row's."""
+    if not rows:
+        return None
+    head = next((r for r in rows if r.get("metric") == "cpa"), rows[0])
+    return {"family": head.get("family"), "audience": head.get("audience"),
+            "goal": head.get("optimization_goal"),
+            "band_level": head.get("band_level"),
+            "campaign_weeks": head.get("campaign_weeks"),
+            "metrics": {r.get("metric"): {k: r.get(k)
+                                          for k in FAMILY_BAND_FIELDS}
+                        for r in rows if r.get("metric") in FAMILY_METRICS}}
+
+
+async def _families(brand: str) -> dict:
+    """{campaign_key: family} from metrics.campaign_vs_family, grouped by
+    campaign_key. {} before 019: every campaign then carries family None."""
+    res = await _call_019("campaign_vs_family", brand, FAMILY_PAIR)
+    if not res.get("available"):
+        return {}
+    by_key: dict = {}
+    for r in res.get("rows") or []:
+        if r.get("campaign_key") is not None:
+            by_key.setdefault(str(r.get("campaign_key")), []).append(r)
+    return {k: family_of(v) for k, v in by_key.items()}
+
+
+async def _family_bands(brand: str) -> list | None:
+    """The account's typical ranges for the page: metrics.family_baseline's
+    rows across every audience of a family (audience null). None before 019."""
+    res = await _call_019("family_baseline", brand)
+    if not res.get("available"):
+        return None
+    return [r for r in res.get("rows") or [] if r.get("audience") is None]
+
+
+#: How `family` is sent: per metric [p25, p75, position, percentile]. p50 and
+#: cur stay on the page (cur is the ladder's last_7 again); the prompt names
+#: the columns in this order and tests/test_suggestions.py holds the two.
+FAMILY_COLUMNS = ("p25", "p75", "position", "percentile")
+
+
+def family_sent(family) -> dict | None:
+    """`family` as the model reads it, or None when there is no band."""
+    if not isinstance(family, dict) or family.get("band_level") is None:
+        return None
+    bands = {m: [b.get(k) for k in FAMILY_COLUMNS]
+             for m, b in (family.get("metrics") or {}).items()
+             if isinstance(b, dict) and b.get("p25") is not None}
+    if not bands:
+        return None
+    return _dense({"family": family.get("family"),
+                   "audience": family.get("audience"),
+                   "goal": family.get("goal"),
+                   "band_level": family.get("band_level"),
+                   "campaign_weeks": family.get("campaign_weeks"),
+                   "bands": bands})
 
 
 async def _dimensions_by_goal(brand: str, windows: dict | None) -> dict | None:
@@ -797,7 +892,11 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # the ads each campaign and the challenger pool name ride the same query.
     ladder = await metrics.funnel_ladder(brand)
     if ladder.get("available"):
-        campaigns, pool, windows = await _campaigns(ladder, d["brand_id"])
+        # Before the campaigns are built: diagnose and rating_rule read each
+        # campaign's family band. {} (every family None) before 019.
+        families = await _families(brand)
+        campaigns, pool, windows = await _campaigns(ladder, d["brand_id"],
+                                                    families)
         windows = {"settled_through": ladder.get("settled_through"),
                    **windows}
     else:
@@ -808,9 +907,11 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     if ladder.get("available"):
         impact_ok, impact_why, impact_rows = await _impact(brand, campaigns)
         dims_by_goal = await _dimensions_by_goal(brand, windows)
+        family_bands = await _family_bands(brand)
     else:
         impact_ok, impact_why, impact_rows = False, ladder.get("why"), []
         dims_by_goal = None
+        family_bands = None
     for c in campaigns:
         for a in (c.get("where") or {}).get("ads") or []:
             chosen.append({"entity_key": a.get("_key")})
@@ -992,6 +1093,9 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
         "impact_available": impact_ok,
         "impact_why": None if impact_ok else impact_why,
         "goal_impact": impact_rows,
+        # ads.family_baseline's rows with audience null: the typical range
+        # per campaign family and goal, for the page. None before 019.
+        "family_bands": family_bands,
         "untagged": untagged,
         "tiring": [{"ad": r.get("entity_name"),
                     "optimization_goal": r.get("optimization_goal"),
@@ -1026,7 +1130,8 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
 #   B  drops the `before` and `prior_14` rungs, and the copy on every ad but
 #      the control
 #   C  keeps last_7, prior_7 and last_28, pct_7 and pct_14, the control (with
-#      its copy), each ad group's test floor, diagnosis and rating_rule
+#      its copy), each ad group's test floor, diagnosis, rating_rule, impact
+#      and family
 
 TIERS = ("A", "B", "C")
 #: The columns of a ladder rung as the model is sent it. The prompt names
@@ -1051,7 +1156,7 @@ TIER_C_RUNGS = ("last_7", "prior_7", "last_28")
 TIER_C_KEYS = ("campaign", "status", "running", "optimization_goals",
                "ladder", "pct_7", "pct_14", "cpa_shares_7", "driver_7",
                "evidence_7", "evidence_14", "ad_groups", "where", "diagnosis",
-               "rating_rule", "impact")
+               "rating_rule", "impact", "family")
 COPY_FIELDS = ("headline", "opening")
 #: Fields of an ad the page shows and the model does without: its place by
 #: spend is the list's order, its format is in `dimensions`, and its key is
@@ -1074,7 +1179,12 @@ def diagnosis_view(diag: dict | None, many_groups: bool = True) -> dict | None:
                                    "held_in", "legs", "driver_7", "evidence",
                                    "confidence", "allowed", "test_variables")}
         if f.get("level") == "campaign":
-            for k in ("entity", "legs", "driver_7"):
+            # A family finding's legs are which bands it sits outside, not
+            # pct_7 again, so they stay.
+            drop = (("entity", "driver_7")
+                    if f.get("pattern") in diagnose.CONTEXTUAL
+                    else ("entity", "legs", "driver_7"))
+            for k in drop:
                 v.pop(k)
         findings.append(_dense(v))
     out = {"findings": findings}
@@ -1145,10 +1255,13 @@ def campaign_tier(c: dict, tier: str = "A") -> dict:
             out["impact"] = _impact_sent(out["impact"])
             if out["impact"] is None:
                 out.pop("impact")
+        # Not running: no week to set against a band, and no issues to raise.
+        out.pop("family", None)
         return out
     many = len(c.get("ad_groups") or []) > 1
     out = {k: v for k, v in c.items() if k not in NOT_SENT}
     out["impact"] = _impact_sent(c.get("impact"))
+    out["family"] = family_sent(c.get("family"))
     if out.get("status") == "ACTIVE":
         out.pop("status")
     if not out.get("more_ad_groups"):
@@ -1245,8 +1358,23 @@ spend is spread (`spend_spread`), its `impact`, a `diagnosis` and a
 dollars spent beyond what this week's conversions cost at last week's rate
 (negative is a saving) and `contribution_share_pct` is its share of its
 goal's CPA change. Dollars may be compared across campaigns; a CPA may not.
-A campaign whose ad groups span two goals has no `impact`. Each
-`ladder` entry is [spend, conversions, cpa, cpm, link_ctr, cvr] for that
+A campaign whose ad groups span two goals has no `impact`.
+`family` (when present) is CONTEXT: what is normal for this kind of campaign
+in this account, over the last 26 weeks, under the same optimization goal.
+`family.family` is the kind (franchise, m_and_a = "M&A / book roll", b_roll =
+"B-roll", hiring, other; write the words, not the key), `audience` is
+retargeting or prospecting when known, and `campaign_weeks` is how many
+campaign-weeks stand behind the bands (`band_level` "family_audience" when
+the band is that audience's, "family" when it is every audience's). Each of
+`bands` is [p25, p75, position, percentile] for this week's figure: p25 to
+p75 is the typical range, `position` says whether this week sits below,
+within or above it, and `percentile` is the share of past campaign-weeks at
+or under this week's figure. Judge the campaign against its OWN earlier
+windows first; the typical range only says whether that result is usual for
+its kind. Quote the range as given ("CPA $44.67 sits above the typical
+$28.10 to $36.40 for M&A / book roll campaigns on this goal"), call it the
+"typical range", never a "benchmark" or a target, and never set one goal's
+range against another goal's campaign. Each `ladder` entry is [spend, conversions, cpa, cpm, link_ctr, cvr] for that
 window; `windows` has its dates. A campaign with "running": false spent
 nothing in the last 7 settled days and carries its 28-day figures: rate it,
 raise no issues, and say it is not running.
@@ -1287,7 +1415,11 @@ ANSWER FOUR QUESTIONS, IN ORDER.
      diminishing_returns     more spend, dearer results, no stage moving much.
      scaling_opportunity     CPA steady in both windows on a small share.
      no_conversions_spend    no conversions on several times its own CPA.
-     steady                  nothing moved past the steady band.
+     outside_family_norm     this week's CPA above, or link CTR or CVR below,
+                             the typical range for its kind (`legs` says
+                             which). Context: monitor, or test the stage it
+                             names; never act on it alone.
+     steady                 nothing moved past the steady band.
      insufficient_evidence   too few conversions to read a move.
 
    Every pattern is a HYPOTHESIS. Your `diagnosis` names the pattern, what
@@ -1423,7 +1555,9 @@ THE RATING. One per campaign, every campaign in `campaigns`, exactly once.
           judged.
   green   No change suggested. Steady or improving on enough conversions.
 
-A single fatigue symptom on one ad is not a red. Neither is concentration.
+A single fatigue symptom on one ad is not a red. Neither is concentration,
+nor a week outside the typical range for its kind -- though a CPA above that
+range keeps a campaign from green.
 `rating_rule.allowed` lists the ratings the campaign's figures permit and
 `reasons` says why. Choose within `allowed`; a rating outside it is changed to
 the nearest allowed one and the card says so.

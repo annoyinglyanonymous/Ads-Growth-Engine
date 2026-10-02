@@ -41,6 +41,20 @@
       ]
     }
   },
+  "family_bands": [
+    {"family": "m_and_a", "audience": null, "optimization_goal": "OFFSITE_CONVERSIONS", "metric": "cpa",
+     "p25": 30.25, "p50": 33.0, "p75": 38.9, "campaign_weeks": 18, "campaigns": 3, "since": "2026-03-29", "until": "2026-09-24"},
+    {"family": "m_and_a", "audience": null, "optimization_goal": "OFFSITE_CONVERSIONS", "metric": "link_ctr",
+     "p25": 0.95, "p50": 1.12, "p75": 1.38, "campaign_weeks": 21, "campaigns": 3, "since": "2026-03-29", "until": "2026-09-24"},
+    {"family": "m_and_a", "audience": null, "optimization_goal": "OFFSITE_CONVERSIONS", "metric": "conversion_rate",
+     "p25": 4.2, "p50": 5.1, "p75": 6.05, "campaign_weeks": 18, "campaigns": 3, "since": "2026-03-29", "until": "2026-09-24"},
+    {"family": "m_and_a", "audience": null, "optimization_goal": "OFFSITE_CONVERSIONS", "metric": "cpm",
+     "p25": 18.4, "p50": 20.1, "p75": 23.6, "campaign_weeks": 21, "campaigns": 3, "since": "2026-03-29", "until": "2026-09-24"},
+    {"family": "hiring", "audience": null, "optimization_goal": "LINK_CLICKS", "metric": "link_ctr",
+     "p25": 2.1, "p50": 2.6, "p75": 3.15, "campaign_weeks": 11, "campaigns": 2, "since": "2026-03-29", "until": "2026-09-24"},
+    {"family": "hiring", "audience": null, "optimization_goal": "LINK_CLICKS", "metric": "cpm",
+     "p25": 9.8, "p50": 11.0, "p75": 12.45, "campaign_weeks": 12, "campaigns": 2, "since": "2026-03-29", "until": "2026-09-24"}
+  ],
   "triage": [
     {"shape": 2, "campaign": "Campaign Golf", "bucket": "no_change", "priority_rank": 3,
      "rating": "green", "summary": "CPA −12% and steady. Nothing to change.",
@@ -61,6 +75,8 @@
                 "contribution_share_pct": 3.1, "evidence": "insufficient"},
      "movement": {"7v7": {"cpa": 9.5, "link_ctr": null}},
      "causal_flags": [], "unverified_figures": [],
+     "family": {"family": "hiring", "audience": null, "goal": "OFFSITE_CONVERSIONS",
+                "band_level": null, "campaign_weeks": 3, "metrics": {}},
      "issues": [
        {"id": "i1005-2-0", "status": "new", "open_since": "2026-10-05", "priority": "monitor", "basis": "d1",
         "observation": "Two conversions in the last week.",
@@ -90,6 +106,13 @@
      },
      "causal_flags": ["due to"],
      "unverified_figures": ["$999.00"],
+     "family": {"family": "m_and_a", "audience": "retargeting", "goal": "OFFSITE_CONVERSIONS",
+                "band_level": "family_audience", "campaign_weeks": 14,
+                "metrics": {"cpa": {"cur": 106.67, "p25": 28.1, "p50": 32.4, "p75": 36.4, "position": "above", "percentile": 92.86},
+                            "link_ctr": {"cur": 0.85, "p25": 0.9, "p50": 1.1, "p75": 1.4, "position": "below", "percentile": 7.14},
+                            "conversion_rate": {"cur": 4.6, "p25": 4.1, "p50": 5.0, "p75": 6.2, "position": "within", "percentile": 35.71},
+                            "cpm": {"cur": 21.0, "p25": 18.5, "p50": 20.0, "p75": 23.75, "position": "within", "percentile": 57.14},
+                            "cost_per_link_click": {"cur": 2.47, "p25": null, "p50": null, "p75": null, "position": null, "percentile": null}}},
      "ladder": [
        {"key": "unsettled", "label": "Last 3 days", "since": "2026-10-02", "until": "2026-10-04", "provisional": true,
         "spend": 260.00, "conversions": 2, "cpa": 130.00, "cpm": 22.10, "link_ctr": 0.80, "cvr": 4.00},
@@ -158,6 +181,10 @@
      "movement": {"7v7": {"cpa": 8.1, "link_ctr": -11.0, "cost_per_link_click": 6.0, "conversion_rate": 0.4},
                   "14v14": {"cpa": 2.0}},
      "causal_flags": [], "unverified_figures": [],
+     "family": {"family": "franchise", "audience": null, "goal": "OFFSITE_CONVERSIONS",
+                "band_level": "family", "campaign_weeks": 9,
+                "metrics": {"cpa": {"cur": null, "p25": 52.0, "p50": 60.0, "p75": 71.5, "position": null, "percentile": null},
+                            "link_ctr": {"cur": 1.3, "p25": 1.05, "p50": 1.2, "p75": 1.6, "position": "within", "percentile": 55.56}}},
      "issues": [
        {"id": "i0920-3-0", "status": "still_open", "open_since": "2026-09-20", "priority": "primary", "basis": "d1",
         "observation": "Click-through fell while CPM held.",

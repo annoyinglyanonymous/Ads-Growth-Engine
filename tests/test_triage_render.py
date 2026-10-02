@@ -589,3 +589,86 @@ def test_a_goal_tab_without_its_own_tables_falls_back():
     html = _page(_load("report_v3"), goal="LINK_CLICKS")
     assert '<div class="goal-dims"' not in html
     assert "mixed-goal hook" in html
+
+
+# --- typical for this kind of campaign (contracts-baselines E3) --------------
+
+def test_the_numbers_say_what_is_typical_for_the_campaigns_family():
+    html = _render(_load("report_v3"))
+    delta = _between(html, 'class="ttl">Campaign Delta</span>', 'class="ttl">Campaign Hotel</span>')
+    numbers = _between(delta, "<summary>The numbers", "</details>")
+    line = _between(numbers, '<p class="tnote tfam">', "</p>")
+    assert "Typical for M&amp;A / book roll" in line and "offsite conversions" in line
+    assert "retargeting audiences only, 14 campaign-weeks" in line
+    assert "CPA $28.10–$36.40 · link CTR 0.90–1.40% · CVR 4.10–6.20% · CPM $18.50–$23.75" in line
+    # Where this week sits is the SQL's position, CPA first.
+    assert re.search(r"this week&rsquo;s CPA of \$106\.67\s+sits above the range \(percentile 93\)\.", line)
+    # A range with no quartiles (cost per click) is left out, not shown as "--".
+    assert "--" not in line and "cost per" not in line.lower()
+    # It sits in "What changed", under the campaign's own windows.
+    assert numbers.index('<h4 class="tsec">What changed') < numbers.index("Typical for") \
+        < numbers.index('<h4 class="tsec">Where the change came from')
+
+
+def test_a_family_band_without_a_ladder_still_gets_its_own_heading():
+    html = _render(_load("report_v3"))
+    numbers = _between(html[html.index('class="ttl">Campaign Echo</span>'):], "<summary>The numbers", "</details>")
+    assert '<h4 class="tsec">What changed</h4>' in numbers
+    assert "Typical for franchise" in numbers and "all audiences, 9 campaign-weeks" in numbers
+    # CPA has no position this week, so the line places link CTR instead.
+    assert re.search(r"this week&rsquo;s link CTR of 1\.30%\s+sits within the range \(percentile 56\)", numbers)
+
+
+def test_no_band_and_no_family_print_nothing():
+    html = _render(_load("report_v3"))
+    # Foxtrot's family has no band level, Golf and Hotel have no family:
+    # none of them opens a numbers fold for it, and no line is printed.
+    assert html.count('class="tnote tfam"') == 2
+    fox = _between(html, 'class="ttl">Campaign Foxtrot</span>', '<details class="tcamp">')
+    assert "<summary>The numbers" not in fox and "Typical for" not in fox
+    pub = _load("report_v3")
+    for c in pub["triage"]:
+        c.pop("family", None)
+    assert "Typical for" not in _render(pub)
+
+
+def test_the_shape_two_report_prints_the_typical_line_too():
+    pub = _load("report")
+    alpha = next(c for c in pub["triage"] if c["campaign"] == "Campaign Alpha")
+    alpha["family"] = {"family": "b_roll", "audience": None, "goal": "LINK_CLICKS",
+                       "band_level": "family", "campaign_weeks": 10,
+                       "metrics": {"link_ctr": {"cur": 2.0, "p25": 1.5, "p50": 1.8, "p75": 2.4,
+                                                "position": "within", "percentile": 60.0}}}
+    html = _render(pub)
+    assert "<details open" not in html and not re.search(r"<script|<button", html, re.I)
+    assert html.count('class="tnote tfam"') == 1
+    assert "Typical for B-roll" in html and "link CTR 1.50–2.40%" in html
+
+
+def test_the_page_folds_the_typical_ranges_inside_the_evidence():
+    html = _page(_load("report_v3"))
+    bands = _between(html, '<details class="fu-more family-bands"', "</details>")
+    # Inside the closed evidence fold, as the last thing in its body.
+    start = html.index('<details class="fu-more family-bands"')
+    assert html.index('<details class="evidence-fold">') < start
+    assert re.match(r"\s*</details>\s*</div>\s*</details>", html[start + len(bands):])
+    assert "Typical ranges by kind of campaign" in bands
+    assert "<details open" not in bands and not re.search(r"<script|<button", bands, re.I)
+    assert '<details class="evidence-fold">' in html, "the evidence fold starts closed"
+    rows = re.findall(r"<tr><td class=\"name\">(.*?)</tr>", bands, re.S)
+    assert len(rows) == 2, "one row per family and goal"
+    ma, hiring = rows
+    assert "M&amp;A / book roll" in ma and "Offsite conversions" in ma
+    assert "$30.25–$38.90" in ma and "0.95–1.38%" in ma and "4.20–6.05%" in ma
+    assert "$18.40–$23.60" in ma and ">21<" in ma
+    # Hiring has no CPA or CVR range under link clicks: a dash, not a guess.
+    assert "Hiring" in hiring and "Link clicks" in hiring
+    assert hiring.count(">--<") == 2 and "2.10–3.15%" in hiring
+    assert "2026-03-29 – 2026-09-24" in bands and "ads.family_baseline" in bands
+
+
+def test_a_file_without_family_bands_prints_no_table():
+    pub = _load("report_v3")
+    pub.pop("family_bands")
+    assert "family-bands" not in _page(pub)
+    assert "family-bands" not in _page(_load("report"), by_goal=False)

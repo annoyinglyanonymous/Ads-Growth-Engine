@@ -87,7 +87,9 @@ SENT_TO_THE_MODEL = ("campaigns", "challenger_pool", "dimensions",
 #: model's per-goal copy list and is replaced by `challenger_pool`; `tiring`
 #: is the 28-day "1 of 5 symptoms" read that turned ten campaigns red on its
 #: own; `formats` is one of the four `dimensions` already sent.
-PAGE_ONLY = ("tiring", "formats", "goals", "goal_impact")
+#: `family_bands` is the account's typical ranges per campaign family and
+#: goal (019); the model reads each campaign's own band as `family` instead.
+PAGE_ONLY = ("tiring", "formats", "goals", "goal_impact", "family_bands")
 
 #: The pack's frame and flags: interpolated into the prompt or read by this
 #: script, never sent as a section.
@@ -218,6 +220,13 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         f"running in the last 7 settled days; {len(pool)} challenger(s) "
         f"across {len(pack['challenger_pool'])} goal(s); settled through "
         f"{(pack.get('windows') or {}).get('settled_through')}")
+    if pack.get("family_bands") is None:
+        log(f"{slug}: no typical ranges by campaign family (migration 019 "
+            f"not applied, or nothing to read)")
+    else:
+        log(f"{slug}: typical ranges for "
+            f"{len([c for c in pack['campaigns'] if c.get('family')])} "
+            f"campaign(s); {len(pack['family_bands'])} account band(s)")
 
     # `dimensions`, not `formats`. They overlap -- format is one of the four --
     # but picking the old key sent the model the ad-builder cut and withheld
@@ -364,6 +373,9 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         # and the reply's one account_note (checked like a card).
         "account_summary": summary,
         "impact_available": bool(pack.get("impact_available")),
+        # Typical ranges per campaign family and goal, audience null (019's
+        # family_baseline), for the page's evidence area. None before 019.
+        "family_bands": pack.get("family_bands"),
         # The outcomes ledger's scorecard (outcomes/<brand>.json). None when
         # the ledger step failed outright; the cards then carry no tags.
         "outcomes": ({"available": True,

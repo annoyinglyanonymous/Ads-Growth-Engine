@@ -263,13 +263,17 @@ def fake_ladder(entities=None, override=None, drop=()):
 
 #: What metrics.goal_impact / facet_by_goal return before 018 is applied.
 NO_018 = {"available": False, "why": "migration 018 is not applied"}
+#: ...and what metrics.campaign_vs_family / family_baseline return before 019.
+NO_019 = {"available": False, "why": "migration 019 is not applied"}
 
 
 def _pack(monkeypatch, rows=None, formats=None, ladder=None, copy=None,
-          impact=None, by_goal=None):
+          impact=None, by_goal=None, family=None, bands=None):
     """Run creative_pack with every database call stubbed.
 
     `impact`: metrics.goal_impact's answer (default: 018 not applied).
+    `family` / `bands`: metrics.campaign_vs_family / family_baseline's
+    answers (default: 019 not applied).
     `by_goal`: dimension -> metrics.facet_by_goal's answer (default: the
     same)."""
     rows = ROWS if rows is None else rows
@@ -289,6 +293,20 @@ def _pack(monkeypatch, rows=None, formats=None, ladder=None, copy=None,
 
     monkeypatch.setattr(creative.metrics, "goal_impact", fake_goal_impact)
     monkeypatch.setattr(creative.metrics, "facet_by_goal", fake_facet_by_goal)
+
+    async def fake_campaign_vs_family(slug, pair="last_7_vs_prior_7"):
+        assert pair == "last_7_vs_prior_7"
+        return NO_019 if family is None else family
+
+    async def fake_family_baseline(slug, before=None):
+        return NO_019 if bands is None else bands
+
+    # raising=False: the wrappers are intel/metrics.py's (contract E1) and
+    # the pack must not depend on their being there yet.
+    monkeypatch.setattr(creative.metrics, "campaign_vs_family",
+                        fake_campaign_vs_family, raising=False)
+    monkeypatch.setattr(creative.metrics, "family_baseline",
+                        fake_family_baseline, raising=False)
 
     async def fake_funnel_ladder(slug, level=None, pairs=None, **thresholds):
         assert level is None and pairs is None, (
@@ -1353,8 +1371,10 @@ def test_a_campaign_not_running_gets_the_short_form(monkeypatch):
     assert set(y) == {"campaign", "campaign_key", "status", "running",
                       "objective", "optimization_goals", "spend",
                       "conversions", "cpa", "link_ctr", "diagnosis",
-                      "rating_rule", "impact"}
+                      "rating_rule", "impact", "family"}
     assert y["impact"] is None, "no 018, no impact"
+    assert y["family"] is None, "no 019, no family"
+    assert "family" not in creative.campaign_tier(y, "A")
     assert y["running"] is False
     assert y["diagnosis"] == {"findings": [], "max_priority": "monitor",
                               "not_yet": []}
@@ -2466,6 +2486,137 @@ def test_no_018_is_a_pack_without_impact_not_a_crash(monkeypatch):
     assert pack["dimensions_by_goal"] is None
 
 
+# ---------------------------------------------------------------------------
+# Family bands (migration 019, contracts E1/E2): what is normal for this kind
+# of campaign in this account. Context beside the campaign's own windows.
+# ---------------------------------------------------------------------------
+
+#: One ads.family_baseline row (audience null: every audience of the family).
+FAMILY_BAND_ROW = {"family": "m_and_a", "audience": None,
+                   "optimization_goal": "LEAD_GENERATION", "metric": "cpa",
+                   "p25": 28.1, "p50": 31.2, "p75": 36.4,
+                   "campaign_weeks": 40, "campaigns": 4,
+                   "since": "2026-03-21", "until": "2026-09-11"}
+
+
+def _cvf(key, metric, cur, p25, p50, p75, position, percentile, weeks=12,
+         band_level="family"):
+    """One ads.campaign_vs_family row (E1)."""
+    return {"campaign_key": key, "campaign_name": f"Campaign {key}",
+            "family": "m_and_a", "audience": "prospecting",
+            "optimization_goal": "LEAD_GENERATION", "metric": metric,
+            "cur": cur, "p25": p25, "p50": p50, "p75": p75,
+            "position": position, "percentile": percentile,
+            "campaign_weeks": weeks, "band_level": band_level,
+            "evidence_level": "moderate"}
+
+
+def _family_rows(cpa_position="above", ctr_position="within",
+                 band_level="family", weeks=12):
+    return {"available": True, "rows": [
+        _cvf("X", "cpa", 44.67, 28.1, 31.2, 36.4, cpa_position, 91.5,
+             weeks, band_level),
+        _cvf("X", "link_ctr", 1.04, 0.9, 1.1, 1.3, ctr_position, 40.0,
+             weeks, band_level),
+        _cvf("X", "cpm", 20.0, 18.0, 21.0, 25.0, "within", 35.0,
+             weeks, band_level),
+        # A campaign the pack does not carry: grouped, then never read.
+        _cvf("Q", "cpa", 10.0, 28.1, 31.2, 36.4, "below", 2.0)]}
+
+
+def test_the_pack_attaches_family_by_campaign_key(monkeypatch):
+    bands = {"available": True, "rows": [
+        FAMILY_BAND_ROW, {**FAMILY_BAND_ROW, "audience": "prospecting"}]}
+    pack = _pack(monkeypatch, family=_family_rows(), bands=bands)
+    x = next(c for c in pack["campaigns"] if c["campaign_key"] == "X")
+    y = next(c for c in pack["campaigns"] if c["campaign_key"] == "Y")
+    assert x["family"] == {
+        "family": "m_and_a", "audience": "prospecting",
+        "goal": "LEAD_GENERATION", "band_level": "family",
+        "campaign_weeks": 12,
+        "metrics": {
+            "cpa": {"cur": 44.67, "p25": 28.1, "p50": 31.2, "p75": 36.4,
+                    "position": "above", "percentile": 91.5},
+            "link_ctr": {"cur": 1.04, "p25": 0.9, "p50": 1.1, "p75": 1.3,
+                         "position": "within", "percentile": 40.0},
+            "cpm": {"cur": 20.0, "p25": 18.0, "p50": 21.0, "p75": 25.0,
+                    "position": "within", "percentile": 35.0}}}
+    assert y["family"] is None, "no rows for it: no family"
+    # The page's account table: the all-audience rows only.
+    assert pack["family_bands"] == [FAMILY_BAND_ROW]
+    # The diagnosis reads it: CPA above its band, on moderate evidence.
+    (fam,) = [f for f in x["diagnosis"]["findings"]
+              if f["pattern"] == "outside_family_norm"]
+    assert fam["legs"] == {"cpa": "above"}
+    assert fam["allowed"] == ["monitor"] and fam["test_variables"] == []
+    # ... and green is withheld while CPA sits above it.
+    assert "green" not in x["rating_rule"]["allowed"]
+    assert "typical" in x["rating_rule"]["reasons"][0]
+
+
+def test_family_is_sent_compactly_and_in_every_tier(monkeypatch):
+    pack = _pack(monkeypatch, family=_family_rows(ctr_position="below"))
+    x = next(c for c in pack["campaigns"] if c["campaign_key"] == "X")
+    sent = creative.campaign_tier(x, "A")
+    assert sent["family"] == {
+        "family": "m_and_a", "audience": "prospecting",
+        "goal": "LEAD_GENERATION", "band_level": "family",
+        "campaign_weeks": 12,
+        "bands": {"cpa": [28.1, 36.4, "above", 91.5],
+                  "link_ctr": [0.9, 1.3, "below", 40.0],
+                  "cpm": [18.0, 25.0, "within", 35.0]}}
+    # No median, no current figure (the ladder has it), no keys.
+    text = json.dumps(sent["family"])
+    assert "31.2" not in text and "44.67" not in text
+    assert "campaign_key" not in text
+    assert creative.campaign_tier(x, "C")["family"] == sent["family"]
+    # Its finding keeps its legs on the way to the model: they say which
+    # bands, not pct_7 again.
+    (fam,) = [f for f in sent["diagnosis"]["findings"]
+              if f["pattern"] == "outside_family_norm"]
+    assert fam["legs"] == {"cpa": "above", "link_ctr": "below"}
+    assert fam["allowed"] == ["monitor", "test"]
+    assert fam["test_variables"] == ["creative"]
+
+
+def test_no_019_means_no_family_no_finding_no_bands(monkeypatch):
+    pack = _pack(monkeypatch)
+    assert pack["family_bands"] is None
+    for c in pack["campaigns"]:
+        assert c["family"] is None
+        assert not [f for f in (c.get("diagnosis") or {}).get("findings") or []
+                    if f["pattern"] == "outside_family_norm"]
+        assert "family" not in creative.campaign_tier(c, "A")
+
+
+def test_a_band_without_a_level_is_not_sent_or_read(monkeypatch):
+    pack = _pack(monkeypatch, family=_family_rows(band_level=None))
+    x = next(c for c in pack["campaigns"] if c["campaign_key"] == "X")
+    assert x["family"]["band_level"] is None
+    assert "family" not in creative.campaign_tier(x, "A")
+    assert not [f for f in x["diagnosis"]["findings"]
+                if f["pattern"] == "outside_family_norm"]
+
+
+def test_the_pack_does_not_need_the_wrappers_to_exist(monkeypatch):
+    """Before intel/metrics.py has the 019 wrappers at all, the pack still
+    builds and says nothing about families."""
+    monkeypatch.delattr(creative.metrics, "campaign_vs_family", raising=False)
+    monkeypatch.delattr(creative.metrics, "family_baseline", raising=False)
+    assert asyncio.run(creative._families("renegade")) == {}
+    assert asyncio.run(creative._family_bands("renegade")) is None
+
+
+def test_the_family_columns_are_the_ones_the_prompt_names():
+    named = "[" + ", ".join(creative.FAMILY_COLUMNS) + "]"
+    p = creative.SUGGESTIONS_PROMPT
+    assert named in p
+    for phrase in ("typical range", "never a \"benchmark\"",
+                   "same optimization goal", "OWN earlier",
+                   "outside_family_norm", "M&A / book roll"):
+        assert phrase in p, phrase
+
+
 def _by_goal_rows():
     row = {"optimization_goal": "LEAD_GENERATION", "value": "callout",
            "ads_run": 4, "spend": 100.0, "conversions": 5,
@@ -2604,6 +2755,7 @@ def _publish_pack():
             "windows": {"settled_through": "2026-09-28"},
             "goals": [{"optimization_goal": "LEAD_GENERATION"}],
             "formats": [], "dimensions": {}, "dimensions_by_goal": None,
+            "family_bands": [FAMILY_BAND_ROW],
             "untagged": {}, "tiring": []}
 
 
@@ -2677,6 +2829,9 @@ def test_publish_wires_the_ledger_the_summary_and_the_order(monkeypatch,
     assert doc["account_summary"]["note"] == "Start with Camp A."
     assert doc["account_summary"]["goals"][0]["lines"]
     assert doc["impact_available"] is True
+    # The page's typical-ranges table rides on the doc, never in the prompt.
+    assert doc["family_bands"] == [FAMILY_BAND_ROW]
+    assert "family_bands" not in prompts[0]
     assert doc["outcomes"]["available"] is True
     assert doc["outcomes"]["scorecard"]["made"] >= 1
     assert measured == ["2026-09-28"]

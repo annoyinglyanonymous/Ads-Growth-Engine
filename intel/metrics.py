@@ -710,3 +710,122 @@ async def arm_compare(slug: str, control_ad_key: str, challenger_ad_key: str,
         row[k] = _decoded(row.get(k))
     return {"available": True, "brand": b["slug"],
             "settled_through": r.get("settled_through"), "row": row}
+
+
+# ---------------------------------------------------------------------------
+# Typical ranges by campaign family (migration 019).
+#
+# Same stance as the 018 wrappers: one round trip each, every argument cast
+# to the type 019 declares, nothing computed. A band is context beside the
+# campaign's own windows (017), never a target, and never read across goals.
+# Each returns {"available": False, "why": ...} until 019 is applied.
+# ---------------------------------------------------------------------------
+
+FAMILY_UNAVAILABLE = ("migration 019 is not applied "
+                      "(python ads_migrate.py --status)")
+
+#: The pair whose current window family_baseline's default `before` precedes,
+#: so the page's bands are the ones campaign_vs_family reads by default.
+FAMILY_DEFAULT_PAIR = "last_7_vs_prior_7"
+
+
+async def family_baseline(slug: str, before: date | None = None) -> dict:
+    """Typical ranges per campaign family and goal (audience None) and per
+    family, goal and audience: p25 / p50 / p75 of weekly campaign figures
+    over the 26 weeks ending at `before`.
+
+    `before` None is the day before last 7 vs prior 7's current window --
+    that pair's pri_until, read from ads.analysis_windows in the same query,
+    so the bands are the ones campaign_vs_family reads by default.
+
+    -> {"available": True, "brand", "before": date | None, "rows": [...]}
+    (before None and no rows: no pair to anchor on.)
+    """
+    b = await context.brand(slug)
+    sql = """
+        with arg as (
+            select coalesce(%s::date,
+                            (select w.pri_until
+                               from ads.analysis_windows(%s::uuid, now()) w
+                              where w.pair = %s::text)) as before_day
+        ),
+        ok as (select a.before_day from arg a where a.before_day is not null)
+        select ok.before_day, fb.*
+          from ok
+          left join lateral ads.family_baseline(
+                    %s::uuid, ok.before_day) with ordinality fb on true
+         order by fb.ordinality
+        """
+    # `ok` drops a NULL anchor before the function sees it (019 refuses a
+    # NULL p_before). left join: an anchor with no band still reports the
+    # day. Ordinality keeps 019's own order (family, goal, metric, the
+    # all-audience row first).
+    try:
+        rows = await fetch_all(sql, (before, b["id"], FAMILY_DEFAULT_PAIR,
+                                     b["id"]))
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": FAMILY_UNAVAILABLE}
+    except _pg_errors.RaiseException as exc:
+        raise _refusal(exc) from None
+
+    out: dict = {"available": True, "brand": b["slug"],
+                 "before": None, "rows": []}
+    for r in rows:
+        out["before"] = r.get("before_day")
+        if r.get("metric") is None:
+            continue  # the anchor, with no band behind it
+        out["rows"].append({k: v for k, v in r.items()
+                            if k not in ("before_day", "ordinality")})
+    return out
+
+
+async def campaign_vs_family(slug: str,
+                             pair: str = "last_7_vs_prior_7") -> dict:
+    """Each single-goal campaign's current window against its family's
+    typical range, one row per (campaign, metric): cur, p25 / p50 / p75,
+    position, percentile, campaign_weeks, band_level and evidence_level --
+    every one a column ads.campaign_vs_family returned. The band ends the
+    day before the current window, so a window is never in its own band.
+
+    -> {"available": True, "brand", "pair", "settled_through",
+        "windows": {cur_since, cur_until, pri_since, pri_until, cur_days,
+                    pri_days, unsettled_days} | None, "rows": [...]}
+    """
+    if pair not in ANALYSIS_PAIRS:
+        raise ValueError(f"unknown pair {pair!r}. Known: "
+                         f"{', '.join(ANALYSIS_PAIRS)}")
+    b = await context.brand(slug)
+    sql = """
+        select w.pair, w.cur_since, w.cur_until, w.pri_since, w.pri_until,
+               w.cur_days, w.pri_days, w.settled_edge, w.unsettled_days,
+               cv.*
+          from ads.analysis_windows(%s::uuid, now()) w
+          left join lateral ads.campaign_vs_family(
+                    %s::uuid,
+                    w.cur_since, w.cur_until,
+                    w.settled_edge) with ordinality cv on true
+         where w.pair = %s::text
+         order by cv.ordinality
+        """
+    # left join: a pair whose current window holds no campaign still reports
+    # its dates. Ordinality keeps 019's order (campaigns by current spend,
+    # each campaign's metrics in a fixed order).
+    try:
+        rows = await fetch_all(sql, (b["id"], b["id"], pair))
+    except _pg_errors.UndefinedFunction:
+        return {"available": False, "why": FAMILY_UNAVAILABLE}
+    except _pg_errors.RaiseException as exc:
+        raise _refusal(exc) from None
+
+    out: dict = {"available": True, "brand": b["slug"], "pair": pair,
+                 "settled_through": None, "windows": None, "rows": []}
+    for r in rows:
+        if out["windows"] is None:
+            out["settled_through"] = r.get("settled_edge")
+            out["windows"] = {k: r.get(k) for k in _WINDOW_COLS
+                              if k not in ("pair", "settled_edge")}
+        if r.get("metric") is None:
+            continue  # the pair's dates, with no campaign in the window
+        out["rows"].append({k: v for k, v in r.items()
+                            if k not in _WINDOW_COLS and k != "ordinality"})
+    return out

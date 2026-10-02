@@ -28,7 +28,8 @@ concluding that something is broken.
    • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
 
-  ledger: ads.schema_migrations, files 001…018, all applied
+  ledger: ads.schema_migrations, files 001…019
+          (001…018 applied; 019 family baselines waiting to be applied)
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are
@@ -481,6 +482,23 @@ impact. `movement` is 017's pct for CPA, link CTR, CPC and CVR, 7v7 and
 14v14, for the collapsed card's strip. Before 018, `impact_available` is
 false, every impact is None, and the page and pack degrade (no impact order,
 the old `dimensions` table) rather than crash.
+
+**Typical ranges need 019.** Each pack campaign carries `family` from
+`metrics.campaign_vs_family(slug, "last_7_vs_prior_7")`, grouped by
+campaign_key: {family, audience, goal, band_level, campaign_weeks, metrics:
+{metric: {cur, p25, p50, p75, position, percentile}}} -- what is normal for
+this kind of campaign in this account, 26 weeks, same goal. It is context:
+the own-window ladder is still the judgement. `diagnose.family_finding` adds
+`outside_family_norm` (campaign level, band_level set, >= 8 campaign-weeks,
+moderate+ evidence, CPA 'above' or link CTR / CVR 'below'; legs name which):
+monitor, plus test when CTR (creative) or CVR (form, landing_page, offer) is
+a leg; never act, never red, never primary. `rating_rule` withholds green
+while CPA sits above an existing band. The model gets `family` compactly
+(`creative.family_sent`: per metric [p25, p75, position, percentile], no p50
+or cur, nothing without a band_level); the pack and the published doc carry
+`family_bands` (`metrics.family_baseline` rows with audience null, PAGE_ONLY)
+for the page. Before 019 every family is None, no finding appears and
+`family_bands` is None; the dry-run log says which.
 
 **What matters today.** `creative.account_summary(pack, triage, note)` is
 deterministic: per goal, its CPA move from 018's goal row and -- when it rose
