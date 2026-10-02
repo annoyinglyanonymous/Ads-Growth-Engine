@@ -22,15 +22,28 @@
     suggested. When the log has experiments it comes first; when it is empty,
     as it is today, it folds into one line at the bottom rather than opening
     the page with an empty table.
+
+    ONE FLOW WITH /suggestions (2026-10-02). The report recommends a test and
+    names its tag; the person launches the new ad with utm_content=<tag>; the
+    outcomes ledger sees the launch and scripts/suggest.py files the
+    experiment as a proposal, pre-registered from the plan published before
+    the launch. A proposal whose launch was seen shows the date and the exact
+    statement that records started_on. That statement is here, in the
+    template, and nowhere in intel/: it is run by the person who launched the
+    ad, against the database, and nothing on this site runs it. "Tests the
+    report recommends" replaces `intel propose`'s ideas, which render only
+    when the ledger is empty or unreadable (`ideas` is None otherwise).
     ===================================================================== -#}
 
 {% block body %}
 {% set rows = d.rows or [] %}
 {% set running = rows | selectattr('state', 'equalto', 'running') | list %}
 {% set waiting = rows | selectattr('state', 'equalto', 'awaiting_conclusion') | list %}
-{% set props = ideas.proposals or [] %}
+{% set props = (ideas.proposals if ideas else none) or [] %}
 {% set fileable = props | selectattr('fileable') | list %}
-{% set dx = ideas.diagnoses or [] %}
+{% set dx = (ideas.diagnoses if ideas else none) or [] %}
+{% set recs = recommended or [] %}
+{% set seen = launches or [] %}
 
 {#- A metric that moved, as a chip: the metric's name and the verb's own
     percentage. The arrow is the sign; nothing here is coloured by merit. -#}
@@ -86,9 +99,16 @@
   <div class="stat"><div class="k">Running</div><div class="v">{{ num(running | length) }}</div></div>
   <div class="stat"><div class="k">Awaiting a conclusion</div><div class="v">{{ num(waiting | length) }}</div>
     {% if waiting %}<div class="sub">a person writes it, under their name</div>{% endif %}</div>
+  <div class="stat"><div class="k">Launch detected</div><div class="v">{{ num(seen | length) }}</div>
+    {% if seen %}<div class="sub">a person confirms started_on</div>{% endif %}</div>
+  {% if ideas %}
   <div class="stat"><div class="k">Ideas</div><div class="v">{{ num(props | length) }}</div>
     <div class="sub">{{ num(fileable | length) }} ready to file</div></div>
   <div class="stat"><div class="k">Not a creative problem</div><div class="v">{{ num(dx | length) }}</div></div>
+  {% else %}
+  <div class="stat"><div class="k">Tests the report recommends</div><div class="v">{{ num(recs | length) }}</div>
+    <div class="sub">not launched yet</div></div>
+  {% endif %}
 </div>
 
 
@@ -113,6 +133,7 @@
             {% set tone = {'concluded':'ok','running':'warn',
                            'proposed':'quiet','awaiting_conclusion':'stop'}.get(r.state, 'quiet') %}
             <span class="pill {{ tone }}">{{ r.state.replace('_',' ') }}</span>
+            {% if r.launch %}<div class="why">Launch detected {{ r.launch.implemented_on }}</div>{% endif %}
           </td>
           <td class="small">{{ r.hypothesis | truncate(90) }}</td>
           <td><span class="pill quiet">{{ r.primary_metric }}</span></td>
@@ -131,12 +152,105 @@
 {% if rows %}{{ log() }}{% endif %}
 
 
+{#- ======================================================= LAUNCH DETECTED
+    The ledger saw the new ad. The date is the ledger's implemented_on (the
+    new ad's first spend day, from SQL, or the review date that saw it). It
+    is not recorded on the experiment until a person runs the statement:
+    `and started_on is null` keeps it from moving a window already being
+    read. The brand is the page's; quotes in the name are doubled. -#}
+{% if seen %}
+<section class="stage" aria-label="Launch detected">
+  <div class="stage-head"><h2>Launch detected</h2>
+    <span class="state">proposed &middot; started_on is recorded by a person</span></div>
+  {% for r in seen %}
+    <div class="card" style="margin-bottom:12px">
+      <p><strong>{{ r.name }}</strong></p>
+      <p class="small" style="margin-top:4px">Launch detected {{ r.launch.implemented_on }} ({{ r.launch.match }}, {{ r.launch.matched_by }})</p>
+      <p class="small muted" style="margin-top:4px">If the new ad went live that day, the person
+        who launched it records it by running this against the database, under their own
+        name. Change the date first if it went live on another day.</p>
+<pre class="mono" style="margin:8px 0 0; white-space:pre-wrap">update ads.experiment
+   set started_on = date '{{ r.launch.implemented_on }}'
+ where brand_id = (select id from ads.brand where slug = '{{ (brand or 'renegade') | replace("'", "''") }}')
+   and name     = '{{ r.name | replace("'", "''") }}'
+   and started_on is null;</pre>
+      <p class="small muted" style="margin-top:6px">Then read it with
+        <code>python -m intel experiment --brand {{ brand or 'renegade' }} --name "{{ r.name }}"</code>.
+        The conclusion is written by a person too, after reading it.</p>
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if unfiled %}
+<section class="stage" aria-label="Launched, not filed yet">
+  <div class="stage-head"><h2>Launched, not filed yet</h2>
+    <span class="state">the next review tries again</span></div>
+  <div class="card" style="padding:0">
+    {% for u in unfiled %}
+      <div class="quiet-row">
+        <span class="t">{{ u.id }}</span>
+        <span class="w">{{ u.campaign }} &middot; {{ u.variable }} &middot; launch detected
+          {{ u.implemented_on }} ({{ u.match }}, {{ u.matched_by }}). {{ u.why }}</span>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+
+{#- ============================================== TESTS THE REPORT RECOMMENDS
+    From the outcomes ledger: every test the campaign report has recommended
+    that nobody has launched. The tag is the whole hand-off: put it on the new
+    ad as utm_content and the next review sees the launch and files the
+    experiment. The full plan, control and challenger, is on /suggestions. -#}
+{% if not ideas %}
+<section class="stage" aria-label="Tests the report recommends">
+  <div class="stage-head"><h2>Tests the report recommends</h2>
+    <span class="state">{{ recs | length }} not launched &middot; Source: <a href="/suggestions?brand={{ brand or 'renegade' }}">/suggestions</a></span></div>
+  {% if not recs %}
+    <div class="empty">Every test the report has recommended has been launched, or none
+      has been recommended yet. The next review after an import adds any new one here.</div>
+  {% else %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th scope="col">Campaign</th><th scope="col">What is tested</th>
+          <th scope="col">Tag to use</th><th scope="col">Recommended</th>
+        </tr></thead>
+        <tbody>
+        {% for t in recs %}
+          <tr>
+            <td class="name"><strong>{{ t.campaign }}</strong>
+              {% if t.ad_group %}<div class="why">{{ t.ad_group }}</div>{% endif %}</td>
+            <td class="small" style="max-width:440px">
+              <span class="pill quiet">{{ (t.variable or t.kind or '') | replace('_', ' ') }}</span>
+              <div style="margin-top:4px">{{ t.challenger or '--' }}</div>
+              {% if t.control %}<div class="why">against {{ t.control }}</div>{% endif %}
+              {% if t.setup %}<div class="why">{{ t.setup }}</div>{% endif %}
+            </td>
+            <td class="small">{% if t.tag %}<code>utm_content={{ t.tag }}</code>
+              {% else %}<span class="muted">no tag yet; the next review adds it</span>{% endif %}</td>
+            <td class="small">{{ t.recommended_on }}
+              <div class="why"><a href="/suggestions?brand={{ brand or 'renegade' }}">the report</a></div></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+{% endif %}
+
+
 {#- ===================================================== NOT A CREATIVE PROBLEM
     Above the ideas, deliberately: the ad is still earning the click and what
     follows it is not converting, so rewriting the creative would change the
     one part that works. No arms and no filing command -- there is nothing on
     the AD to test, and giving these the shape of an experiment would invite
     somebody to register one. -#}
+{% if ideas %}
+{#- ===== FALLBACK: `intel propose`, only while the ledger is empty. ===== -#}
 {% if dx %}
 <section class="stage" aria-label="Not a creative problem">
   <div class="stage-head"><h2>Not a creative problem</h2>
@@ -256,6 +370,7 @@
   </div>
 </section>
 {% endif %}
+{% endif %}
 
 
 {% if not rows %}
@@ -264,9 +379,9 @@
   <div class="card" style="padding:0">
     <div class="quiet-row">
       <span class="t">The log</span><span class="pill quiet">nothing to show</span>
-      <span class="w">Nothing has been filed. An experiment is filed with
-        <code>python -m intel record --kind experiment --json &lt;path&gt;</code>
-        and launched by a person in Ads Manager.</span>
+      <span class="w">Nothing has been filed. A recommended test is filed on its own
+        when the next review sees its tagged ad launched; one can also be filed by hand with
+        <code>python -m intel record --kind experiment --json &lt;path&gt;</code>.</span>
     </div>
   </div>
 </section>

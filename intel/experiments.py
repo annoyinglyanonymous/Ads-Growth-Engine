@@ -124,3 +124,81 @@ async def experiment(slug: str, name: str) -> dict:
                 f"({head['minimum_spend_per_arm']}). The effect shown is "
                 f"arithmetic, not a result.",
     }
+
+
+# ------------------------------------------- the ledger, beside the log --
+# The report recommends a test, the person launches the new ad tagged
+# utm_content=EXP-<issue id>, the outcomes ledger (intel/outcomes.py) sees
+# the launch and scripts/suggest.py files the experiment as a proposal. These
+# two read that ledger for /experiments. Pure: no SQL, no arithmetic, and no
+# statement text either -- the confirm-launch SQL is in the template, because
+# a read module carries no mutating SQL (tests/test_read_only.py).
+
+#: Ledger statuses that mean the launch has been seen.
+LAUNCHED = ("implemented", "measuring", "measured")
+#: Ledger statuses of a recommended test nobody has launched yet.
+NOT_LAUNCHED = ("open", "not_detectable")
+RECOMMENDED_KINDS = ("creative_test", "post_click", "other")
+
+
+def _entries(ledger: dict | None) -> list:
+    return [e for e in ((ledger or {}).get("entries") or {}).values()
+            if isinstance(e, dict)]
+
+
+def with_launches(rows: list, ledger: dict | None) -> list:
+    """The log's rows, each proposed one carrying `launch` when the ledger
+    entry it was filed from has been seen launched: {issue_id,
+    implemented_on, match, matched_by}. Matched by the experiment name the
+    ledger recorded at filing. Returns new dicts."""
+    by_name = {}
+    for e in _entries(ledger):
+        name = (e.get("experiment") or {}).get("name")
+        if name and e.get("status") in LAUNCHED and e.get("implemented_on"):
+            by_name[name] = e
+    out = []
+    for r in rows or []:
+        r = dict(r)
+        e = by_name.get(r.get("name")) if r.get("state") == "proposed" else None
+        r["launch"] = ({"issue_id": e.get("id"),
+                        "implemented_on": e.get("implemented_on"),
+                        "match": e.get("match"),
+                        "matched_by": e.get("matched_by"),
+                        "tag": e.get("tag")} if e else None)
+        out.append(r)
+    return out
+
+
+def recommended_tests(ledger: dict | None) -> list:
+    """Tests the report recommends that nobody has launched: ledger entries
+    of a test kind, open or not detectable, newest recommendation first."""
+    rows = [e for e in _entries(ledger)
+            if e.get("type") == "test"
+            and e.get("kind") in RECOMMENDED_KINDS
+            and e.get("status") in NOT_LAUNCHED]
+    rows.sort(key=lambda e: (str(e.get("recommended_on") or ""),
+                             str(e.get("id"))), reverse=True)
+    return [{k: e.get(k) for k in (
+        "id", "campaign", "ad_group", "kind", "variable", "control",
+        "challenger", "tag", "setup", "recommended_on", "last_mentioned_on",
+        "status", "reason")} for e in rows]
+
+
+def launched_unfiled(ledger: dict | None) -> list:
+    """Launched tests whose experiment is not on file yet, with the reason
+    the last run gave (it is tried again on the next run)."""
+    out = []
+    for e in _entries(ledger):
+        if e.get("type") == "test" and e.get("kind") in RECOMMENDED_KINDS \
+                and e.get("status") in LAUNCHED and not e.get("experiment"):
+            why = (e.get("experiment_skipped") or e.get("experiment_error")
+                   or {}).get("why")
+            out.append({"id": e.get("id"), "campaign": e.get("campaign"),
+                        "variable": e.get("variable"),
+                        "implemented_on": e.get("implemented_on"),
+                        "match": e.get("match"),
+                        "matched_by": e.get("matched_by"),
+                        "why": why or "not filed yet; the next review files it"})
+    out.sort(key=lambda r: (str(r["implemented_on"]), str(r["id"])),
+             reverse=True)
+    return out

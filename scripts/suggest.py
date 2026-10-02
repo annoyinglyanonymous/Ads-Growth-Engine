@@ -46,6 +46,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -61,6 +63,7 @@ import chat  # noqa: E402
 import db  # noqa: E402
 from intel import creative as creative_mod  # noqa: E402
 from intel import outcomes as outcomes_mod  # noqa: E402
+from intel import shapes as shapes_mod  # noqa: E402
 from intel.context import UnknownBrand  # noqa: E402
 
 LOCK = PROJECT_ROOT / ".suggest.lock"
@@ -303,6 +306,10 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
         log(f"{slug}: {flagged} figure(s) on the cards appear nowhere in the "
             f"facts; flagged on their cards")
     causal = creative_mod.causal_language(triage)
+    jargon = creative_mod.jargon_language(triage, sent)
+    if jargon:
+        log(f"{slug}: {jargon} field name(s) written on the cards; flagged "
+            f"on their cards")
     summary = creative_mod.account_summary(pack, triage, account_note)
     summary["note_unverified_figures"] = creative_mod.check_note(account_note,
                                                                  sent)
@@ -385,6 +392,14 @@ async def publish(slug: str, dry_run: bool, force: bool) -> int:
     # After the review is on disk: a ledger that moved ahead of a review
     # that failed to write would describe recommendations nobody saw.
     if outcomes_ok:
+        # A launched test becomes an experiment proposal now, from the plan
+        # published before the launch. Never fatal: what fails is logged on
+        # the entry and tried again next run.
+        try:
+            file_experiments(slug, ledger, date.today())
+        except Exception as exc:  # noqa: BLE001 -- the review is published
+            log(f"{slug}: experiments not filed this run: "
+                f"{type(exc).__name__}: {exc}")
         try:
             outcomes_mod.save(slug, ledger)
         except OSError as exc:
@@ -467,6 +482,69 @@ async def update_outcomes(slug: str, ledger: dict, triage: list,
     else:
         log(f"{slug}: outcomes ledger is empty (no act or test issue yet)")
     return ledger, True
+
+
+#: Seconds for one `intel record` process: a brand lookup and one insert.
+RECORD_TIMEOUT = 120
+
+#: Where each filed payload is kept: `intel record` takes a path, and the
+#: file stays so "what exactly did it file?" has an answer on disk.
+FILED_DIR = outcomes_mod.OUTCOME_DIR / "filed"
+
+
+def file_experiments(slug: str, ledger: dict, today: date) -> dict:
+    """File an experiment proposal for every launched test that has none.
+
+    `python -m intel record --kind experiment --json <path>`, as a separate
+    process with this interpreter -- the way /refresh spawns sync.py -- so
+    the owner pool (db_owner) never enters this script; intel/record.py is
+    the one writer, and it files a PROPOSAL: no started_on, no conclusion.
+    The entry gets `experiment` (name, id) when it lands, or
+    `experiment_skipped` / `experiment_error` with the reason, and an entry
+    left without `experiment` is tried again on the next run. A name that
+    already exists is taken as filed (record does not file it twice).
+    Returns counts, for the log and the tests.
+    """
+    n = {"filed": 0, "skipped": 0, "failed": 0}
+    for e in (ledger.get("entries") or {}).values():
+        if not outcomes_mod.needs_experiment(e):
+            continue
+        iid = e.get("id")
+        payload, why = outcomes_mod.experiment_payload(e, slug)
+        if payload is None:
+            outcomes_mod.mark_not_filed(e, why, today, skipped=True)
+            log(f"{slug}: {iid} launched, experiment not filed: {why}")
+            n["skipped"] += 1
+            continue
+        try:
+            shapes_mod.validate("experiment", payload)
+            FILED_DIR.mkdir(parents=True, exist_ok=True)
+            path = FILED_DIR / f"{slug}-{re.sub(r'[^A-Za-z0-9_-]', '_', str(iid))}.json"
+            path.write_text(json.dumps(payload, indent=2, ensure_ascii=False,
+                                       default=str), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, "-m", "intel", "record", "--kind",
+                 "experiment", "--json", str(path)],
+                cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=RECORD_TIMEOUT)
+            if proc.returncode != 0:
+                raise RuntimeError((proc.stderr or proc.stdout or
+                                    f"exit {proc.returncode}").strip()
+                                   .splitlines()[0])
+            result = json.loads(proc.stdout)
+        except Exception as exc:  # noqa: BLE001 -- retried next run
+            outcomes_mod.mark_not_filed(e, f"{type(exc).__name__}: {exc}", today)
+            log(f"{slug}: {iid} launched, filing its experiment FAILED "
+                f"({type(exc).__name__}: {str(exc)[:200]}); will retry")
+            n["failed"] += 1
+            continue
+        outcomes_mod.mark_filed(e, result, payload["name"], today)
+        log(f"{slug}: {iid} launched {e.get('implemented_on')} "
+            f"({e.get('match')}, {e.get('matched_by')}); experiment "
+            + ("filed" if result.get("written") else "already on file")
+            + f": {payload['name']!r}")
+        n["filed"] += 1
+    return n
 
 
 def bucket_summary(triage: list) -> str:

@@ -1052,11 +1052,12 @@ def test_snapshot_v2_shape(monkeypatch):
             assert "min(f.day)" in sql and "f.spend > 0" in sql
             return [{"campaign": "A", "ad_key": "k1", "ad": "X",
                      "status": "ACTIVE", "copy_hash": "h", "ad_group_key": "g1",
-                     "ad_group": "G", "first_spend_day": _date(2026, 10, 4)},
+                     "ad_group": "G", "first_spend_day": _date(2026, 10, 4),
+                     "utm_content": "EXP-i1002-0-0"},
                     {"campaign": "A", "ad_key": "k2", "ad": "Y",
                      "status": "PAUSED", "copy_hash": None,
                      "ad_group_key": "g1", "ad_group": "G",
-                     "first_spend_day": None}]
+                     "first_spend_day": None, "utm_content": None}]
         return [{"campaign": "A", "campaign_status": "ACTIVE",
                  "campaign_budget": None, "ad_group_key": "g1",
                  "ad_group": "G", "daily_budget": Decimal("5000"),
@@ -1071,10 +1072,11 @@ def test_snapshot_v2_shape(monkeypatch):
                               "optimization_goal": "LEAD_GENERATION"}},
         "k1": {"ad": "X", "status": "ACTIVE", "copy_hash": "h",
                "ad_group": "G", "ad_group_key": "g1",
-               "first_spend_day": "2026-10-04"},
+               "first_spend_day": "2026-10-04",
+               "utm_content": "EXP-i1002-0-0"},
         "k2": {"ad": "Y", "status": "PAUSED", "copy_hash": None,
                "ad_group": "G", "ad_group_key": "g1",
-               "first_spend_day": None}}}
+               "first_spend_day": None, "utm_content": None}}}
     assert asyncio.run(creative.snapshot("renegade", [])) == {}
 
 
@@ -1701,6 +1703,8 @@ def _dcamp(name="Camp A", max_priority="primary", findings=None):
 
 PLAN = {"variable": "landing page", "control": "Ad One",
         "challenger": "the previous landing page",
+        "setup": "Duplicate the ad in the same ad set and point the copy at "
+                 "the previous landing page.",
         "hold_constant": [], "evaluate_on": [],
         "decide_when": "each arm has spent $500.00 and recorded 10 conversions"}
 
@@ -2149,6 +2153,8 @@ def _keyed(name="Camp A", **over):
 
 CREATIVE_PLAN = {"variable": "creative", "control": "Ad One",
                  "challenger": "a question-first opener",
+                 "setup": "Duplicate the ad in the same ad set and swap in "
+                          "the new opener.",
                  "hold_constant": [], "evaluate_on": [],
                  "decide_when": "each arm has spent $435.70 and 10 conversions"}
 
@@ -2745,3 +2751,115 @@ def test_the_control_cannot_be_named_as_the_existing_challenger():
                                {"Become an Agent | Start Franchise"})
     assert out["challenger_kind"] == "new_creative"
     assert out["challenger_kind_adjusted_from"] == "existing_asset"
+
+
+# ---------------------------------------------------------------------------
+# A test plan a person can run: what is tested, how to set it up, its tag.
+# ---------------------------------------------------------------------------
+
+def test_a_test_plan_tag_is_derived_from_the_final_id_never_the_reply():
+    t = _r2([_issue(plan={**PLAN, "tag": "EXP-made-up"})])
+    i = t["issues"][0]
+    assert i["recommendation"]["type"] == "test"
+    assert i["test_plan"]["tag"] == "EXP-" + i["id"] == "EXP-i1001-0-0"
+    assert i["test_plan"]["tag"] == creative.experiment_tag(i["id"])
+    # No plan, no tag.
+    m = _r2([_issue(basis="d3", kind="act", plan=None)])["issues"][0]
+    assert m["test_plan"] is None
+
+
+def test_a_continued_issue_keeps_its_tag_from_run_to_run():
+    a = _t2([_issue(continues="i0930-0-0")])[0]["issues"][0]
+    assert a["status"] == "still_open"
+    assert a["test_plan"]["tag"] == "EXP-i0930-0-0"
+    r = {"campaign": "Camp A", "rating": "yellow", "headline": "h",
+         "issues": [_issue(continues="i0930-0-0")], "resolved": []}
+    later = creative.triage_from([r], [_dcamp(), _dcamp("Camp B")], PREV2,
+                                 True, _date(2026, 10, 9), CHANGES2)
+    assert later[0]["issues"][0]["test_plan"]["tag"] == "EXP-i0930-0-0"
+
+
+def test_a_test_without_setup_is_incomplete_and_a_monitor():
+    plan = {k: v for k, v in PLAN.items() if k != "setup"}
+    i = _r2([_issue(plan=plan)])["issues"][0]
+    assert i["incomplete"] == ["setup"]
+    assert i["recommendation"]["type"] == "monitor"
+    assert i["type_adjusted_from"] == "test"
+    assert i["test_plan"] is None and "setup" in i["test_plan_dropped"]
+    i = _r2([_issue(plan={**PLAN, "setup": "  "})])["issues"][0]
+    assert i["incomplete"] == ["setup"]
+    # With setup it stands, and carries it.
+    i = _r2([_issue()])["issues"][0]
+    assert i["test_plan"]["setup"].startswith("Duplicate the ad")
+
+
+def test_field_names_on_a_card_are_flagged():
+    t = _r2([_issue(plan={**PLAN, "decide_when":
+                          "each arm has spent its decision_spend_per_arm and "
+                          "recorded its min_conversions_per_arm"})],
+            summary="CPA +22%. Rank cpa_rank_in_goal moved.")
+    facts = {"campaigns": [{"ad_groups": [{"share_pct": 40,
+                                            "test_floor": {}}]}]}
+    t["issues"][0]["evidence"] = "share_pct is 40 on the top ad."
+    n = creative.jargon_language([t], facts)
+    assert t["jargon_flags"] == ["cpa_rank_in_goal", "share_pct",
+                                 "decision_spend_per_arm",
+                                 "min_conversions_per_arm"]
+    assert n == 4
+    # Plain words, a quoted line and an account name are not jargon; a
+    # snake_case word that is no key is not either.
+    t = _r2([_issue()], summary='CPA +22%. Test "use_this_line" on '
+                                'ad_a_v5 and some_other_word.')
+    t["where"] = {"ads": [{"ad": "ad_a_v5"}]}
+    assert creative.jargon_language([t], {"use_this_line": 1,
+                                          "some_word": 2}) == 0
+    assert t["jargon_flags"] == []
+
+
+def test_a_new_entry_starts_with_no_jargon_flags():
+    assert _r2([_issue()])["jargon_flags"] == []
+
+
+def test_the_prompt_names_what_is_tested_and_how_to_set_it_up():
+    p = creative.SUGGESTIONS_PROMPT
+    for phrase in ("NAME BOTH SIDES BY WHAT IS TESTED",
+                   "the current lead form (on",
+                   "the same form with one fewer question",
+                   "the current offer", "the control ad",
+                   "setup          REQUIRED",
+                   "Duplicate the ad in the same ad set",
+                   "A/B Test tool",
+                   "A test with no setup is marked incomplete",
+                   "do not write one",
+                   '"each version has spent $276.57 and has 10 leads"',
+                   "Say \"each version\"",
+                   "NEVER WRITE A FIELD NAME",
+                   '"setup": "<one plain line: how to set it up in Ads Manager>"'):
+        assert phrase in p, phrase
+    # The prompt still formats (no stray braces from the new text).
+    creative.SUGGESTIONS_PROMPT.format(
+        brand="b", settled="s", unsettled=3, since="a", until="b", days=28,
+        facts="{}", previous_note="")
+
+
+def test_changes_since_items_carry_utm_content():
+    was = _camp("A", [("X", "h", "b")])
+    old = _v2(k1=("X", "a", "ACTIVE", "2026-08-01"),
+              k2=("Y", "b", "ACTIVE", "2026-08-02"))
+    new = _v2(k1=("X", "c", "ACTIVE", "2026-08-01"),
+              k2=("Y", "b", "PAUSED", "2026-08-02"),
+              k3=("Z", "d", "ACTIVE", "2026-10-04"))
+    new["A"]["k3"]["utm_content"] = "EXP-i1001-0-0"
+    new["A"]["k1"]["utm_content"] = "ad-a-v5"
+    ch = creative.changes_since({"pack": {"campaigns": [was]}, "snapshot": old},
+                                [was], new)["A"]
+    you = {c["kind"]: c for c in ch if c["by"] == "you"}
+    assert you["ad_added"]["utm_content"] == "EXP-i1001-0-0"
+    assert you["wording_changed"]["utm_content"] == "ad-a-v5"
+    assert "utm_content" in you["status_changed"]
+    assert you["status_changed"]["utm_content"] is None
+    # An old snapshot without the field reads as None, never a KeyError.
+    old_only = {"A": {"k1": {"ad": "X", "copy_hash": "a", "status": "ACTIVE"}}}
+    gone = creative.changes_since({"pack": {"campaigns": [was]},
+                                   "snapshot": old_only}, [was], {"A": {}})["A"]
+    assert gone[0]["kind"] == "ad_gone" and gone[0]["utm_content"] is None

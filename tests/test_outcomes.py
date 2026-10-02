@@ -319,6 +319,164 @@ def test_two_files_a_new_ad_in_the_controls_group_is_implemented_on_first_spend(
     assert e["challenger_ad_key"] == "k-new"
 
 
+# ------------------------------------------------------- the tag rule --
+# creative.experiment_tag gives every test plan `tag` = "EXP-<issue id>",
+# and changes_since's "you" items carry the added ad's utm_content. Stubbed
+# here by name, so this file does not depend on creative's prompt.
+
+def _tagged(iid, **kw):
+    i = _issue(iid, **kw)
+    i["test_plan"]["tag"] = f"EXP-{iid}"
+    i["test_plan"]["setup"] = "Duplicate the ad set's ad and set utm_content."
+    return i
+
+
+def _added_tagged(cid, ad, key, tag, **kw):
+    return {**_added(cid, ad, key, **kw), "utm_content": tag}
+
+
+def test_the_tag_and_setup_are_registered():
+    e = _ledger([_entry([_tagged("i1")])])["entries"]["i1"]
+    assert e["tag"] == "EXP-i1"
+    assert e["setup"].startswith("Duplicate")
+    assert e["experiment"] is None
+    assert e["pre_registered"]["expected_outcome"] == "x"
+
+
+def test_a_tagged_new_ad_is_a_strong_match_for_a_creative_test():
+    led = _ledger([_entry([_tagged("i1")])],
+                  changes={"Camp A": [_added_tagged("c1", "Anything", "k-new",
+                                                    "EXP-i1")]})
+    e = led["entries"]["i1"]
+    assert e["status"] == "implemented" and e["match"] == "strong"
+    assert e["matched_by"] == "tagged utm_content=EXP-i1"
+    assert e["challenger_ad_key"] == "k-new"
+    assert e["implemented_on"] == "2026-10-03", "the first spend day"
+
+
+def test_a_tagged_new_ad_makes_a_form_test_detectable():
+    f = [{"id": "d1", "level": "campaign", "entity": "Camp A",
+          "pattern": "post_click"}]
+    t = [_entry([_tagged("i1", variable="form")], findings=f)]
+    assert _ledger(t)["entries"]["i1"]["status"] == "not_detectable"
+    led = _ledger(t, changes={"Camp A": [_added_tagged(
+        "c1", "Form B", "k-form", "EXP-i1", group="Elsewhere", first=None)]})
+    e = led["entries"]["i1"]
+    assert e["kind"] == "post_click"
+    assert e["status"] == "implemented" and e["match"] == "strong"
+    assert e["matched_by"] == "tagged utm_content=EXP-i1"
+    assert e["challenger_ad_key"] == "k-form"
+    assert e["implemented_on"] == TODAY.isoformat(), "no spend yet: review date"
+    assert e["decision_spend_per_arm"] == 250.0, "every test carries the floor"
+
+
+def test_a_tagged_ad_is_never_another_tests_likely_match():
+    t = [_entry([_tagged("i1", open_since="2026-09-30"), _tagged("i2")])]
+    led = _ledger(t, changes={"Camp A": [_added_tagged("c1", "New", "k-new",
+                                                       "EXP-i2")]})
+    e = led["entries"]
+    assert e["i2"]["match"] == "strong"
+    assert e["i1"]["status"] == "open", "i2's tagged ad is i2's launch"
+
+
+def test_an_untagged_ad_still_matches_by_the_old_rules():
+    led = _ledger([_entry([_tagged("i1")])],
+                  changes={"Camp A": [_added("c1", "Other", "k-new")]})
+    e = led["entries"]["i1"]
+    assert e["match"] == "likely" and not e["matched_by"].startswith("tagged")
+
+
+def test_an_entry_from_before_tags_picks_its_tag_up_on_re_mention():
+    old = _ledger([_entry([_issue("i1")])], today=date(2026, 10, 2))
+    assert old["entries"]["i1"]["tag"] is None
+    led = _ledger([_entry([_tagged("i1")])], ledger=old,
+                  changes={"Camp A": [_added_tagged("c1", "N", "k-n", "EXP-i1")]})
+    assert led["entries"]["i1"]["tag"] == "EXP-i1"
+    assert led["entries"]["i1"]["match"] == "strong"
+
+
+# ------------------------------------------------- the filing payload --
+
+def _launched(**extra):
+    led = _ledger([_entry([_tagged(
+        "i1", challenger='a new UGC video, "Fresh Hook"',
+        observation="CPA rose on the control's ad group.",
+        diagnosis="The hook appears tired",
+        recommendation={"type": "test", "action": "Run a challenger",
+                        "expected_outcome": "Link CTR recovers on the new ad"})])],
+        changes={"Camp A": [_added_tagged("c1", "Fresh Hook", "k-new",
+                                          "EXP-i1")]})
+    e = led["entries"]["i1"]
+    e.update(extra)
+    return e
+
+
+def test_the_payload_is_a_valid_experiment_built_from_the_plan():
+    from intel import shapes
+    e = _launched()
+    assert outcomes.needs_experiment(e)
+    payload, why = outcomes.experiment_payload(e, "renegade")
+    assert why is None
+    shapes.validate("experiment", payload)
+    assert payload["name"] == ('i1 | Camp A | creative: a new UGC video, '
+                               '"Fresh Hook"')
+    assert payload["primary_metric"] == "cpa"
+    assert payload["minimum_effect_pct"] == 10 == outcomes.WORSE_AT
+    assert payload["minimum_spend_per_arm"] == 250.0
+    assert payload["arms"] == [
+        {"label": "A control", "ad_keys": ["k-control"]},
+        {"label": "B challenger", "utm_content": "EXP-i1"}]
+    assert payload["question"].startswith("CPA rose on the control's ad group.")
+    assert "Control Ad" in payload["question"]
+    assert payload["hypothesis"] == ("The hook appears tired. Expected: Link "
+                                     "CTR recovers on the new ad.")
+    snap = payload["knowledge_snapshot"]
+    assert snap["launch_detected"]["matched_by"] == "tagged utm_content=EXP-i1"
+    for forbidden in ("started_on", "ended_on", "conclusion", "concluded_by"):
+        assert forbidden not in payload
+
+
+def test_the_payload_states_no_figure_the_plan_did_not():
+    import re
+    e = _launched()
+    payload, _ = outcomes.experiment_payload(e, "renegade")
+    text = f"{payload['question']} {payload['hypothesis']}"
+    assert not re.search(r"\d", text), text
+
+
+def test_a_form_test_is_read_on_conversion_rate():
+    e = _launched(variable="form", kind="post_click")
+    assert outcomes.experiment_payload(e, "renegade")[0]["primary_metric"] \
+        == "conversion_rate"
+    e = _launched(variable="offer", kind="post_click")
+    assert outcomes.experiment_payload(e, "renegade")[0]["primary_metric"] == "cpa"
+
+
+def test_no_decision_spend_or_no_control_key_is_skipped_with_a_reason():
+    p, why = outcomes.experiment_payload(_launched(decision_spend_per_arm=None),
+                                         "renegade")
+    assert p is None and "test_floor" in why
+    p, why = outcomes.experiment_payload(_launched(control_ad_key=None),
+                                         "renegade")
+    assert p is None and "control" in why
+
+
+def test_an_untagged_launch_puts_the_challenger_in_by_its_key():
+    led = _ledger([_entry([_tagged("i1")])],
+                  changes={"Camp A": [_added("c1", "Other", "k-new")]})
+    p, _ = outcomes.experiment_payload(led["entries"]["i1"], "renegade")
+    assert p["arms"][1] == {"label": "B challenger", "ad_keys": ["k-new"]}
+
+
+def test_only_launched_unfiled_tests_need_an_experiment():
+    e = _launched()
+    assert outcomes.needs_experiment(e)
+    assert not outcomes.needs_experiment({**e, "experiment": {"name": "x"}})
+    assert not outcomes.needs_experiment({**e, "status": "open"})
+    assert not outcomes.needs_experiment({**e, "type": "act"})
+    assert not outcomes.needs_experiment({**e, "kind": "budget"})
+
+
 # --------------------------------------------------------- measurement --
 
 def _stub(monkeypatch, *, entity=None, arm=None, calls=None):

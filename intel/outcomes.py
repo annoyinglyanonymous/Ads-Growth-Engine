@@ -33,8 +33,13 @@ fits). outcomes/overrides.json is the one manual surface:
 An override always wins and is labelled "person".
 
 Landing page, form, offer and tracking changes are not visible in Meta's
-structure data, so those entries are `not_detectable` until a person says
-otherwise.
+structure data, so those entries are `not_detectable` until their tag
+(utm_content=EXP-<issue id>, the strongest match of all, for any test) shows
+up on an added ad, or a person says otherwise.
+
+A launched test becomes an experiment PROPOSAL: experiment_payload builds it
+from the entry, and scripts/suggest.py files it through `intel record` in a
+separate process. Nothing here sets started_on or a conclusion.
 
 NOTHING HERE COMPUTES
 
@@ -335,10 +340,21 @@ def _register(entry: dict, issue: dict, today: date) -> dict:
         "challenger_ad": plan.get("challenger_ad"),
         "challenger": challenger,
         "control": control,
-        "control_ad_key": _key_of(_ad_named(entry, control)) if control else None,
+        "control_ad_key": (_key_of(_ad_named(entry, control))
+                           or plan.get("control_ad_key")) if control else None,
         "ad_group": ad_group,
+        # Every test carries its ad group's decision spend: it is the
+        # experiment's minimum_spend_per_arm when the launch is filed, for a
+        # form or offer test as much as for a creative one.
         "decision_spend_per_arm": (_decision_spend(issue, entry, ad_group)
-                                   if kind == "creative_test" else None),
+                                   if rtype == "test" else None),
+        # The utm_content the person puts on the new ad ("EXP-<issue id>",
+        # creative.experiment_tag). Seeing it on an added ad is the strongest
+        # match there is, for ANY kind of test.
+        "tag": plan.get("tag"),
+        "setup": plan.get("setup"),
+        "pre_registered": _pre_registration(issue, today),
+        "experiment": None,
         "measure_level": m_level,
         "measure_entity": m_entity,
         "measure_key": str(m_key) if m_key else None,
@@ -360,6 +376,27 @@ def _register(entry: dict, issue: dict, today: date) -> dict:
     elif kind == "other":
         out["reason"] = "no rule detects this kind of change automatically"
     return out
+
+
+def _pre_registration(issue: dict, today: date) -> dict | None:
+    """The test as the report published it, before anything launched: the
+    text the experiment's question and hypothesis are built from when the
+    launch is detected. None for an issue with no test plan."""
+    plan = issue.get("test_plan")
+    if not isinstance(plan, dict):
+        return None
+    rec = issue.get("recommendation") or {}
+    return {"published_on": today.isoformat(),
+            "observation": issue.get("observation"),
+            "diagnosis": issue.get("diagnosis"),
+            "expected_outcome": rec.get("expected_outcome"),
+            "decide_when": plan.get("decide_when"),
+            "hold_constant": plan.get("hold_constant")}
+
+
+#: Statuses in which an entry has not launched, so its plan may still be
+#: refreshed from the latest report and its tag may still turn up.
+UNLAUNCHED = ("open", "not_detectable", "expired")
 
 
 def _issues(triage: list):
@@ -505,6 +542,18 @@ def update_ledger(ledger: dict, triage: list, changes: dict, today: date,
             entries[iid] = _register(entry, issue, today)
             continue
         e["last_mentioned_on"] = today.isoformat()
+        if e.get("status") in UNLAUNCHED and not e.get("experiment"):
+            # Before launch the latest published plan is the pre-registration;
+            # an entry from before tags existed picks its tag up here.
+            plan = issue.get("test_plan") or {}
+            for k in ("tag", "setup"):
+                if plan.get(k):
+                    e[k] = plan[k]
+            if e.get("decision_spend_per_arm") is None and plan:
+                e["decision_spend_per_arm"] = _decision_spend(
+                    issue, entry, e.get("ad_group"))
+            e["pre_registered"] = (_pre_registration(issue, today)
+                                   or e.get("pre_registered"))
         if e.get("status") == "expired":
             # Recommended again: it is open again.
             e["status"] = ("not_detectable" if e.get("kind") == "post_click"
@@ -524,6 +573,32 @@ def update_ledger(ledger: dict, triage: list, changes: dict, today: date,
              if e.get("challenger_ad_key")}
     used: set = set()
     you = _you(changes)
+
+    # 3a. The tag first. An added ad carrying an entry's utm_content tag is
+    #     that entry's launch, whatever kind of test it is -- which is how a
+    #     form, offer or landing test (not_detectable on structure alone)
+    #     becomes detectable. A tagged ad is never handed to another entry.
+    tags = {str(e["tag"]) for e in entries.values() if e.get("tag")}
+    for e in sorted(entries.values(), key=lambda e: str(e.get("id"))):
+        if not e.get("tag") or e.get("override") \
+                or e.get("status") not in UNLAUNCHED:
+            continue
+        for n, (campaign, ch) in enumerate(you):
+            if (campaign, ch.get("id"), n) in used:
+                continue
+            if ch.get("kind") != "ad_added" or ch.get("utm_content") != e["tag"]:
+                continue
+            if ch.get("ad_key") and str(ch["ad_key"]) in taken:
+                continue
+            on = _date(ch.get("first_spend_day")) or today
+            _apply_match(e, campaign, ch, "strong", on, today)
+            e["matched_by"] = f"tagged utm_content={e['tag']}"
+            e["challenger_ad_key"] = ch.get("ad_key")
+            e["challenger_ad_seen"] = ch.get("ad")
+            used.add((campaign, ch.get("id"), n))
+            if ch.get("ad_key"):
+                taken.add(str(ch["ad_key"]))
+            break
     candidates = sorted(
         [e for e in entries.values()
          if e.get("status") == "open" and not e.get("override")],
@@ -538,6 +613,9 @@ def update_ledger(ledger: dict, triage: list, changes: dict, today: date,
                 if ch.get("kind") == "ad_added" and ch.get("ad_key") \
                         and str(ch["ad_key"]) in taken:
                     continue
+                if ch.get("kind") == "ad_added" \
+                        and ch.get("utm_content") in tags:
+                    continue        # another entry's tagged launch
                 m = _match_one(e, campaign, ch, today)
                 if not m or m[0] != wanted:
                     continue
@@ -764,3 +842,168 @@ def for_campaign(ledger: dict, campaign: str) -> list:
     return [e for e in (ledger.get("entries") or {}).values()
             if e.get("campaign") == campaign
             and e.get("status") in ("open", "implemented", "measuring")]
+
+
+# ------------------------------------------------- filing the experiment --
+# When a test's launch is detected, the experiment is filed as a PROPOSAL
+# (intel record --kind experiment, run by scripts/suggest.py as a separate
+# process: this module stays on the read pool). Everything in the payload
+# comes from the ledger entry, i.e. from the test plan the report published
+# before the launch -- the thresholds included, so nothing is chosen with the
+# result in view. started_on and the conclusion are never in it
+# (intel/shapes.py): a person records the launch and a person concludes.
+
+#: The bar the experiment registers, in percent: the same 10% the ledger's
+#: reading classifies by (IMPROVED_AT / WORSE_AT). One default for every
+#: filed test, so the experiment and the ledger cannot disagree about what
+#: counts. A different bar is a re-file under a new name; nothing edits a
+#: filed proposal.
+MINIMUM_EFFECT_PCT = 10
+
+#: Ledger kinds that are tests, and so become experiments when launched.
+TEST_KINDS = ("creative_test", "post_click", "other")
+
+#: Variables read on the conversion rate rather than the CPA: the change is
+#: after the click, so the click-through and the auction are held constant.
+CONVERSION_RATE_VARIABLES = ("form", "landing")
+
+NAME_CHALLENGER_CHARS = 60
+
+
+def _short(text, n: int) -> str:
+    t = " ".join(str(text or "").split())
+    if len(t) <= n:
+        return t
+    return f"{t[:n].rstrip()}…"
+
+
+def is_test(e: dict) -> bool:
+    return e.get("type") == "test" and e.get("kind") in TEST_KINDS
+
+
+def needs_experiment(e: dict) -> bool:
+    """Implemented (by any match, a person's included), a test, and not yet
+    filed. A failed filing leaves `experiment` empty, so it is tried again."""
+    return (is_test(e) and not e.get("experiment")
+            and e.get("status") in ("implemented", "measuring", "measured")
+            and bool(e.get("implemented_on")))
+
+
+def primary_metric(e: dict) -> str:
+    v = _norm(e.get("variable"))
+    if any(w in v for w in CONVERSION_RATE_VARIABLES):
+        return "conversion_rate"
+    return "cpa"
+
+
+def experiment_name(e: dict) -> str:
+    return (f"{e.get('id')} | {e.get('campaign')} | {e.get('variable')}: "
+            f"{_short(e.get('challenger'), NAME_CHALLENGER_CHARS)}")
+
+
+def _sentence(text) -> str | None:
+    t = " ".join(str(text or "").split())
+    if not t:
+        return None
+    return t if t[-1] in ".?!" else f"{t}."
+
+
+def experiment_payload(e: dict, slug: str) -> tuple:
+    """(payload, None), or (None, why it cannot be filed yet).
+
+    Deterministic and figure-free beyond what the report already published:
+    the question and the hypothesis are the issue's own observation,
+    diagnosis and expected outcome, joined; the bar is MINIMUM_EFFECT_PCT;
+    the spend per arm is the ad group's decision spend (its test_floor).
+    Arm A is the control by ad key; arm B is the challenger by the tag when
+    the launch was seen by its tag (or no ad key is known), else by the
+    matched ad's key -- an untagged new ad is not in a utm_content arm.
+    """
+    spend = e.get("decision_spend_per_arm")
+    if spend is None:
+        return None, ("no decision spend per arm (the ad group's test_floor) "
+                      "on the entry, so there is no minimum_spend_per_arm to "
+                      "register")
+    control = e.get("control_ad_key")
+    if not control:
+        return None, "no ad key for the control, so arm A has no members"
+    tag = e.get("tag")
+    tagged = bool(tag) and str(e.get("matched_by") or "").startswith("tagged")
+    if tagged or (tag and not e.get("challenger_ad_key")):
+        arm_b = {"label": "B challenger", "utm_content": tag}
+    elif e.get("challenger_ad_key"):
+        arm_b = {"label": "B challenger",
+                 "ad_keys": [str(e["challenger_ad_key"])]}
+    else:
+        return None, ("no tag and no challenger ad key, so arm B has no "
+                      "members")
+    metric = primary_metric(e)
+    pre = e.get("pre_registered") or {}
+    challenger = _short(e.get("challenger"), 200)
+    control_name = _short(e.get("control"), 120)
+    ask = (f"Does the challenger ({challenger}) beat the control "
+           f"({control_name}) on {metric.replace('_', ' ')} in "
+           f"{e.get('campaign')}?")
+    question = " ".join(p for p in (_sentence(pre.get("observation")), ask) if p)
+    expected = _sentence(pre.get("expected_outcome"))
+    hypothesis = " ".join(p for p in (
+        _sentence(pre.get("diagnosis")),
+        f"Expected: {expected}" if expected else None) if p) or (
+        f"Changing the {e.get('variable')} to the challenger moves "
+        f"{metric.replace('_', ' ')} against the control.")
+    payload = {
+        "brand": slug,
+        "name": experiment_name(e),
+        "question": question,
+        "hypothesis": hypothesis,
+        "primary_metric": metric,
+        "minimum_effect_pct": MINIMUM_EFFECT_PCT,
+        "minimum_spend_per_arm": spend,
+        "arms": [{"label": "A control", "ad_keys": [str(control)]}, arm_b],
+        "knowledge_snapshot": {
+            "source": ("outcomes ledger: filed automatically when the "
+                       "launch was detected"),
+            "issue_id": e.get("id"),
+            "campaign": e.get("campaign"),
+            "ad_group": e.get("ad_group"),
+            "goal": e.get("goal"),
+            "kind": e.get("kind"),
+            "variable": e.get("variable"),
+            "control": e.get("control"),
+            "challenger": e.get("challenger"),
+            "tag": tag,
+            "setup": e.get("setup"),
+            "recommended_on": e.get("recommended_on"),
+            "launch_detected": {"implemented_on": e.get("implemented_on"),
+                                "match": e.get("match"),
+                                "matched_by": e.get("matched_by"),
+                                "challenger_ad_key": e.get("challenger_ad_key")},
+            "pre_registered": pre or None,
+            "minimum_effect_pct_is": ("the system default, the same bar the "
+                                      "ledger reads results against"),
+            "minimum_spend_per_arm_is": ("the ad group's test_floor "
+                                         "decision_spend_per_arm"),
+        },
+    }
+    return payload, None
+
+
+def mark_filed(e: dict, result: dict, name: str, today: date) -> dict:
+    """Record on the entry what `intel record` answered. An experiment of
+    that name already existing is filed too: a run that filed it and then
+    failed to save the ledger is the usual way that happens."""
+    e["experiment"] = {"name": result.get("name") or name,
+                       "id": str(result["id"]) if result.get("id") else None,
+                       "filed_on": today.isoformat(),
+                       "written": bool(result.get("written")),
+                       "note": result.get("why")}
+    e.pop("experiment_error", None)
+    e.pop("experiment_skipped", None)
+    return e
+
+
+def mark_not_filed(e: dict, why: str, today: date, skipped: bool = False) -> dict:
+    """Why this run did not file it; the next run tries again."""
+    key = "experiment_skipped" if skipped else "experiment_error"
+    e[key] = {"on": today.isoformat(), "why": str(why)[:300]}
+    return e

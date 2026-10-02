@@ -382,6 +382,32 @@ def test_existing_asset_and_new_creative_are_labelled_blocks():
                      r" is in this goal's pool;\s+it is shown as new creative needed\.", html)
 
 
+def test_a_test_plan_says_how_to_set_it_up_and_how_to_tag_the_new_ad():
+    html = _render(_load("report_v3"))
+    assert ("<dt>Set it up</dt><dd>Turn Ad D3 on in the same ad set as Ad D1 "
+            "and add the tag below to its URL parameters.</dd>") in html
+    assert "<dt>Tag the new ad</dt>" in html
+    assert "<code>utm_content=EXP-i1005-0-1</code>" in html
+    assert "<code>utm_content=EXP-i0920-3-0</code>" in html
+    # The rows sit inside the plan's own list, and the arms keep their labels.
+    asset = _between(html, "EXISTING ASSET TO TEST", "</dl>")
+    assert "<dt>Set it up</dt>" in asset and "utm_content=EXP-i1005-0-1" in asset
+    assert "<b>Control</b>" in html
+
+
+def test_a_plan_without_setup_or_tag_shows_neither_row():
+    pub = _load("report_v3")
+    for c in pub["triage"]:
+        for i in c.get("issues") or []:
+            if isinstance(i.get("test_plan"), dict):
+                i["test_plan"].pop("setup", None)
+                i["test_plan"].pop("tag", None)
+    html = _render(pub)
+    assert "<dt>Set it up</dt>" not in html
+    assert "<dt>Tag the new ad</dt>" not in html
+    assert "<dt>Decide when</dt>" in html
+
+
 def test_an_incomplete_issue_says_what_is_missing():
     html = _render(_load("report_v3"))
     assert re.search(r"Missing: evidence, test plan;\s+shown as monitor\.", html)

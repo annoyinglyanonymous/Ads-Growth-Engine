@@ -174,6 +174,17 @@ window, and zeros would read as "we tested it and nothing happened". The
 comments that say `started_on` "is set in the UI" mean the sibling app that is
 not in use — there is no UI for it here, and no verb.
 
+**A recommended test is filed on its own when it launches.** The report
+(/suggestions) gives every test plan a `tag`, `EXP-<issue id>`, and a
+`setup` line. The person launches the new ad with `utm_content=<tag>` on its
+URL; the next review's outcomes ledger sees that ad added (see **Outcomes are
+auto-detected**) and `scripts/suggest.py` files the experiment as a proposal
+through `intel record`, pre-registered from the plan the report published
+before the launch. /experiments then shows the proposal with "Launch detected
+<date> (<match>, <matched_by>)" and the statement below with its name and
+date filled in. Filing it is transcription; the launch date and the
+conclusion stay a person's.
+
 A launch is a thing that happened in Ads Manager, so the person who launched
 it records it, once the new ad is live and carries its arm's `utm_content`:
 
@@ -195,10 +206,15 @@ Concluding is the one write an agent may never make
 `python -m intel experiment --brand renegade --name "<name>"`.
 
 `minimum_effect_pct` and `minimum_spend_per_arm` are fixed when a proposal is
-filed. The five filed on 2026-09-28 from the campaign triage carry 20% and
-$500 per arm, which an agent chose to satisfy the shape; if those are not the
-bar you want, re-file under a new name rather than editing — nothing edits a
-filed proposal.
+filed; nothing edits a filed proposal, so a different bar is a re-file under
+a new name. An automatically filed one registers **10%** -- the system's
+default bar, the same one the ledger reads results against (`outcomes.
+MINIMUM_EFFECT_PCT`, equal to `WORSE_AT`) -- and the ad group's
+`test_floor.decision_spend_per_arm` per arm. The five filed by hand on
+2026-09-28 carry 20% and $500, which an agent chose to satisfy the shape;
+that analysis was replaced on 2026-10-01 and none was launched.
+`scripts/supersede_0928_experiments.sql` closes them -- a conclusion, so a
+person runs it under their own name; it is not run by anything here.
 
 ## Things that will bite you
 
@@ -488,7 +504,22 @@ counts them. Flagged, not rewritten.
 **Every issue carries six fields** -- observation, evidence, diagnosis,
 recommendation (action and expected outcome), confidence (level and reason),
 and a test plan when the type is test. One missing any is `incomplete: [...]`
-and clamped to monitor.
+and clamped to monitor. A test plan with no `setup` counts as missing it.
+
+**A test plan is something a person can run.** Control and challenger name
+what is tested ("the current lead form (on "Ad X")" against "the same form
+with one fewer question"), not just an ad; `setup` is one plain line on how to
+build it in Ads Manager; `decide_when` reads "each version has spent $X and
+has N leads". `test_plan.tag` is deterministic, `"EXP-" + the issue's final
+id` (`creative.experiment_tag`, set in `_report` after carry-forward, so a
+still-open issue keeps its tag), and the model never writes it. The card
+asks the person to add `utm_content=<tag>` to the new ad's URL parameters:
+`meta_ads/parse.py` reads utm_content off the ad's URL into
+`ads.ad.utm_content`, which `ads.experiment_result` matches arms on, and
+`creative.snapshot` / `changes_since` "you" ad items carry it for the ledger.
+**Field names are flagged too:** `creative.jargon_language` sets
+`jargon_flags` for any snake_case token on a card that is a key in the facts
+sent or in `JARGON_KEYS`; the log counts them beside the causal flags.
 
 **Existing asset vs new creative.** A creative test's plan carries
 `challenger_kind`. `existing_asset` stands only when `challenger_ad` is
@@ -551,6 +582,15 @@ matched, and only a failed registration drops `outcomes` from the doc.
 **Matching rules** (`outcomes._match_one`, deterministic, each recording
 `matched_by` and `match`):
 
+- **the tag, first, for any test**: a "you" `ad_added` whose `utm_content`
+  equals the entry's `tag` (`EXP-<issue id>`, registered from
+  `test_plan.tag`) is `strong`, `matched_by` "tagged utm_content=<tag>",
+  `challenger_ad_key` that ad, implemented on its first spend day (or the
+  review date). Campaign and ad group are not checked: the tag names the
+  issue. This is how a form, offer or landing-page test -- `not_detectable`
+  on structure alone -- becomes detectable, and an expired entry's tagged
+  launch still counts. A tagged ad is never handed to another entry by the
+  rules below.
 - **creative test**: an `ad_added` in the control's ad group on or after the
   recommendation. `strong` when the new ad's name is `challenger_ad` (or is
   quoted in the challenger), else `likely`. Implemented on the new ad's
@@ -563,8 +603,33 @@ matched, and only a failed registration drops `outcomes` from the doc.
   issue, likely for an ad group one) or on the named ad group.
 - **Not detectable**: landing page, form, offer and tracking changes are not
   visible in Meta's structure data. Those entries are `not_detectable` until
-  a person says otherwise. Anything no rule recognises stays `open` with the
+  their tag shows up on a new ad or a person says otherwise. Anything no rule recognises stays `open` with the
   reason "no rule detects this kind of change automatically".
+
+**Filing the experiment** (`outcomes.experiment_payload`, run by
+`suggest.file_experiments` after the review is on disk and before the
+ledger is saved). Every entry that is a test (`type` test, kind
+creative_test / post_click / other), is implemented by any match -- a
+person's override included -- and has no `experiment` yet is filed with
+`python -m intel record --kind experiment --json outcomes/filed/<brand>-<id>.json`,
+as a separate process with `sys.executable`, so `db_owner` never enters
+suggest.py. The payload: name `<issue id> | <campaign> | <variable>:
+<challenger, 60 chars>`; question and hypothesis are the issue's own
+observation, diagnosis and expected outcome, joined, with no new figure;
+`primary_metric` `conversion_rate` for a form or landing test, `cpa`
+otherwise; `minimum_effect_pct` 10; `minimum_spend_per_arm` the entry's
+`decision_spend_per_arm` (no floor: skipped and logged); arm A the control
+by `ad_keys`, arm B the challenger by `utm_content` = the tag when the launch
+was tagged, else by the matched ad's key (an untagged new ad is in no
+utm_content arm); the ledger entry and the launch in `knowledge_snapshot`.
+The entry records `experiment` {name, id, filed_on}; a name that already
+exists counts as filed (record files nothing twice). A failure sets
+`experiment_error` (a skip, `experiment_skipped`), is logged, and is tried
+again next run. It never blocks publishing. /experiments shows launched
+tests not filed yet, with that reason, and lists "Tests the report
+recommends" (test entries still open or not_detectable, with the tag to
+use) in place of `intel propose`'s ideas, which it renders only while the
+ledger is empty or unreadable.
 
 **Overrides** are the one manual surface, a file edit:
 `outcomes/overrides.json`, `{"<issue id>": {"implemented_on": "YYYY-MM-DD"}
@@ -585,3 +650,7 @@ arm under its decision spend; `improved` at a CPA effect of -10% or better,
 `worse` at +10% or worse, `neutral` otherwise. Re-read each run until 28
 settled days, then frozen. The scorecard (`outcomes.scorecard`, last 90
 days) is counts by `len`: made, implemented, and each result, by kind.
+A form, offer or landing test launched by its tag is still read here
+before/after on the entity it named; its control-against-challenger reading
+is the filed experiment's (`intel experiment`), once a person sets
+`started_on`.

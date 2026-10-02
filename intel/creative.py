@@ -1313,9 +1313,18 @@ ANSWER FOUR QUESTIONS, IN ORDER.
    `confidence`) and priority (never above `diagnosis.max_priority`).
 
 A TEST PLAN
-  control        `diagnosis.control.ad`; it keeps running unchanged. When
-                 `incumbent_deteriorated` is true, say that the ad with the
-                 most conversions is not the control, and why.
+  NAME BOTH SIDES BY WHAT IS TESTED, not just by an ad. The reader has to
+  know, from the two lines alone, which version is which:
+    form test      control "the current lead form (on "<the control ad>")",
+                   challenger "the same form with one fewer question"
+    offer test     control "the current offer (<the offer, in plain words>)
+                   on "<the control ad>"", challenger "the same ad with
+                   <the new offer>"
+    creative test  control "the control ad "<the control ad>"", challenger
+                   the challenger ad by name, or the new creative's brief
+  control        `diagnosis.control.ad`, named as above; it keeps running
+                 unchanged. When `incumbent_deteriorated` is true, say that
+                 the ad with the most conversions is not the control, and why.
   variable       ONE of the finding's `test_variables`.
   challenger     ONE thing: an existing ad or wording from `challenger_pool`
                  under the SAME optimization goal, quoted; or a new opening
@@ -1343,11 +1352,24 @@ A TEST PLAN
                  whichever is not the variable.
   evaluate_on    cost per lead, link CTR and conversion rate. Qualified cost
                  per lead is not tracked in this account; say so.
-  decide_when    when each arm has spent at least its ad group's
-                 `test_floor.decision_spend_per_arm` and recorded
-                 `test_floor.min_conversions_per_arm` conversions. Quote those
-                 figures; do not compute new ones. Never on early link CTR
-                 alone.
+  setup          REQUIRED. One plain line on how to set it up in Ads Manager:
+                 "Duplicate the ad in the same ad set, attach the shorter form
+                 to the copy, and add the tag below to its URL parameters." or
+                 "Use Meta's A/B Test tool on this ad set, with the new form
+                 as version B, and add the tag below to the new ad's URL
+                 parameters." A test with no setup is marked incomplete. The
+                 tag itself is added for you; do not write one.
+  decide_when    the ad group's `test_floor.decision_spend_per_arm` and
+                 `test_floor.min_conversions_per_arm`, written for a person:
+                 "each version has spent $276.57 and has 10 leads".
+                 Say "each version", quote the figures, do not compute new
+                 ones. Never on early link CTR alone.
+
+NEVER WRITE A FIELD NAME. Nothing on the card may say decision_spend_per_arm,
+min_conversions_per_arm, test_floor, cpa_rank_in_goal, impact_score or any
+other key from these facts: say what it means ("the spend each version needs
+before you decide", "third-cheapest of five ad groups on this goal"). A field
+name on a card is flagged.
 
 WHAT YOU MAY AND MAY NOT COMPARE
 
@@ -1414,8 +1436,9 @@ Every issue carries its own recommendation -- an observation with no
 recommendation is a complaint, and a recommendation with no observation is a
 guess. SIX FIELDS ARE MANDATORY on every issue: `observation`, `evidence`,
 `diagnosis`, `recommendation` (its `action` AND its `expected_outcome`),
-`confidence` (its `level` AND its `reason`), and a `test_plan` whenever the
-type is "test". An issue missing any of them is marked incomplete and shown
+`confidence` (its `level` AND its `reason`), and a `test_plan` (with its
+`setup`) whenever the type is "test". An issue missing any of them is marked
+incomplete and shown
 as a monitor, whatever it asked for.
 
 `not_yet`: what NOT to do yet. `diagnosis.not_yet` is already on the card;
@@ -1458,15 +1481,16 @@ per campaign, in the order `campaigns` lists them:
     "recommendation": {{"type": "act" | "test" | "monitor", "action": "<...>",
                        "expected_outcome": "<what should move, and where to see it>"}},
     "test_plan": {{"variable": "<one of the finding's test_variables>",
-                  "control": "<the control ad, as named>",
+                  "control": "<what is tested, as it runs now, and on which ad>",
                   "challenger": "<the one thing that differs, quoted or written in full>",
+                  "setup": "<one plain line: how to set it up in Ads Manager>",
                   "challenger_kind": "existing_asset" | "new_creative" | null,
                   "challenger_ad": "<exact ad name, for existing_asset>" | null,
                   "brief": {{"format": "...", "angle_or_hook": "...",
                             "opening_line": "<written in full>",
                             "built_from": "<the ad, hook or angle it extends, and the evidence>"}} | null,
                   "hold_constant": ["..."], "evaluate_on": ["..."],
-                  "decide_when": "<the test floor, quoted>"}} | null,
+                  "decide_when": "<each version has spent $X and has N leads>"}} | null,
     "confidence": {{"level": "low" | "medium" | "high", "reason": "<why>"}},
     "continues": "<the id of the previous issue this is, or null>"}}
   ],
@@ -1769,7 +1793,7 @@ async def snapshot(brand: str, campaign_names: list) -> dict:
          "_ad_groups": {ad_group_key: {"name", "daily_budget",
                                        "optimization_goal"}},
          ad_key:       {"ad", "status", "copy_hash", "ad_group",
-                        "ad_group_key", "first_spend_day"}}
+                        "ad_group_key", "first_spend_day", "utm_content"}}
 
     Stored in the published file so the NEXT run can see which ads' wording or
     status moved, which ads are new and when they first spent, and which
@@ -1778,7 +1802,9 @@ async def snapshot(brand: str, campaign_names: list) -> dict:
     hash of None is an ad the import has never read copy for.
     `first_spend_day` is the earliest day ads.fact_ad_day has spend for the
     ad -- min(day), selected, not computed -- and None for an ad that has
-    not spent. Keys starting "_" are never ad keys (an ad key is a uuid).
+    not spent. `utm_content` is ads.ad.utm_content, read off the ad's URL by
+    meta_ads/parse.py -- the tag a test plan asks for ("EXP-<issue id>"), so
+    the ledger can find the new ad by it. Keys starting "_" are never ad keys (an ad key is a uuid).
     Snapshots written before v2 hold only {ad_key: {ad, status, copy_hash}}.
     """
     if not campaign_names:
@@ -1811,7 +1837,8 @@ async def snapshot(brand: str, campaign_names: list) -> dict:
         )
         select c.name as campaign, a.ad_key, a.name as ad,
                a.effective_status as status, cp.copy_hash,
-               a.ad_group_key, g.name as ad_group, s.first_spend_day
+               a.ad_group_key, g.name as ad_group, s.first_spend_day,
+               a.utm_content
           from ads.ad a
           join camp c              on c.campaign_key = a.campaign_key
           left join ads.ad_group g on g.ad_group_key = a.ad_group_key
@@ -1835,7 +1862,8 @@ async def snapshot(brand: str, campaign_names: list) -> dict:
             "ad": r["ad"], "status": r["status"], "copy_hash": r["copy_hash"],
             "ad_group": r["ad_group"],
             "ad_group_key": _text(r["ad_group_key"]),
-            "first_spend_day": _text(r["first_spend_day"])}
+            "first_spend_day": _text(r["first_spend_day"]),
+            "utm_content": r.get("utm_content")}
     return out
 
 
@@ -1866,11 +1894,12 @@ YOU_KINDS = ("ad_added", "wording_changed", "status_changed", "ad_gone",
 
 def _ad_fields(key, a: dict) -> dict:
     """The ad-level fields of a structured "you" change. An old snapshot
-    without ad_group / first_spend_day gives None for them."""
+    without ad_group / first_spend_day / utm_content gives None for them."""
     return {"ad": a.get("ad"), "ad_key": key,
             "ad_group": a.get("ad_group"),
             "ad_group_key": a.get("ad_group_key"),
-            "first_spend_day": a.get("first_spend_day")}
+            "first_spend_day": a.get("first_spend_day"),
+            "utm_content": a.get("utm_content")}
 
 
 def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
@@ -1885,8 +1914,8 @@ def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
 
     Every "you" item also carries `kind` (YOU_KINDS) and, where they apply,
     "ad", "ad_key", "ad_group", "ad_group_key", "status_from", "status_to",
-    "first_spend_day" -- and for a budget, "level" (campaign | ad_group),
-    "budget_from", "budget_to". Budgets are compared only when both
+    "first_spend_day", "utm_content" -- and for a budget, "level"
+    (campaign | ad_group), "budget_from", "budget_to". Budgets are compared only when both
     snapshots are v2 (they carry "_campaign" / "_ad_groups"); a v1 snapshot
     on either side is read for ads only.
     """
@@ -1973,7 +2002,7 @@ def changes_since(prev: dict | None, campaigns: list, snap: dict) -> dict:
                                    f'on the leading ads only)',
                             kind="wording_changed", ad=a.get("ad"),
                             ad_key=None, ad_group=None, ad_group_key=None,
-                            first_spend_day=None)
+                            first_spend_day=None, utm_content=None)
 
         if "diagnosis" in was and "diagnosis" in c:
             f_old, f_new = _found(was), _found(c)
@@ -2128,8 +2157,14 @@ def _missing(x: dict, rec: dict, conf: dict, needs_plan: bool) -> list:
         missing.append("confidence_level")
     if not _clean(conf.get("reason")):
         missing.append("confidence_reason")
-    if needs_plan and not isinstance(x.get("test_plan"), dict):
-        missing.append("test_plan")
+    if needs_plan:
+        tp = x.get("test_plan")
+        if not isinstance(tp, dict):
+            missing.append("test_plan")
+        elif not _clean(tp.get("setup")):
+            # How to set it up in Ads Manager: a test the reader cannot
+            # build is a test nobody runs.
+            missing.append("setup")
     return missing
 
 
@@ -2190,6 +2225,7 @@ def _issue_from(x: dict, findings: dict, max_priority: str,
                                               list) else []
             plan = {"variable": variable, "control": control,
                     "challenger": challenger,
+                    "setup": _clean(tp.get("setup")) or None,
                     "hold_constant": hold or [
                         h for h in HOLD_CONSTANT
                         if _norm(h) not in _norm(variable)],
@@ -2316,6 +2352,11 @@ def _attach_keys(i: dict, f: dict | None, c: dict) -> None:
     i["ad_group"] = group
 
 
+def experiment_tag(issue_id: str) -> str:
+    """The utm_content tag for a test issue: "EXP-" + its id."""
+    return f"EXP-{issue_id}"
+
+
 def _report(r: dict, c: dict, before: dict, used: set, tag: str, ci: int,
             today: date, pool: list | None = None) -> dict:
     """The shape-2 body of one campaign's entry: issues and not_yet."""
@@ -2340,6 +2381,13 @@ def _report(r: dict, c: dict, before: dict, used: set, tag: str, ci: int,
         else:
             i.update({"id": f"i{tag}-{ci}-{pi}", "status": "new",
                       "open_since": today.isoformat()})
+        if isinstance(i.get("test_plan"), dict):
+            # Derived from the issue's FINAL id, never written by the model:
+            # a still-open issue keeps its id, so its tag is the same run to
+            # run. The person adds utm_content=<tag> to the new ad's URL
+            # parameters; meta_ads/parse.py reads it back into
+            # ads.ad.utm_content, which ads.experiment_result matches arms on.
+            i["test_plan"]["tag"] = experiment_tag(i["id"])
 
     # One line per thing not to do. Two lines saying the same thing differ in
     # their reason, not their subject, so they are matched on the part before
@@ -2430,12 +2478,14 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
 
     ROUND 2 (contracts2 D4) on every shape-2 entry: `bucket` (bucket_of the
     clamped issues), `priority_rank`, the pack's `impact` and `movement`,
-    `summary`, an empty `causal_flags` for causal_language to fill, and on
-    each issue the six-field check (`incomplete`, clamped to monitor), the
-    creative challenger's kind checked against `pool` (the pack's
-    challenger_pool) and the campaign's ads, and the keys the outcomes
-    ledger registers it by. The order is still the pack's; sort_triage is
-    the published order.
+    `summary`, empty `causal_flags` and `jargon_flags` for causal_language
+    and jargon_language to fill, and on each issue the six-field check
+    (`incomplete`, clamped to monitor; a test plan with no `setup` counts as
+    missing it), the creative challenger's kind checked against `pool` (the
+    pack's challenger_pool) and the campaign's ads, the keys the outcomes
+    ledger registers it by, and on a test plan its `tag` ("EXP-" + the
+    issue's final id, after carry-forward). The order is still the pack's;
+    sort_triage is the published order.
     """
     previous = previous or {}
     today = today or date.today()
@@ -2517,6 +2567,7 @@ def triage_from(rows: list, campaigns: list, previous: dict | None = None,
                 "impact": impact,
                 "movement": c.get("movement") or {},
                 "causal_flags": [],
+                "jargon_flags": [],
                 "campaign_key": c.get("campaign_key"),
                 "running": c.get("running"),
                 "ladder": c.get("ladder"),
@@ -2709,6 +2760,7 @@ def _card_texts(t: dict) -> tuple:
                   rec.get("expected_outcome") or "",
                   (p.get("confidence") or {}).get("reason") or ""]
         plan = p.get("test_plan") or {}
+        loose.append(plan.get("setup") or "")
         strict.append(plan.get("decide_when") or "")
         # A brief's opening line is proposed copy, like the challenger; its
         # `built_from` is the evidence for it and is checked.
@@ -2819,6 +2871,77 @@ def causal_language(triage: list) -> int:
                 if p not in flags:
                     flags.append(p)
         t["causal_flags"] = flags
+        n += len(flags)
+    return n
+
+
+# -------------------------------------------------------- field names --
+# A CARD NEVER SAYS decision_spend_per_arm. The reader owns the business; a
+# key out of the facts is the review talking to itself. Flagged, not
+# rewritten, like causal wording.
+
+#: A snake_case token: two or more lower-case words joined by underscores.
+JARGON = _re.compile(r"(?<![\w])[a-z]+(?:_[a-z0-9]+)+(?![\w])")
+
+#: Field names flagged even when this run's facts do not carry them.
+JARGON_KEYS = frozenset({
+    "decision_spend_per_arm", "min_conversions_per_arm", "test_floor",
+    "cpa_rank_in_goal", "spend_to_baseline_cpa", "impact_score",
+    "parent_spend_share_pct"})
+
+
+def _fact_keys(node, out: set | None = None) -> set:
+    """Every snake_case key anywhere in the facts."""
+    out = set() if out is None else out
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(k, str) and "_" in k:
+                out.add(k)
+            _fact_keys(v, out)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _fact_keys(v, out)
+    return out
+
+
+def _jargon_texts(t: dict) -> list:
+    texts = [t.get("summary"), t.get("headline")]
+    texts += [s for s in t.get("not_yet") or [] if isinstance(s, str)]
+    for p in t.get("issues") or []:
+        if not isinstance(p, dict):
+            continue
+        rec = p.get("recommendation") or {}
+        texts += [p.get("observation"), p.get("evidence"), p.get("diagnosis"),
+                  rec.get("action"), rec.get("expected_outcome"),
+                  (p.get("confidence") or {}).get("reason")]
+        plan = p.get("test_plan") or {}
+        texts += [plan.get("control"), plan.get("challenger"),
+                  plan.get("setup"), plan.get("decide_when")]
+    return [s for s in texts if isinstance(s, str) and s]
+
+
+def jargon_language(triage: list, facts: dict | None = None) -> int:
+    """Set each entry's `jargon_flags`: the field names its text writes
+    (snake_case tokens that are a key in `facts` or in JARGON_KEYS), each
+    once, in order. Account names and quoted text are cut out first, so an
+    ad called "ad_a_v5" or a quoted line is not jargon. Returns the count."""
+    keys = JARGON_KEYS | _fact_keys(facts or {})
+    names = sorted(_names(facts or {}), key=len, reverse=True)
+    n = 0
+    for t in triage:
+        mine = sorted(set(names) | _names({"campaign": t.get("campaign"),
+                                           "where": t.get("where")}),
+                      key=len, reverse=True)
+        flags: list = []
+        for s in _jargon_texts(t):
+            for name in mine:
+                s = s.replace(name, " ")
+            s = _QUOTED.sub(" ", s)
+            for m in JARGON.finditer(s):
+                w = m.group(0)
+                if w in keys and w not in flags:
+                    flags.append(w)
+        t["jargon_flags"] = flags
         n += len(flags)
     return n
 

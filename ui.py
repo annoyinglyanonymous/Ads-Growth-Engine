@@ -45,6 +45,7 @@ from intel import creative as creative_mod
 from intel import experiments as exp_mod
 from intel import propose as propose_mod
 from intel import metrics
+from intel import outcomes as outcomes_mod
 from intel.context import UnknownBrand
 
 ROOT = Path(__file__).resolve().parent
@@ -492,27 +493,49 @@ async def angles(request: Request, brand: str = "renegade", days: int = 90,
 @router.get("/experiments", response_class=HTMLResponse)
 async def experiments(request: Request, brand: str = "renegade",
                       days: int = 14):
-    """The log, and underneath it the ideas nobody has filed yet.
+    """The log, and underneath it the tests the report recommends.
 
-    Proposals share this page rather than getting their own because they are
-    the same subject at two stages, and because an empty log with no next
-    step reads as a dead feature. They are clearly below the log and clearly
-    unfiled: filing one is `intel record`, run by a person.
+    One flow with /suggestions: the report recommends a test and names its
+    tag, the person launches the new ad with utm_content=<tag>, the outcomes
+    ledger sees the launch and scripts/suggest.py files the experiment as a
+    proposal. A proposal whose launch was seen shows the date and the exact
+    statement that records started_on -- run by a person, never from here.
+
+    `intel propose`'s ideas render only when the ledger is empty or
+    unreadable: until the report has recommended anything, they are the
+    only next step this page has.
     """
     try:
         d = await exp_mod.experiments(brand)
-        ideas = await propose_mod.propose(brand, days)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "experiments", exc)
-    # The settled edge comes from `ideas`, not from `d`. experiments() is not
-    # windowed and returns no settled_through, so _page() read None and the
-    # rail rendered "No active ad account for this brand" -- which is false,
-    # contradicts every other page, and is the one sentence on this site that
-    # must never be wrong by accident.
+    try:
+        ledger = outcomes_mod.load(brand)
+    except (OSError, ValueError):
+        ledger = None
+    has_ledger = bool((ledger or {}).get("entries"))
+    rows = exp_mod.with_launches(d["rows"], ledger)
+    d = {**d, "rows": rows}
+    ideas = None
+    try:
+        if has_ledger:
+            b = await context.brand(brand)
+            settled = await context.settled_through(b["id"])
+            caveat = context.caveat(0, settled)
+        else:
+            # The settled edge comes from `ideas` here. experiments() is not
+            # windowed and returns no settled_through; without one the rail
+            # renders "No active ad account for this brand", which is false.
+            ideas = await propose_mod.propose(brand, days)
+            settled, caveat = ideas.get("settled_through"), ideas.get("caveat")
+    except (UnknownBrand, NotConfigured, ValueError) as exc:
+        return _fail(request, "experiments", exc)
     return _page(request, "experiments.html", "experiments", d,
-                 ideas=ideas, days=days,
-                 settled=ideas.get("settled_through"),
-                 caveat=ideas.get("caveat"))
+                 ideas=ideas, days=days, settled=settled, caveat=caveat,
+                 has_ledger=has_ledger,
+                 recommended=exp_mod.recommended_tests(ledger),
+                 unfiled=exp_mod.launched_unfiled(ledger),
+                 launches=[r for r in rows if r.get("launch")])
 
 
 @router.get("/ad/{ad_key}", response_class=HTMLResponse)

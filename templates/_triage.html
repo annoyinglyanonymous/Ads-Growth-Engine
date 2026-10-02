@@ -467,6 +467,8 @@
           {% endif %}
         </div>
         <dl>
+          {% if tp.setup %}<dt>Set it up</dt><dd>{{ tp.setup }}</dd>{% endif %}
+          {% if tp.tag %}<dt>Tag the new ad</dt><dd>Add <code>utm_content={{ tp.tag }}</code> to its URL parameters, so its results can be read back by that tag.</dd>{% endif %}
           {% if tp.hold_constant %}<dt>Hold constant</dt><dd>{{ tp.hold_constant | join(' · ') }}</dd>{% endif %}
           {% if tp.evaluate_on %}<dt>Evaluate on</dt><dd>{{ tp.evaluate_on | join(' · ') }}</dd>{% endif %}
           {% if tp.decide_when %}<dt>Decide when</dt><dd>{{ tp.decide_when }}</dd>{% endif %}
