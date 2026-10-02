@@ -449,3 +449,32 @@ def test_019_the_rule_table_is_owned_and_readable():
     # The reader is granted nothing that writes.
     assert not re.search(r"grant (insert|update|delete|all)[^;]*campaign_family_rule",
                          joined)
+
+
+#: Postgres keywords that cannot be a bare column name in RETURNS TABLE.
+#: 019 shipped `position text` and its apply failed on 2026-10-02 ("syntax
+#: error at or near position"); quoting it ("position") is the fix.
+_RESERVED_COLUMNS = {"position", "user", "order", "group", "select", "from",
+                     "where", "table", "column", "check", "default", "end",
+                     "limit", "offset", "window", "both", "leading",
+                     "trailing", "references", "primary", "unique",
+                     "analyse", "analyze", "array", "case", "cast", "do",
+                     "else", "for", "into", "only", "some", "then", "to",
+                     "union", "using", "when", "with"}
+
+
+def test_no_migration_returns_a_bare_reserved_word():
+    import re as _re  # noqa: PLC0415
+    from pathlib import Path as _P  # noqa: PLC0415
+    bad = []
+    for f in sorted((_P(__file__).resolve().parent.parent / "migrations")
+                    .glob("0*.sql")):
+        sql = f.read_text(encoding="utf-8")
+        for block in _re.findall(r"returns table\s*\((.*?)\)\s*\n\s*language",
+                                 sql, flags=_re.S | _re.I):
+            for line in block.splitlines():
+                m = _re.match(r"\s*([a-z_]+)\s+[a-z]", line.split("--")[0],
+                              flags=_re.I)
+                if m and m.group(1).lower() in _RESERVED_COLUMNS:
+                    bad.append(f"{f.name}: {m.group(1)}")
+    assert not bad, bad

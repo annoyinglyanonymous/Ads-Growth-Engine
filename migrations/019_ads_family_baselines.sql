@@ -662,7 +662,7 @@ create function ads.campaign_vs_family(
     p25                numeric,
     p50                numeric,
     p75                numeric,
-    position           text,
+    "position"         text,
     percentile         numeric,
     campaign_weeks     integer,
     band_level         text,
