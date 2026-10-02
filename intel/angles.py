@@ -230,3 +230,39 @@ async def versus(slug: str, a: str, b: str, days: int = 30,
                     "These angles ran under different optimization goals. A CPA "
                     "difference between them is at least partly a difference "
                     "between the goals, not between the copy (042)."}
+
+
+async def label_coverage(slug: str, days: int = 90,
+                         until: date | None = None) -> dict:
+    """Two coverages, and which question each one answers.
+
+    `angle_attribution` is ads.untagged_spend: spend whose ad resolves to an
+    ANGLE. On a brand whose angle bank has no members it is zero by
+    construction, and it says nothing about the copy.
+
+    `creative_labels` counts the ads that spent and carry a hook or an offer,
+    which scripts/tag.py files. That is the one that says whether the copy has
+    been read. Printing only the first made a page announce "100% untagged"
+    beside a hook-and-offer table full of real numbers, which is how the
+    suggestion prompt once concluded nothing could be said about the writing.
+
+    Same SQL as intel/brief.py's creative_labels section, so the two pages
+    cannot count a label differently.
+    """
+    f = await _frame(slug, days, until)
+    labels = await fetch_one(
+        "select count(*)::int                                     as ads, "
+        "       count(*) filter (where fe.hook is not null)::int   as with_a_hook, "
+        "       count(*) filter (where fe.offer is not null)::int  as with_an_offer "
+        "  from (select distinct f.ad_key "
+        "          from ads.fact_ad_day f "
+        "         where f.brand_id = %s::uuid "
+        "           and f.day between %s and %s) spent "
+        "  left join ads.facet_effective fe on fe.ad_key = spent.ad_key",
+        (f["brand_id"], f["since"], f["until"]))
+    angle = await fetch_one(
+        "select total_spend, tagged_spend, untagged_spend, untagged_ads "
+        "  from ads.untagged_spend(%s::uuid, %s, %s)",
+        (f["brand_id"], f["since"], f["until"]))
+    return {"verb": "label_coverage", **f,
+            "creative_labels": labels or {}, "angle_attribution": angle or {}}

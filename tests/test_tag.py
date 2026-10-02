@@ -1,0 +1,372 @@
+"""The tagging pass files nothing it cannot justify, and nothing it invented.
+
+`scripts/tag.py` labels what each ad ARGUES, and those labels become every
+creative number on the site. A label the model imagined is not a harmless
+wrong row -- `hook` and `offer` are foreign keys, so an invented value is a row
+the database refuses, and a plausible-but-wrong one is a number somebody
+compares against.
+
+So the pass checks every value against the seeded vocabulary before it goes
+near intel/record.py, and these are the tests for that check.
+
+None of these need a database, a model, or the `claude` binary.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# scripts/ is not a package, so load tag.py by path.
+_spec = importlib.util.spec_from_file_location("tag_script", ROOT / "scripts" / "tag.py")
+tag = importlib.util.module_from_spec(_spec)
+sys.modules["tag_script"] = tag
+_spec.loader.exec_module(tag)
+
+
+HOOKS = {"callout", "contrast", "demo", "pattern_interrupt", "question",
+         "stat", "story", "testimonial"}
+OFFERS = {"call", "demo", "free_consult", "guide", "none", "quote", "valuation"}
+
+AD = {"ad_key": "11111111-1111-1111-1111-111111111111",
+      "copy_hash": "abc123", "brand": "renegade",
+      "first_headline": "Own the book you've been building",
+      "first_body": "A good year in captive means a good paycheck."}
+BY_KEY = {AD["ad_key"]: AD}
+
+
+def _clean(**over):
+    row = {"ad_key": AD["ad_key"], "hook": "callout", "offer": "call",
+           "audience": "captive agents", "confidence": "inferred",
+           "rationale": 'Opens "Own the book you have been building".'}
+    row.update(over)
+    return tag.clean(row, HOOKS, OFFERS, BY_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Nothing outside the vocabulary reaches the database.
+# ---------------------------------------------------------------------------
+
+def test_a_good_row_becomes_a_filable_payload():
+    payload, why = _clean()
+    assert why is None
+    assert payload["hook"] == "callout"
+    assert payload["copy_hash"] == "abc123"
+    assert payload["brand"] == "renegade"
+
+
+def test_an_invented_hook_is_dropped_with_a_reason():
+    """`hook` is a foreign key to ads.hook. A value the model imagined is a row
+    the database refuses -- and a pass that files nothing because one label was
+    invented is worse than one that drops the row and says which."""
+    payload, why = _clean(hook="urgency")
+    assert payload is None
+    assert "urgency" in why and "ads.hook" in why
+
+
+def test_an_invented_offer_is_dropped_with_a_reason():
+    payload, why = _clean(offer="webinar")
+    assert payload is None
+    assert "webinar" in why and "ads.offer" in why
+
+
+def test_an_unknown_ad_key_is_dropped():
+    """The model returning a key that was not in the batch means it has lost
+    track of which ad it is labelling, and the label belongs to nothing."""
+    payload, why = _clean(ad_key="99999999-9999-9999-9999-999999999999")
+    assert payload is None
+    assert "not in the batch" in why
+
+
+@pytest.mark.parametrize("bad", ["certain", "high", "", None, "STATED"])
+def test_confidence_must_be_one_of_the_two(bad):
+    payload, why = _clean(confidence=bad)
+    assert payload is None
+    assert "confidence" in why
+
+
+def test_a_tag_without_a_rationale_is_dropped():
+    """The rationale is what a person reads when checking the work. A label
+    with no reason behind it cannot be checked, only believed."""
+    for empty in ("", "   ", None):
+        payload, why = _clean(rationale=empty)
+        assert payload is None
+        assert "rationale" in why or "cannot be checked" in why
+
+
+def test_a_row_that_labels_nothing_is_dropped():
+    """A facet with no hook, no offer and no audience describes nothing. Filing
+    it would only stop the ad appearing in this pass's own selection next
+    time -- it would look tagged and say nothing."""
+    payload, why = _clean(hook=None, offer=None, audience=None)
+    assert payload is None
+    assert "nothing was labelled" in why
+
+
+def test_a_partial_label_is_still_worth_filing():
+    """A hook with no offer is a real finding. Demanding all three would throw
+    away the labels the copy does support."""
+    payload, why = _clean(offer=None, audience=None)
+    assert why is None
+    assert payload["hook"] == "callout"
+    assert "offer" not in payload and "audience" not in payload
+
+
+def test_the_copy_hash_comes_from_the_ad_not_the_model():
+    """The hash of the copy AS READ. If the model echoed one back, an ad
+    rewritten between the read and the write would have its new wording
+    labelled with the old wording's tag."""
+    payload, why = _clean(copy_hash="something-the-model-made-up")
+    assert why is None
+    assert payload["copy_hash"] == "abc123"
+
+
+def test_a_long_rationale_is_cut_not_rejected():
+    payload, why = _clean(rationale="x" * 900)
+    assert why is None
+    assert len(payload["rationale"]) <= 500
+
+
+# ---------------------------------------------------------------------------
+# The pass cannot decide anything.
+# ---------------------------------------------------------------------------
+
+def test_the_pass_cannot_set_its_own_source():
+    """`source` is a SQL literal in intel/record.py -- 'tagged', never a
+    parameter. There is no value this pass can supply that makes a row look
+    like a person filed it, and record.py's upsert refuses to overwrite one
+    that was."""
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    assert '"source"' not in src and "'source'" not in src
+    record = (ROOT / "intel" / "record.py").read_text(encoding="utf-8")
+    assert "'tagged'" in record
+    assert "where ads.ad_facet.source <> 'operator'" in record
+
+
+def test_the_pass_does_not_open_the_writing_pool():
+    """It goes through intel/record.py like everything else. Importing
+    db_owner here would put the writing credential in a script that also talks
+    to a model."""
+    tree = ast.parse((ROOT / "scripts" / "tag.py").read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+    assert "db_owner" not in names
+    assert "db_meta" not in names
+
+
+def test_classification_is_asked_with_no_tools_at_all():
+    """A pass is handed the copy and asked to label it. Every tool is a grant
+    with no purpose, and a grant with no purpose is the one that gets used for
+    something nobody intended."""
+    import chat
+    src = (ROOT / "chat.py").read_text(encoding="utf-8")
+    body = src.split("async def classify", 1)[1].split("\nclass ", 1)[0]
+    # Quoted, so the comment above the command ("No --allowedTools at all")
+    # does not satisfy the assertion the way a bare substring did.
+    assert '"--allowedTools"' not in body, "the classifier was granted tools"
+    assert "--disallowedTools" in body, "the deny list is not applied"
+    assert "--max-turns" in body
+    assert chat.CLASSIFY_SYSTEM is not chat.SYSTEM
+
+
+def test_the_selection_is_keyed_on_the_copy_hash():
+    """What makes the pass cheap after its first run, and correct when copy
+    changes: rewrite an ad and its old tag stops matching, so it comes back
+    round to be relabelled."""
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    sel = src.split("async def needs_tagging", 1)[1].split("\ndef ", 1)[0]
+    assert "fa.copy_hash = c.copy_hash" in sel
+    assert "not exists" in sel
+
+
+def test_batches_stay_inside_the_prompt_budget():
+    """The question reaches the session as one argv element and Windows caps a
+    command line at 32,767 characters."""
+    from intel import creative
+    hooks = [{"slug": h, "definition": "d" * 60} for h in sorted(HOOKS)]
+    offers = [{"slug": o, "definition": "d" * 60} for o in sorted(OFFERS)]
+    ads = [{"ad_key": f"{i:08d}-1111-1111-1111-111111111111",
+            "name": "Become an Agent | Start Franchise | Multi Color | Video",
+            "first_headline": "Own Your Own P&C Insurance Franchise",
+            "first_body": "You already know how to sell. " * 14,
+            "cta": "LEARN_MORE"} for i in range(tag.BATCH)]
+    # 420-character bodies: forty of these do NOT fit, which is the point.
+    # The planner has to split them rather than emit one oversized prompt.
+    for batch in tag.plan_batches("renegade", hooks, offers, ads):
+        prompt = tag.build_prompt("renegade", hooks, offers, batch)
+        assert len(prompt) <= creative.PROMPT_BUDGET, (
+            f"a batch of {len(batch)} came to {len(prompt)} chars")
+    assert len(tag.plan_batches("renegade", hooks, offers, ads)) > 1, (
+        "forty long-bodied ads should have been split")
+
+
+def test_the_pass_names_its_exit_codes():
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    for code in ("0  filed", "1  something failed", "2  a run was already"):
+        assert code in src, f"exit code {code!r} is undocumented"
+
+
+# ---------------------------------------------------------------------------
+# One question per distinct wording.
+# ---------------------------------------------------------------------------
+
+def test_identical_copy_is_asked_about_once():
+    """56% of this account's ads share byte-identical copy, and labelling each
+    separately asked the model the same question up to seven times -- which it
+    answered differently on 20 of 48 groups, across 30% of tagged spend. No
+    prompt fixes variance; asking once does."""
+    ads = [{"ad_key": f"{i:08d}-1111-1111-1111-111111111111",
+            "copy_hash": "same" if i < 5 else f"h{i}"} for i in range(8)]
+    wordings, by_hash = tag.dedupe(ads)
+    assert len(wordings) == 4, "five identical ads should ask one question"
+    assert len(by_hash["same"]) == 5, "the other four must still get the label"
+
+
+def test_the_representative_is_stable_across_runs():
+    """A re-run should quote the same ad in its rationale, not a different one
+    of the five that happen to share the words."""
+    ads = [{"ad_key": k, "copy_hash": "same"} for k in ("ccc", "aaa", "bbb")]
+    first, _ = tag.dedupe(ads)
+    second, _ = tag.dedupe(list(reversed(ads)))
+    assert first[0]["ad_key"] == second[0]["ad_key"] == "aaa"
+
+
+def test_the_batches_that_run_are_the_deduped_ones():
+    """The loop must iterate the plan built from distinct wordings. Planning
+    once for the log and again from the full ad list ran 7 batches where 5 were
+    planned, paid for every duplicate, and re-introduced the inconsistency."""
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    body = src.split("async def run_brand", 1)[1]
+    assert "for n, batch in enumerate(planned" in body
+    assert "plan_batches(slug, hooks, offers, ads)" not in body, (
+        "the loop re-plans from the full ad list, undoing the dedupe")
+
+
+def test_a_long_body_keeps_its_close():
+    """Three ads were labelled `offer: none` because the ask sat past a 400
+    character cut -- the model said so in its own rationale, while the unseen
+    tail read "Book the call and we'll build the roadmap.\""""
+    body = "A" * 400 + "MIDDLE" * 100 + "Book the call and we'll build the roadmap."
+    out = tag._head_and_tail(body)
+    assert out.startswith("A" * 100)
+    assert "Book the call" in out, "the close was cut off again"
+    assert "[...]" in out
+    assert len(out) < len(body)
+
+
+def test_a_short_body_is_untouched():
+    assert tag._head_and_tail("short copy") == "short copy"
+
+
+def test_the_audience_vocabulary_is_closed():
+    """Free text produced 31 values for 6 audiences -- "agency owners" and
+    "p&c agency owners" split one audience roughly in half, and appeared within
+    identical copy."""
+    assert len(tag.AUDIENCES) == 6
+    assert "p&c agency owners" in tag.AUDIENCES
+    hooks = [{"slug": "stat", "definition": "d"}]
+    offers = [{"slug": "none", "definition": "d"}]
+    prompt = tag.build_prompt("renegade", hooks, offers, [
+        {"ad_key": "k", "name": "n", "first_headline": "h",
+         "first_body": "b", "cta": None}])
+    for a in tag.AUDIENCES:
+        assert a in prompt, f"{a!r} never reaches the model"
+    assert "Do not invent a value" in prompt
+
+
+def test_a_new_hook_reaches_the_model_without_a_code_change():
+    """`ads.hook` is a controlled table precisely so that adding a hook is a
+    row and not a release. The prompt used to also say "if none of the eight
+    fits" -- a second copy of the list's length, and the copy that goes stale
+    silently. 015 adds three hooks; the sentence would have been wrong on the
+    day it was applied, and wrong in the direction that tells the model to
+    ignore them."""
+    hooks = [{"slug": s, "definition": f"what {s} means"}
+             for s in ("stat", "problem", "affirmation", "imperative")]
+    offers = [{"slug": "none", "definition": "d"}]
+    prompt = tag.build_prompt("renegade", hooks, offers, [
+        {"ad_key": "k", "name": "n", "first_headline": "h",
+         "first_body": "b", "cta": None}])
+    for h in hooks:
+        assert h["slug"] in prompt, f"{h['slug']} never reaches the model"
+        assert h["definition"] in prompt, f"{h['slug']} arrives undefined"
+    for stale in ("the eight", "eight hooks", "of the eight"):
+        assert stale not in prompt, f"the prompt counts the vocabulary: {stale!r}"
+
+
+def test_the_prompt_names_no_hook_the_database_might_not_have():
+    """The guidance block is hardcoded while the vocabulary is read live, so a
+    hook named there and missing from ads.hook is every row the model files
+    under it dropped by the foreign key check. Only the seeded eight may be
+    named, and only to say what they are not."""
+    hooks = [{"slug": "stat", "definition": "d"}]
+    prompt = tag.build_prompt("renegade", hooks,
+                              [{"slug": "none", "definition": "d"}],
+                              [{"ad_key": "k", "name": "n",
+                                "first_headline": "h", "first_body": "b",
+                                "cta": None}])
+    guidance = prompt.split("OFFER --", 1)[1]
+    for added in ("problem", "affirmation", "imperative"):
+        assert f"`{added}`" not in guidance, (
+            f"{added} is named in the prompt but may not be in ads.hook yet")
+
+
+# ---------------------------------------------------------------------------
+# Angles: only signed ones, and the tags filed before any were signed come
+# back round once.
+# ---------------------------------------------------------------------------
+
+ANGLES = {"captive-ceiling", "direct-buyer"}
+
+
+def test_a_signed_angle_is_filed_with_the_tag():
+    row = {"ad_key": AD["ad_key"], "hook": "callout", "offer": "call",
+           "angle": "captive-ceiling", "audience": "captive agents",
+           "confidence": "inferred", "rationale": 'Opens "Own the book".'}
+    payload, why = tag.clean(row, HOOKS, OFFERS, BY_KEY, ANGLES)
+    assert why is None and payload["angle_slug"] == "captive-ceiling"
+
+
+def test_an_unsigned_angle_is_dropped_but_the_rest_is_kept():
+    """A proposed or invented angle must not reach record.py -- it would be
+    refused and take the hook, offer and audience down with it."""
+    row = {"ad_key": AD["ad_key"], "hook": "callout", "offer": "call",
+           "angle": "made-up-angle", "audience": "captive agents",
+           "confidence": "inferred", "rationale": 'Opens "Own the book".'}
+    payload, why = tag.clean(row, HOOKS, OFFERS, BY_KEY, ANGLES)
+    assert why is None
+    assert "angle_slug" not in payload and payload["hook"] == "callout"
+
+
+def test_the_prompt_offers_angles_only_when_some_are_signed():
+    hooks = [{"slug": h, "definition": "d"} for h in sorted(HOOKS)]
+    offers = [{"slug": o, "definition": "d"} for o in sorted(OFFERS)]
+    ad = {**AD, "name": "n", "cta": None}
+    without = tag.build_prompt("renegade", hooks, offers, [ad])
+    assert "ANGLE --" not in without and '"angle"' not in without
+    angles = [{"slug": "captive-ceiling", "name": "Captive ceiling",
+               "definition": "A captive agent is capped. NOT: the valuation."}]
+    with_ = tag.build_prompt("renegade", hooks, offers, [ad], angles)
+    assert "ANGLE --" in with_ and "captive-ceiling: A captive agent" in with_
+    assert '"angle":' in with_
+
+
+def test_tags_filed_before_any_angle_was_signed_come_back_round():
+    src = (ROOT / "scripts" / "tag.py").read_text(encoding="utf-8")
+    body = src.split("async def needs_tagging", 1)[1].split("\nasync def ", 1)[0]
+    assert "fa.angle_id is null" in body
+    assert "fa.source <> 'operator'" in body, "a person's tag must be left alone"
+    run = src.split("async def run_brand", 1)[1]
+    assert "active_angles(slug)" in run
+    fn = src.split("async def active_angles", 1)[1][:900]
+    assert "a.status = 'active'" in fn, "only signed angles may be offered"

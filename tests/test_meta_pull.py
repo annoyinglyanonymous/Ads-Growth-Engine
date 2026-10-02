@@ -19,6 +19,7 @@ gets its own throwaway brand, created and dropped per test.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -69,7 +70,17 @@ class FakeGraph:
         return
         yield  # pragma: no cover
 
-    async def ads(self, act_id, *, updated_since=None):
+    async def ads(self, act_id, *, updated_since=None, fields=None,
+                  effective_status=None):
+        """Mirrors the real signature, including the two arguments the
+        structure pull now passes.
+
+        `_pull_structure` calls this edge TWICE -- once cheaply for status and
+        once for creatives -- so a fake that accepts only the old keywords
+        fails with a TypeError inside the phase, which every isolation test
+        here then reads as the account having failed. Keeping the signature
+        honest is what stops a fake from proving the wrong thing.
+        """
         return
         yield  # pragma: no cover
 
@@ -314,3 +325,159 @@ def test_chunking_is_why_a_big_window_does_not_go_in_one_request():
     spans = _chunks(date(2025, 8, 1), date(2026, 9, 1), 7)
     assert len(spans) > 50
     assert all((u - s).days + 1 <= 7 for s, u in spans)
+
+
+# ---------------------------------------------------------------------------
+# The window ends on the ACCOUNT's day, not on UTC's.
+# ---------------------------------------------------------------------------
+
+def test_the_window_ends_on_the_accounts_own_day():
+    """An insights date is a day in the ad account's timezone, not in UTC.
+
+    Observed on 2026-09-22 at 05:35 UTC against act_153704749222533
+    (America/Los_Angeles, where it was still 2026-09-21): the window ran to
+    2026-09-22, Meta returned nothing for a day that had not started, and the
+    watermark advanced past the data -- so the dashboard read "insights
+    through 2026-09-22" over an empty day.
+
+    Frozen rather than computed from `now()`: a test that recomputes both
+    sides passes at every hour including the ones where the bug lives.
+    """
+    from unittest.mock import patch
+
+    from meta_ads.pull import _account_today
+
+    # 05:35 UTC on the 22nd is 22:35 on the 21st in Los Angeles.
+    frozen = datetime(2026, 9, 22, 5, 35, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen.astimezone(tz) if tz else frozen
+
+    with patch("meta_ads.pull.datetime", _FrozenDatetime):
+        assert _account_today(
+            {"timezone_name": "America/Los_Angeles"}) == date(2026, 9, 21)
+        assert _account_today(
+            {"timezone_name": "Asia/Tokyo"}) == date(2026, 9, 22)
+        # No timezone means no structure pull has ever completed for the
+        # account. UTC is the honest fallback, and it is what settled_through
+        # does with the same missing value.
+        assert _account_today({"timezone_name": None}) == date(2026, 9, 22)
+        assert _account_today({}) == date(2026, 9, 22)
+        # A name tzdata does not know is a packaging problem, not a reason to
+        # import nothing.
+        assert _account_today({"timezone_name": "Not/AZone"}) == date(2026, 9, 22)
+
+
+def test_the_importer_and_settled_through_agree_on_the_restatement_horizon():
+    """Two copies of the number 3, and nothing else makes them agree.
+
+    `ads.settled_through()` subtracts 3 to declare which days can still move;
+    `meta_ads/pull.py` re-reads that many days so the days declared unsettled
+    are the days that actually get restated. Raise one without the other and
+    the mismatch is silent: days stay flagged provisional that nothing ever
+    revisits, or Meta is paid to recompute days that stopped moving.
+
+    Same device as tests/test_tracking_is_a_faithful_copy.py -- the
+    duplication is deliberate and this is what keeps it honest.
+    """
+    import re
+    from pathlib import Path
+
+    from meta_ads.pull import INSIGHTS_RESTATEMENT_DAYS
+
+    sql = (Path(__file__).resolve().parent.parent
+           / "migrations" / "003_ads_metrics.sql").read_text(encoding="utf-8")
+    m = re.search(r"::date\)\s*-\s*(\d+)\)\s*\n\s*from public\.meta_ad_accounts",
+                  sql)
+    assert m, "could not find the subtraction in ads.settled_through()"
+    assert int(m.group(1)) == INSIGHTS_RESTATEMENT_DAYS, (
+        f"ads.settled_through() subtracts {m.group(1)} days but "
+        f"INSIGHTS_RESTATEMENT_DAYS is {INSIGHTS_RESTATEMENT_DAYS}. The "
+        f"importer must re-read at least what the metrics layer calls "
+        f"unsettled.")
+
+
+def test_the_structure_watermark_is_where_the_last_run_started():
+    """An ad edited DURING a structure run has an updated_time before the run
+    finished. Watermarking at the finish skips it forever; at the start it is
+    read again next time."""
+    src = (Path(__file__).resolve().parent.parent / "meta_ads" / "pull.py"
+           ).read_text(encoding="utf-8")
+    body = src.split("async def _pull_structure", 1)[1].split("\nasync def ", 1)[0]
+    assert 'watermark.get("started_at")' in body
+    store_src = (Path(__file__).resolve().parent.parent / "meta_ads" / "store.py"
+                 ).read_text(encoding="utf-8")
+    fn = store_src.split("async def last_successful_pull", 1)[1][:2000]
+    assert "started_at" in fn
+
+
+def _stub_run(monkeypatch, structure, insights):
+    """run_pull with every dependency stubbed: no database, no Meta."""
+    import asyncio as _a
+
+    class GC:
+        version = "v0"
+
+        @staticmethod
+        def from_settings():
+            return GC()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def brand_id(slug):
+        return "B"
+
+    async def accounts_for(bid, active_only=True):
+        return [{"act_id": "act_1"}]
+
+    monkeypatch.setattr(meta_pull, "GraphClient", GC)
+    monkeypatch.setattr(meta_pull, "_brand_id", brand_id)
+    monkeypatch.setattr(meta_pull.store, "accounts_for", accounts_for)
+    monkeypatch.setattr(meta_pull, "_pull_structure", structure)
+    monkeypatch.setattr(meta_pull, "_pull_insights", insights)
+    monkeypatch.setattr(meta_pull, "DB_RETRY_WAIT_SECONDS", 0)
+    return _a.run(meta_pull.run_pull(brand_slug="x", started_by="t"))
+
+
+def test_a_dropped_database_connection_is_retried(monkeypatch):
+    import psycopg
+    calls = {"structure": 0}
+
+    async def structure(*a, **k):
+        calls["structure"] += 1
+        if calls["structure"] == 1:
+            raise psycopg.OperationalError("server closed the connection")
+        return {"ads": 3}
+
+    async def insights(*a, **k):
+        return {"rows": 10}
+
+    [s] = _stub_run(monkeypatch, structure, insights)
+    assert calls["structure"] == 2
+    assert s["ok"] and s["structure"] == {"ads": 3} and s["insights"] == {"rows": 10}
+
+
+def test_a_structure_that_keeps_losing_the_database_still_imports_numbers(
+        monkeypatch):
+    """What happened on 2026-09-25: the structure phase lost its connection
+    and the exception left run_pull, so insights -- a different edge -- was
+    never attempted and the day's numbers did not land."""
+    import psycopg
+
+    async def structure(*a, **k):
+        raise psycopg.OperationalError("server closed the connection\nmore")
+
+    async def insights(*a, **k):
+        return {"rows": 10}
+
+    [s] = _stub_run(monkeypatch, structure, insights)
+    assert s["ok"] is False
+    assert s["insights"] == {"rows": 10}
+    assert "database connection lost 2 times" in s["error"]
+    assert "\n" not in s["error"]

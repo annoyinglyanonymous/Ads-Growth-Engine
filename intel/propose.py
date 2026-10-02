@@ -54,10 +54,27 @@ from .metrics import _frame
 #: proposing a test for each would bury the ones with three.
 FATIGUE_FLOOR = 2
 
-#: Which metric a refresh test should register, given what is actually going
-#: wrong. Ordered, because an ad can show several and the first one that fires
-#: is the one the symptom names -- registering `cpa` for an ad whose
-#: complaint is link CTR tests something nobody asked about.
+#: Which movement each stage's `says` sentence has already described, so
+#: `also_broke` does not repeat the headline finding underneath itself.
+_LEADS = {
+    "attention": "link ctr",
+    "landing": "landing page",
+    "after the click": "conversion rate",
+    "saturation": "cpm",
+    "unclear": "\0",          # matches nothing; every movement is news here
+}
+
+#: The five ads.fatigue flags paired with the metric each one implicates.
+#:
+#: NO LONGER USED BY THIS MODULE, and kept because intel/ad_readings.py
+#: imports it as the canonical symptom-to-metric list. The plan for this pass
+#: said to delete it; it stopped being dead between writing that and doing it.
+#:
+#: `propose` itself reads the RATES now (see _diagnose) rather than these
+#: booleans. The flags say that something moved; the rates say which way and
+#: by how much -- and an ad whose link CTR is UP does not want a creative test
+#: however many flags fired. Two of the four cards on this page were
+#: recommending exactly that before the change.
 SYMPTOM_METRIC: tuple[tuple[str, str], ...] = (
     ("link_ctr_decline", "link_ctr"),
     ("cpa_rise", "cpa"),
@@ -65,6 +82,12 @@ SYMPTOM_METRIC: tuple[tuple[str, str], ...] = (
     ("frequency_rise", "cpm"),
     ("ranking_drop", "link_ctr"),
 )
+
+#: Which metric a refresh test registers, given which stage broke. Read from
+#: the RATES rather than from ads.fatigue's boolean flags: the flags say that
+#: something moved, the rates say which direction and by how much, and an ad
+#: whose link CTR is UP does not want a creative test however many flags fired.
+_STAGE_METRIC = {"attention": "link_ctr", "saturation": "cpm"}
 
 #: A name like "20 Years Experience | UGC | Video" carries a vocabulary the
 #: account already uses. 185 of 201 renegade ads are shaped this way, and the
@@ -115,12 +138,252 @@ def _normalise(segment: str) -> str:
     return re.sub(r"\s*-\s*copy$", "", s)
 
 
+def _rate(side: dict | None, name: str):
+    return ((side or {}).get("rates") or {}).get(name)
+
+
+def _move(prior, recent) -> float | None:
+    """Percent change, or None when either side is undefined.
+
+    None is not zero. An ad with no conversions last window has an UNDEFINED
+    cpa, not a cpa of nothing, and treating the arrival of its first
+    conversion as an infinite improvement is how a $12 ad reaches the top of
+    a ranked list.
+    """
+    if prior in (None, 0) or recent is None:
+        return None
+    return 100.0 * (float(recent) - float(prior)) / float(prior)
+
+
+#: What changed, in the order the funnel runs. The FIRST stage that broke is
+#: the one worth acting on: a collapse in conversion rate downstream of a
+#: healthy click rate is not a creative problem, and rewriting the ad would
+#: change the one part that is still working.
+def _diagnose(prior: dict, recent: dict) -> dict:
+    ctr = _move(_rate(prior, "link_ctr"), _rate(recent, "link_ctr"))
+    cvr = _move(_rate(prior, "conversion_rate"), _rate(recent, "conversion_rate"))
+    lpv = _move(_rate(prior, "lp_view_rate"), _rate(recent, "lp_view_rate"))
+    cpm = _move(_rate(prior, "cpm"), _rate(recent, "cpm"))
+
+    # Every stage past its threshold, not just the winning one. An ad can be
+    # broken in two places at once -- "Become an Agent | Start Franchise" was
+    # link CTR -28% AND landing page views -91% -- and naming only the first
+    # in funnel order hides the larger number. The primary still decides the
+    # RESPONSE; this decides what the reader gets told.
+    cpa = _move(_rate(prior, "cpa"), _rate(recent, "cpa"))
+
+    # Every movement that is ADVERSE past its threshold, carried with the
+    # metric it was measured on. Keeping the metric beside the sentence is
+    # what stops the fall-through below inventing one: the first version
+    # defaulted to `cpa` and registered it for two ads whose CPA had improved
+    # by 25% and 42%. A metric nothing measured is not a safe default.
+    adverse: list[tuple[str, str]] = []
+    if ctr is not None and ctr <= -10:
+        adverse.append(("link_ctr", f"link CTR {ctr:.0f}%"))
+    if lpv is not None and lpv <= -15:
+        adverse.append(("conversion_rate", f"landing page views {lpv:.0f}%"))
+    if cvr is not None and cvr <= -15:
+        adverse.append(("conversion_rate", f"conversion rate {cvr:.0f}%"))
+    if cpm is not None and cpm >= 15:
+        adverse.append(("cpm", f"CPM +{cpm:.0f}%"))
+    if cpa is not None and cpa >= 20:
+        adverse.append(("cpa", f"CPA +{cpa:.0f}%"))
+    also = [text for _, text in adverse]
+
+    def _out(d: dict) -> dict:
+        # The primary is already spelled out in `says`; the rest is the tail.
+        d["also_broke"] = [a for a in also
+                           if not a.lower().startswith(_LEADS[d["stage"]])]
+        return d
+
+    if ctr is not None and ctr <= -10:
+        return _out({
+            "stage": "attention",
+            "creative_is_the_problem": True,
+            "says": f"Link CTR fell {abs(ctr):.0f}%. Fewer people who see it "
+                    f"are clicking, which is the creative's own job.",
+            "change": "The opening seconds, the thumbnail, the headline -- "
+                      "whatever earns the click. Keep the offer fixed so the "
+                      "test answers one question.",
+        })
+    if lpv is not None and lpv <= -15:
+        return _out({
+            "stage": "landing",
+            "creative_is_the_problem": False,
+            "says": f"Clicks held up but landing page views fell {abs(lpv):.0f}%. "
+                    f"People are clicking and not arriving.",
+            "change": "The destination, not the ad. Page speed, a redirect, a "
+                      "broken link, or mobile load time.",
+        })
+    if cvr is not None and cvr <= -15:
+        return _out({
+            "stage": "after the click",
+            "creative_is_the_problem": False,
+            "says": f"Link CTR held"
+                    + (f" (up {ctr:.0f}%)" if ctr and ctr > 0 else "")
+                    + f" while conversion rate fell {abs(cvr):.0f}%. The ad is "
+                      f"still earning the click; what follows it is not "
+                      f"converting.",
+            "change": "The page, the form, or the offer. Rewriting the "
+                      "creative would change the one part still working -- "
+                      "and a creative test here would answer nothing.",
+        })
+    if cpm is not None and cpm >= 15:
+        return _out({
+            "stage": "saturation",
+            "creative_is_the_problem": True,
+            "says": f"CPM rose {cpm:.0f}% without the click rate falling. The "
+                    f"auction is charging more to reach the same people.",
+            "change": "Audience or rotation before copy. The same idea in "
+                      "front of new people is the cheaper test.",
+        })
+    # Nothing adverse past a threshold. This branch exists because the
+    # alternative -- falling through to "cost rose" -- states something that
+    # may simply not be true, and a refresh proposal built on it would
+    # register a metric that is improving. `metric` is None here, and callers
+    # are expected to say nothing rather than say this.
+    # "We looked and nothing moved" and "we could not look" are different
+    # statements, and collapsing them is this repo's signature failure --
+    # a stale import looks exactly like a quiet week. `steady` asserts a
+    # fact about the rates; it may only be returned when there were rates.
+    if all(v is None for v in (ctr, cvr, lpv, cpm, cpa)):
+        return _out({
+            "stage": "unreadable",
+            "creative_is_the_problem": False,
+            "says": "No rate could be compared across the two windows, so "
+                    "nothing here is evidence either way.",
+            "change": "Nothing to act on. ads.fatigue flagged this ad on a "
+                      "symptom whose metric cannot be read here -- most "
+                      "likely frequency or a ranking band.",
+        })
+    if not also:
+        return _out({
+            "stage": "steady",
+            "creative_is_the_problem": False,
+            "says": "No rate moved adversely past its threshold in this "
+                    "window.",
+            "change": "Nothing to change on the evidence here.",
+        })
+    # Something moved adversely but no stage owns it. Register the metric it
+    # was actually measured on rather than a default.
+    d = _out({
+        "stage": "unclear",
+        "creative_is_the_problem": True,
+        "says": f"Nothing broke cleanly, but {adverse[0][1]}.",
+        "change": "A straight refresh is the cheapest way to find out which "
+                  "half moved.",
+    })
+    d["fallback_metric"] = adverse[0][0]
+    return d
+
+
+def diagnose(row: dict) -> dict:
+    """PUBLIC. One ads.fatigue row -> what broke, and what a refresh would
+    register.
+
+    Exported for intel/ad_readings.py so that /ad/<key> and /experiments
+    cannot disagree about the same ad. Two implementations of "which metric
+    is this ad's problem" WILL drift, and the drift is invisible: both
+    surfaces keep rendering, they just name different metrics for the same
+    row, and whichever the reader is looking at is the one they act on.
+
+    WHY THIS DOES NOT READ THE SYMPTOM FLAGS.
+
+    The flags themselves are honest -- 003 makes them one-sided, so
+    `link_ctr_decline`, `cpm_rise` and `cpa_rise` each mean what they say.
+    The trouble is SYMPTOM_METRIC's two PROXY entries: `frequency_rise` maps
+    to cpm and `ranking_drop` maps to link_ctr, and neither symptom is
+    measured on the metric it points at. Daily frequency rising says nothing
+    about CPM; a quality-ranking fall says nothing about link CTR. So when
+    only a proxy fires, the mapping can register a metric that has IMPROVED
+    -- four live renegade ads do exactly that, one of them with CPM down 41%.
+
+    Reading the rates in funnel order sidesteps the whole class: a proxy
+    symptom has no rate of its own, so it never gets to choose.
+
+    Returns the diagnosis dict plus `metric`: the metric a refresh would
+    register, or **None** when a refresh is not the answer. None means "say
+    nothing", not "use cpa".
+
+    Three stages return None and they are NOT the same statement:
+      steady      the rates were read and none moved adversely
+      unreadable  no rate could be compared -- we did not look, and saying
+                  "nothing moved" here would be the stale-import failure
+      landing / after the click
+                  the ad is still earning the click; there is no refresh to
+                  register because the break is downstream of it
+    """
+    dx = _diagnose(row.get("prior") or {}, row.get("recent") or {})
+    # None whenever a refresh is not the right response -- nothing moved
+    # adversely, or what broke is downstream of the click. `metric` means
+    # "what a REFRESH would register", and there is no refresh to register
+    # for a landing-page problem. Returning `cpa` there named a metric that
+    # had improved by 25% and 42% on two live ads.
+    dx["metric"] = (None if not dx["creative_is_the_problem"]
+                    else _STAGE_METRIC.get(dx["stage"])
+                    or dx.get("fallback_metric")
+                    or "cpa")
+    return dx
+
+
+def _brief(name: str, dx: dict, moved: list[dict], copy: dict,
+           untried: list[str], metric: str) -> dict:
+    """A handoff to whoever writes the copy. NOT copy.
+
+    THIS MODULE DOES NOT WRITE AD COPY AND MUST NOT START.
+
+    Copy production sits behind growth-engine's claim gate, an approved
+    `concept_id` that 013 makes NOT NULL, the brand voice guides, and a
+    person's signature. For an insurance advertiser those gates are the
+    product, not paperwork -- "carrier appointments stay active through the
+    transfer" is a claim somebody has to stand behind.
+
+    A headline invented here would carry none of that, and could not be filed
+    through `engine record` anyway. All it would do is look shippable. So
+    every field below is READ from somewhere: the copy out of ads.ad_copy, the
+    styles out of the ad names, the numbers out of ads.fatigue.
+
+    The key is `ad_copy` and not `copy` on purpose: Jinja resolves `p.copy`
+    to dict.copy, the built-in method, which is truthy -- so an `{% if %}`
+    guard passes and the macro renders nothing at all. Silent, and it cost a
+    render to find.
+
+    `campaign` stays the literal string "<campaign>". This repo does not know
+    growth-engine's campaign names, and a brief naming the wrong one is worse
+    than a brief naming none.
+    """
+    lead = next((m for m in moved if m["metric"].lower().startswith(
+        _LEADS.get(dx["stage"], "\0"))), None)
+    return {
+        "angle": _normalise(_SEGMENT.split(name)[0]),
+        "broke": (f"{lead['metric']} {lead['pct']:+.0f}% ({dx['stage']})"
+                  if lead else dx["stage"]),
+        "why": dx["says"],
+        "change": dx["change"],
+        "current_headline": copy.get("first_headline"),
+        "current_body": copy.get("first_body"),
+        "never_run_as": untried,
+        "beat": {"metric": metric,
+                 "current": (lead or {}).get("recent")},
+        "campaign": "<campaign>",
+        "written_where": (
+            "cd ..\\growth-engine\n"
+            'python -m engine context "<campaign>" --stage meta_ads'),
+        "note": ("A brief, not copy. Nothing here writes ad text: the claim "
+                 "gate, the approved concept and the signature all live in "
+                 "growth-engine, and copy that skipped them could not be "
+                 "filed even if it read well."),
+    }
+
+
 def _proposal(source: str, title: str, question: str, hypothesis: str,
               why: str, arms: list[dict], metric: str, *,
               evidence: list[dict] | None = None,
-              prior: list[dict] | None = None) -> dict:
+              prior: list[dict] | None = None,
+              extra: dict | None = None) -> dict:
     blocked = [a["blocked_on"] for a in arms if a.get("blocked_on")]
     return {
+        **(extra or {}),
         "source": source,
         "title": title,
         "question": question,
@@ -145,15 +408,32 @@ def _proposal(source: str, title: str, question: str, hypothesis: str,
 
 # ---------------------------------------------------------------- generators
 
-def _from_fatigue(fat: dict, prior_by_ad: dict) -> list[dict]:
-    """A tiring ad is a question: does a new execution recover it?
+def _from_fatigue(fat: dict, prior_by_ad: dict,
+                  copy_by_ad: dict | None = None,
+                  angle_styles: dict | None = None
+                  ) -> tuple[list[dict], list[dict]]:
+    """-> (refresh proposals, diagnoses).
 
-    Not fileable, and that is honest rather than a defect. Arm B is a creative
-    that does not exist yet, so there is no ad_key to name. File it the day the
-    replacement goes live -- and note that registering the threshold THEN is
-    still before that arm has any numbers, so the mechanism survives.
+    TWO LISTS, BECAUSE THEY ARE TWO DIFFERENT STATEMENTS. A refresh proposal
+    is a test you could run. A diagnosis is a finding about an ad whose
+    creative is fine -- it has no arms, no metric to register and no way to be
+    filed, because there is nothing to test on the ad.
+
+    Splitting them is not tidiness. The first version put both in one list,
+    and it recommended rewriting two creatives whose click-through rate had
+    gone UP -- one of them by 115%. A reader following that advice would have
+    replaced the one part still working.
+
+    A refresh is not fileable either, and that is honest rather than a defect:
+    arm B is a creative that does not exist yet, so there is no ad_key to
+    name. File it the day the replacement goes live -- registering the
+    threshold THEN is still before that arm has any numbers, so the mechanism
+    survives.
     """
-    out = []
+    copy_by_ad = copy_by_ad or {}
+    angle_styles = angle_styles or {}
+    out: list[dict] = []
+    found: list[dict] = []
     # Ranked by recent spend, capped: the money decides which tiring ad is
     # worth a person's week, not the symptom count. A 3/5 on $60 is arithmetic.
     rows = sorted((r for r in fat.get("rows") or []
@@ -161,33 +441,93 @@ def _from_fatigue(fat: dict, prior_by_ad: dict) -> list[dict]:
                    and (r.get("score") or 0) >= FATIGUE_FLOOR),
                   key=lambda r: float(r.get("spend_recent") or 0), reverse=True)
     for r in rows[:PER_SOURCE]:
-        symptoms = [s for s, _ in SYMPTOM_METRIC if r.get(s)]
-        metric = next((m for s, m in SYMPTOM_METRIC if r.get(s)), "cpa")
         name = r.get("entity_name") or r.get("ad_key")
+        # The public entry point, not _diagnose, so this page and /ad/<key>
+        # run the same code rather than two implementations that agree today.
+        dx = diagnose(r)
+        if dx["stage"] in ("steady", "unreadable"):
+            # Nothing adverse moved. ads.fatigue flagged it -- most likely on
+            # a proxy symptom -- but no rate backs that up, so there is
+            # nothing to propose AND nothing to report.
+            #
+            # Checked on the stage and not on `metric is None`: metric is also
+            # None for the downstream stages, and testing it here swallowed
+            # every diagnosis before it reached the branch below.
+            continue
+        # str() on both sides: ad_key is a UUID object here and the two
+        # dicts are keyed by string, so a raw lookup silently misses and
+        # every card renders with no copy and no prior art.
+        key = str(r.get("ad_key"))
+        copy = copy_by_ad.get(key) or {}
+        tried, untried = angle_styles.get(_normalise(
+            _SEGMENT.split(name)[0]), (set(), set()))
+
+        # The movements, named, in the order the funnel runs. "2/5 symptoms"
+        # tells a reader that something is wrong; this tells them WHAT.
+        moved = []
+        # `field`, not `key`: this loop used to bind `key` and leave it set to
+        # "cpa", so the prior-art lookup below silently searched for an ad
+        # named after a metric and every proposal came back already_tested
+        # False. Shadowing a name across thirty lines is invisible in review.
+        for label, field in (("link CTR", "link_ctr"),
+                             ("conv rate", "conversion_rate"),
+                             ("LP views", "lp_view_rate"), ("CPM", "cpm"),
+                             ("CPA", "cpa")):
+            pct = _move(_rate(r.get("prior"), field), _rate(r.get("recent"), field))
+            if pct is None or abs(pct) < 5:
+                continue
+            moved.append({"metric": label,
+                          "prior": _rate(r.get("prior"), field),
+                          "recent": _rate(r.get("recent"), field),
+                          "pct": round(pct, 1)})
+
+        if not dx["creative_is_the_problem"]:
+            # A finding, not a proposal. It gets no arms and no metric on
+            # purpose: there is nothing on the AD to test, and giving it the
+            # shape of an experiment would invite somebody to file one.
+            found.append({
+                "source": "fatigue",
+                "title": name,
+                "ad_key": r.get("ad_key"),
+                "diagnosis": dx,
+                "moved": moved,
+                "ad_copy": copy,
+                "spend_recent": r.get("spend_recent"),
+                "window": f"{r.get('days_observed')} day(s) to "
+                          f"{r.get('recent_until')}",
+                "not_an_experiment": (
+                    "The creative is still doing its job. Rewriting it would "
+                    "change the one part that is working, and a creative test "
+                    "here would answer nothing."),
+            })
+            continue
+
+        metric = dx["metric"]
         out.append(_proposal(
             "fatigue",
             f"Refresh: {name}",
-            f"Does a new execution of this idea recover {metric}, or is the "
-            f"idea itself spent?",
-            f"A replacement creative on the same audience will beat the "
-            f"current one on {metric}. If it does not, the problem is the "
-            f"angle rather than the execution, and the next test is a "
-            f"different angle.",
-            f"{r.get('score')}/5 symptoms on {r.get('spend_recent')} of recent "
-            f"spend: {', '.join(symptoms)}. Measured over "
-            f"{r.get('days_observed')} day(s) to {r.get('recent_until')}.",
+            f"Does a new execution recover {metric}, or is the idea spent?",
+            f"A replacement on the same audience beats the current one on "
+            f"{metric}. If it does not, the problem is the angle rather than "
+            f"the execution, and the next test is a different angle.",
+            dx["says"] + " " + dx["change"]
+            + f" {r.get('spend_recent')} of spend over "
+              f"{r.get('days_observed')} day(s) to {r.get('recent_until')}.",
             [{"label": "current", "ad_keys": [r.get("ad_key")]},
              {"label": "replacement",
               "blocked_on": "the replacement creative, which does not exist "
                             "yet -- file this once it is live"}],
             metric,
             evidence=[{"pointer": f"ads.fatigue.score[{r.get('ad_key')}]",
-                       "value": r.get("score")},
-                      {"pointer": f"ads.fatigue.spend_recent[{r.get('ad_key')}]",
-                       "value": r.get("spend_recent")}],
-            prior=prior_by_ad.get(r.get("ad_key")),
+                       "value": r.get("score")}],
+            prior=prior_by_ad.get(key),
+            extra={"diagnosis": dx, "moved": moved, "ad_copy": copy,
+                   "styles_tried": sorted(tried),
+                   "styles_untried": sorted(untried),
+                   "brief": _brief(name, dx, moved, copy,
+                                   sorted(untried), metric)},
         ))
-    return out
+    return out, found
 
 
 def _vocabulary(rows: list[dict]) -> dict[str, dict]:
@@ -221,6 +561,27 @@ def _vocabulary(rows: list[dict]) -> dict[str, dict]:
             v["ads"] += 1
             v["spend"] += float(r.get("spend") or 0)
     return {k: v for k, v in seen.items() if len(v["heads"]) >= STYLE_REUSE}
+
+
+def _angle_styles(rows: list[dict],
+                  vocab: dict[str, dict]) -> dict[str, tuple[set, set]]:
+    """-> {angle: (styles it has run as, styles it has not)}.
+
+    This is the half that makes a refresh proposal a brief rather than a
+    complaint. "Rewrite it" is not a direction; "this angle has run as video
+    and UGC and has never run as static or carousel" is one, and it comes out
+    of names the account already wrote.
+    """
+    known = set(vocab)
+    tried: dict[str, set] = {}
+    for r in rows:
+        name = r.get("entity_name") or ""
+        if "|" not in name:
+            continue
+        parts = [_normalise(x) for x in _SEGMENT.split(name)]
+        tried.setdefault(parts[0], set()).update(
+            x for x in parts[1:] if x in known)
+    return {a: (t, known - t) for a, t in tried.items()}
 
 
 def _from_format_gaps(vocab: dict[str, dict],
@@ -384,13 +745,30 @@ async def propose(slug: str, days: int = 14, until: date | None = None,
     # rather than of the fortnight being reported -- and a fortnight is not
     # enough names for the reuse test to separate a style from a person's
     # name, which is the one thing that filter exists to do.
-    vocab = _vocabulary(await fetch_all(
+    vocab_rows = await fetch_all(
         "select entity_name, spend from ads.window_metrics(%s, %s, %s, 'ad')",
         (f["brand_id"], f["until"] - timedelta(days=VOCAB_DAYS), f["until"]),
-    ))
+    )
+    vocab = _vocabulary(vocab_rows)
+    angle_styles = _angle_styles(vocab_rows, vocab)
+
+    # The copy each tiring ad is currently running, so a card can show what
+    # would be rewritten rather than only its name. Read through ads.ad_copy,
+    # which intel/angles.py::queue already joins for the same reason.
+    keys = [r.get("ad_key") for r in (fat.get("rows") or []) if r.get("ad_key")]
+    copy_by_ad: dict = {}
+    if keys:
+        for row in await fetch_all(
+            "select ad_key, first_headline, first_body "
+            "  from ads.ad_copy where ad_key = any(%s)",
+            (keys,),
+        ):
+            copy_by_ad[str(row["ad_key"])] = row
 
     fmt_props, fmt_obs = _from_format_gaps(vocab, PER_SOURCE)
-    proposals = (_from_fatigue(fat, prior_by_ad)
+    refreshes, diagnoses = _from_fatigue(fat, prior_by_ad, copy_by_ad,
+                                         angle_styles)
+    proposals = (refreshes
                  + fmt_props
                  + _from_angle_gaps(cov, prior_by_angle)[:PER_SOURCE])
 
@@ -398,12 +776,17 @@ async def propose(slug: str, days: int = 14, until: date | None = None,
         "verb": "propose", **f,
         "proposal_count": len(proposals),
         "proposals": proposals,
+        "diagnosis_count": len(diagnoses),
+        "diagnoses": diagnoses,
         "observations": fmt_obs + _mix_effect(why),
         "note": (
-            "Proposals are questions about things that have not run; their "
-            "thresholds are blank because deciding what would convince you "
-            "after reading the window is not deciding it in advance. "
-            "Observations describe what already ran and cannot be "
-            "pre-registered -- they are where to look, not results. Nothing "
-            "here is filed and nothing here concludes."),
+            "Three kinds of statement, kept apart on purpose. PROPOSALS are "
+            "questions about things that have not run; their thresholds are "
+            "blank because deciding what would convince you after reading the "
+            "window is not deciding it in advance. DIAGNOSES are ads whose "
+            "creative is still working and whose problem is downstream of the "
+            "click -- there is nothing on the ad to test, so they carry no "
+            "arms and no metric. OBSERVATIONS describe what already ran and "
+            "cannot be pre-registered at all. Nothing here is filed, nothing "
+            "here concludes, and nothing here writes ad copy."),
     }

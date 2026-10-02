@@ -45,12 +45,20 @@ rather than something a person remembers to do.
 
 from __future__ import annotations
 
+import json
+import re
+
 from datetime import date, datetime, timezone
+from decimal import Decimal
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import chat
 from db import fetch_all, fetch_one
 
 from . import angles as angles_mod
+from . import creative as creative_mod
+from . import prose as prose_mod
 from . import experiments as exp_mod
 from . import gaps as gaps_mod
 from . import health, metrics, readings
@@ -205,10 +213,44 @@ async def brief(slug: str, days: int = 28, until: date | None = None,
         "awaiting_launch": (exps or {}).get("awaiting_launch"),
     }
 
+    # -- Which ads carry creative labels, which is a different question ---
+    #
+    # ads.untagged_spend counts an ad as tagged when facet_effective resolves
+    # an ANGLE for it. ads.angle is empty on this brand and will stay empty --
+    # it is filled by a sibling repo that is not running -- so that function
+    # correctly reports 100% untagged forever.
+    #
+    # Handed over alone, it reads as "no creative labels exist", and the model
+    # said exactly that in the 2026-09-20 brief: "Nothing in this account is
+    # tagged ... filing tags is what would let you ask which message is
+    # working". scripts/tag.py had labelled 243 ads by then. intel/creative.py
+    # hit the same wall and split the two the same way; this is that fix, in
+    # the other pack.
+    labels = await _section(degraded, "creative_labels", lambda: fetch_one(
+        "select count(*)::int                                     as ads, "
+        "       count(*) filter (where fe.hook is not null)::int   as with_a_hook, "
+        "       count(*) filter (where fe.offer is not null)::int  as with_an_offer "
+        "  from (select distinct f.ad_key "
+        "          from ads.fact_ad_day f "
+        "         where f.brand_id = %s::uuid "
+        "           and f.day between %s and %s) spent "
+        "  left join ads.facet_effective fe on fe.ad_key = spent.ad_key",
+        (bid, since, end)))
+
     facts = {
         "trust": trust, "spend": spend, "movement": movement,
         "creative": creative, "copy": copy, "angles": angles,
-        "untagged": {"from": "ads.untagged_spend", **(untagged or {})},
+        "untagged": {
+            "from": "ads.untagged_spend", **(untagged or {}),
+            "means": "spend whose ad resolves to an ANGLE. ads.angle is empty "
+                     "on this brand, so this is 0 by construction and says "
+                     "nothing about hook, offer or audience.",
+        },
+        "creative_labels": {
+            "from": "ads.facet_effective", **(labels or {}),
+            "means": "ads that spent and carry a hook or offer label. This is "
+                     "the one that says whether the copy has been read.",
+        },
         "experiments": experiments,
     }
 
@@ -286,3 +328,202 @@ def _proposals(angles: dict) -> list[dict]:
                 "how_to_file": "python -m intel record --kind experiment --json <path>",
             })
     return out
+
+
+# ---------------------------------------------------------------------------
+# The brief, in sentences.
+#
+# This lived inline in ui.py, in the POST /brief/summary.json handler, which
+# made it reachable only by pressing a button. scripts/brief.py publishes the
+# same document on a schedule and could not reach the prompt at all, so the
+# archive carried the cited readings and no prose.
+#
+# It is here rather than in ui.py because both callers are outside the web
+# process' concerns and one of them has no web process at all. Same move
+# intel/creative.py made for the suggestion, for the same reason.
+# ---------------------------------------------------------------------------
+
+BRIEF_SUMMARY_PROMPT = """\
+You are explaining this brand's Meta ads for the window below to the person who
+owns the business. They will not read the tables. They want to know what
+happened, why, and what is worth doing about it -- in their words, not the
+dashboard's.
+
+Brand: {brand}
+Window: {since} to {until} ({days} days). Settled through {settled}; the last
+{unsettled} day(s) can still move as Meta restates conversions.
+
+THE FACTS, already read from the verbs (row lists shortened -- run a verb only
+if you need something that is not here):
+
+{facts}
+
+WHAT THE RULES ALREADY FOUND -- build on these, do not repeat them back:
+
+{readings}
+
+WRITE IT LIKE THIS
+
+Eight to ten plain sentences in one or two paragraphs. No headings, no bullet
+points, no markdown, no opening line about what you are about to do and no
+closing offer.
+
+Lead with the result: what was spent, what it produced, what each result cost,
+and whether each of those is up or down against the window before -- if the
+facts carry the prior window, say the direction in words ("up from", "down
+from") and quote both figures; if they do not, say this is one window with
+nothing to compare it to.
+
+Then say why the cost per result moved, naming the one or two ads that drove
+most of it by their names as given. Put rate effect and mix effect into plain
+words every time: the rate effect is the ads themselves getting cheaper or
+dearer, the mix effect is money shifting toward cheaper or dearer ads. Do not
+use either term without its plain phrase beside it.
+
+Then what is tiring: the one or two ads worth refreshing first, and what the
+symptom is in ordinary language -- "costs more per thousand views than a
+fortnight ago", "fewer of the people who see it click" -- never the field
+name. Say whether the spend behind that reading is enough to trust.
+
+If parts of the brief are empty because nothing has been tagged or filed, say
+so once, in one sentence, and name what filing them would unlock. Then move on.
+
+`untagged` and `creative_labels` are TWO different questions and the names do
+not make that obvious. `untagged` is about ANGLES, which this brand has none of
+and never will, so it reads 100% untagged always -- it is NOT evidence that the
+copy is unlabelled. `creative_labels` is the one that says whether hook and
+offer have been filed. Read that one before writing anything about tagging, and
+never tell the reader to go and tag ads it says are already labelled.
+
+Close with what is worth looking at next -- two or three concrete things,
+taken from the readings and from waiting_on_you. Offer them as things to look
+at, not as decisions: nothing here approves, pauses or concludes anything.
+
+VOCABULARY
+
+Every figure in the facts is ALREADY WRITTEN THE WAY IT SHOULD APPEAR -- money
+as $15,748 or $41.44, rates as 0.33%. Copy them across exactly as they are.
+Do not strip the $ or the %, do not re-round, and do not turn "$41.44" back
+into a bare number. A figure with no unit on it is a count.
+
+Say "cost per lead" (or "cost per conversion" if the goal is not leads) and put
+"CPA" in brackets the first time only. Say "cost per thousand views" for CPM,
+"the share of people who clicked" for link CTR, "how often the same person saw
+it in a day" for daily frequency. Refer to ads by their names. Quote figures
+exactly as they appear in the facts; do not round, total, average, or work out
+a percentage that is not already there. If conversions in the last few days
+are part of a decline, say in one clause that those days are not final.
+"""
+
+
+async def summarise(doc: dict, slug: str | None = None) -> dict:
+    """Ask a session to explain an already-built brief. Returns chat.answer's dict.
+
+    Takes the DOC rather than a brand and a window, so the prose is written
+    against the same numbers the archive keeps. Handing it the brand instead
+    would mean building the brief twice and explaining the second one.
+
+    `default=str` rather than fastapi's jsonable_encoder: intel/ does not import
+    the web framework, and scripts/suggest.py already serialises its pack this
+    way. A Decimal becomes "34.8621" rather than 34.862100000000004, which is
+    what the prompt means by "quote figures exactly as they appear".
+    """
+    # gaps is the standing roadmap, not this window; waiting_on_you is small
+    # and is the answer to "so what do I do", so it rides along with facts.
+    payload = {"facts": doc.get("facts"),
+               "waiting_on_you": doc.get("waiting_on_you"),
+               "degraded": doc.get("degraded")}
+
+    # Formatted before the model sees it, by the same charts.money the tiles
+    # call, so the sentence and the card cannot drift apart. intel/prose.py
+    # carries the argument. The COPY is formatted; doc["facts"] keeps full
+    # precision, because a brief whose numbers were rounded for reading is one
+    # nobody can check afterwards.
+    payload = prose_mod.for_prose(payload)
+    readings = [r["says"] for r in doc.get("readings") or []]
+
+    question = None
+    for keep in (8, 3, 0):
+        question = BRIEF_SUMMARY_PROMPT.format(
+            brand=doc.get("brand") or slug, since=doc.get("since"),
+            until=doc.get("until"), days=doc.get("days"),
+            settled=doc.get("settled_through"),
+            unsettled=doc.get("unsettled_days"),
+            facts=json.dumps(creative_mod.compact(payload, keep), indent=1,
+                             ensure_ascii=False, default=str),
+            readings=json.dumps(readings, indent=1, ensure_ascii=False,
+                                default=str))
+        if len(question) <= creative_mod.PROMPT_BUDGET:
+            break
+    return await chat.answer(question, doc.get("brand") or slug)
+
+
+# ---------------------------------------------------------------------------
+# The published brief, read back.
+# ---------------------------------------------------------------------------
+
+#: Where scripts/brief.py writes, derived the same way it derives it.
+BRIEF_DIR = Path(__file__).resolve().parent.parent / "briefs"
+
+_DECIMAL = re.compile(r"^-?\d+(?:\.\d+)?$")
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
+
+
+def _revive(v: Any) -> Any:
+    """Undo json.dumps(default=str) for the two types it flattened.
+
+    A published brief stores every Decimal as a string and every date as a
+    string, and the page compares both -- `score >= 3`, a coverage date against
+    the prior window's start. Handing it strings would make those comparisons
+    raise, or worse, compare lexically and look fine. Numbers come back as
+    Decimal, exactly as the pack held them; dates and timestamps come back as
+    date and datetime. Nothing is recomputed, so nothing can drift.
+    """
+    if isinstance(v, dict):
+        return {k: _revive(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_revive(x) for x in v]
+    if isinstance(v, str):
+        if _DECIMAL.match(v):
+            return Decimal(v)
+        if _DAY.match(v):
+            return date.fromisoformat(v)
+        if _STAMP.match(v):
+            try:
+                return datetime.fromisoformat(v)
+            except ValueError:
+                return v
+    return v
+
+
+def latest(slug: str) -> dict | None:
+    """The newest published brief for this brand, or None.
+
+    Filename order is date order -- `YYYY-MM-DD-<brand>.json` -- the same
+    convention creative.latest_suggestion reads. A brand nothing has published
+    for yet is a normal answer on a fresh install, not a failure.
+
+    The readings are re-read against the STORED facts. The facts are the
+    archive and are not touched; re-running the rules over them yields the same
+    claims about the same numbers, in whatever wording readings.py writes
+    today, rather than the wording frozen into last week's file. The summary is
+    the model's and is rendered as it was published.
+    """
+    try:
+        files = sorted(BRIEF_DIR.glob(f"*-{slug}.json"))
+    except OSError:
+        return None
+    if not files:
+        return None
+    try:
+        doc = _revive(json.loads(files[-1].read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+    doc["file"] = files[-1].name
+    doc.setdefault("summary", None)
+    try:
+        doc["readings"] = readings.read(doc)
+    except Exception:  # a rule that cannot read an older pack keeps the old text
+        pass
+    return doc

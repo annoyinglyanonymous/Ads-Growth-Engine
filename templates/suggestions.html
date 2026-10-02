@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% block title %}Suggestions — Ads Intelligence{% endblock %}
+{% block page_title %}Suggestions{% endblock %}
+
+{#- =====================================================================
+    SUGGESTIONS. What the account is saying, and what to write next.
+
+    NO BUTTON. scripts/suggest.py publishes one after every import, so the
+    answer is here before the page is opened -- a suggestion somebody has to
+    remember to ask for is a suggestion nobody asks for.
+
+    THE PROSE SITS ABOVE THE EVIDENCE, and on this page that is right.
+    experiments.html argues the opposite for its Ideas list, because that log
+    is decisions somebody made and the ideas are unfiled guesses. Here the
+    tables are not decisions; they are the INPUT the suggestion was written
+    from, and a reader checking a sentence goes looking for the ad it quotes.
+
+    WHAT CHANGED, AND WHY
+
+    The suggestion argues about WORDING -- which openings the cheap ads share
+    and the dear ones lack -- so the evidence under it is now the wording:
+    the cheapest and dearest ads of one goal side by side, headline and
+    opening line quoted, cost per result beside each. It used to be three
+    eight-column tables per goal, with the words squeezed into a truncated
+    column between the numbers.
+
+    One goal at a time, behind tabs, because cost per result is not
+    comparable across goals. The hook, offer and audience labels scripts/tag.py
+    files are drawn as spend by label; they ran under mixed goals, so they
+    carry no cost ranking, and the heading says so once rather than per row.
+
+    "Wearing out" went: it was the Fatigue page's table, shorter. One line
+    points there instead. So did the format table and the coverage cards --
+    the brief carries both.
+    ===================================================================== -#}
+
+{% block toolbar %}
+<span class="chip">{{ d.days }} days to {{ d.until }}</span>
+{% endblock %}
+
+{% block body %}
+
+{#- ============================================================== THE AI READ -#}
+<section class="ai-read" aria-label="Worth writing next">
+  <div class="ai-read-head">
+    <span class="pill stop">AI read</span>
+    <span class="state">
+      {%- if published %}written {{ published.published_at[:10] }}
+        {%- if published.age_hours is not none %} &middot; {{ ago(published.age_hours) }}{% endif %}
+        {%- if published.until %} &middot; from the window to {{ published.until }}{% endif %}
+        &middot; it suggests; it files nothing
+      {%- else %}nothing published yet{% endif -%}
+    </span>
+  </div>
+  {#- Two shapes of published answer. Newer files carry `triage` -- one rated
+      card per campaign, rendered by _triage.html -- and older ones carry
+      `suggestion`, prose. Either way it lands inside this block, under the
+      same pill and stamp. `ignore missing` keeps the page rendering on a
+      checkout that predates the partial. -#}
+  {% if published and published.triage %}
+    {% include "_triage.html" ignore missing %}
+  {% elif published and published.suggestion %}
+    {% for para in published.suggestion.split('\n\n') if para.strip() %}
+      <p>{{ para.strip() }}</p>
+    {% endfor %}
+    {#- The prose is dated; the evidence under it is live. When an import has
+        landed since, the two disagree, and the reader is told which moved. -#}
+    {% if published.until and published.until != d.until | string %}
+      <div class="caveat" style="margin:12px 0 0">{{ ico.i('warn') }}<span>
+        Written against the window ending <strong>{{ published.until }}</strong>;
+        the evidence below now runs to <strong>{{ d.until }}</strong>. The next
+        import republishes it.</span></div>
+    {% endif %}
+  {% else %}
+    <p class="muted">No suggestion has been published for this brand yet. One is
+      written after every import &mdash; <span class="mono">python scripts/sync.py</span>
+      runs it, or <span class="mono">python scripts/suggest.py --brand {{ d.brand }}</span>
+      publishes one on its own. The evidence below is live either way.</p>
+  {% endif %}
+</section>
+
+
+{#- ======================================================= THE WORDING IT QUOTES -#}
+{% set asked = request.query_params.get('goal') %}
+{% set goals = d.goals or [] %}
+{% set names = goals | map(attribute='optimization_goal') | list %}
+{% set g = (goals | selectattr('optimization_goal', 'equalto', asked) | first) if asked in names else (goals | first) %}
+
+{% macro copy_card(r, top) -%}
+{% set body = (r.body or '') | replace('\n', ' ') | trim %}
+<div class="copy-card">
+  <div class="copy-text">
+    <div class="copy-ad">{{ r.ad or '--' }}</div>
+    <div class="copy-head">{{ r.headline or '--' }}</div>
+    {% if body %}<div class="copy-body">&ldquo;{{ body | truncate(130) }}&rdquo;</div>{% endif %}
+  </div>
+  <div class="copy-cost">
+    {#- money(None) is "--" where money(0) would be "$0.00": a null CPA is
+        undefined, not free. -#}
+    <div class="v">{{ money(r.cpa) }}</div>
+    <div class="n">{{ money(r.spend) }} &middot; {{ num(r.conversions) }} conv</div>
+    {% if r.cpa is not none %}<div style="margin-top:5px">{{ meter(r.cpa, top, width=90) | safe }}</div>{% endif %}
+  </div>
+</div>
+{%- endmacro %}
+
+<section class="stage" id="evidence" aria-label="The evidence it quotes">
+  <div class="stage-head">
+    <h2>The wording it quotes</h2>
+  </div>
+  {% if not goals %}
+    <div class="empty">No ads spent in this window, so there is nothing to read the copy against.</div>
+  {% else %}
+    <nav class="tabs" aria-label="Optimization goal">
+      {% for x in goals %}
+        <a href="/suggestions?brand={{ d.brand }}&amp;days={{ d.days }}&amp;goal={{ x.optimization_goal | urlencode }}#evidence"
+           {% if x.optimization_goal == g.optimization_goal %}aria-current="page"{% endif %}>{{ words(x.optimization_goal) }}<span class="c">{{ x.ads_run }}</span></a>
+      {% endfor %}
+    </nav>
+
+    {% if g.rankable_on_cost %}
+      {% set cpas = ((g.cheapest or []) + (g.dearest or [])) | map(attribute='cpa') | select | list %}
+      {% set top = cpas | max if cpas else none %}
+      <div class="boards">
+        <section class="board" aria-label="Cheapest per result">
+          <header><h2>Cheapest per result</h2></header>
+          {% for r in g.cheapest or [] %}{{ copy_card(r, top) }}{% endfor %}
+        </section>
+        <section class="board" aria-label="Dearest per result">
+          <header><h2>Dearest per result</h2></header>
+          {% for r in g.dearest or [] %}{{ copy_card(r, top) }}{% endfor %}
+        </section>
+      </div>
+      {% if g.ads_with_no_conversions %}
+        <p class="sub" style="margin-top:8px">{{ num(g.ads_with_no_conversions) }} ad(s)
+          under {{ words(g.optimization_goal) | lower }} spent without converting and are not ranked.</p>
+      {% endif %}
+    {% else %}
+      <div class="board" aria-label="By spend">
+        <header><h2>By spend &mdash; nothing converted under {{ words(g.optimization_goal) | lower }}, so there is no cost ranking</h2></header>
+        {% for r in g.by_spend_only or [] %}{{ copy_card(r, none) }}{% endfor %}
+      </div>
+    {% endif %}
+  {% endif %}
+</section>
+
+
+{#- ================================================ WHAT THE WRITING IS DOING
+    Spend by label, from ads.facet_performance. The labels ran under several
+    goals, so the function declines to rank them on cost -- that is a refusal
+    to compare two things measured differently, not a missing number. -#}
+{% set dims = d.dimensions or {} %}
+{% macro dim_panel(title, key) -%}
+{% set rows = (dims.get(key) or []) | rejectattr('value', 'none') | rejectattr('value', 'equalto', 'none') | list %}
+{% set tops = rows[:5] | map(attribute='spend') | list %}
+{% set top = tops | max if tops else none %}
+<section class="card" aria-label="{{ title }}">
+  <div class="card-head"><h2 class="card-t">{{ title }}</h2></div>
+  {% if not rows %}
+    <p class="small muted" style="margin:8px 0 0">No ad carries this label yet.</p>
+  {% else %}
+    {% for r in rows[:5] %}
+      <div class="dim-row">
+        <span class="dim-v">{{ r.value }}</span>
+        {{ meter(r.spend, top, width=100) | safe }}
+        <strong>{{ money(r.spend) }}</strong>
+        <span class="muted">{{ num(r.conversions) }} conv</span>
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{% if dims %}
+<section class="stage" aria-label="What the writing is doing">
+  <div class="stage-head">
+    <h2>What the writing is doing</h2>
+    <span class="state">spend by label &middot; mixed goals, so no cost ranking &middot;
+      Source: <code>ads.facet_performance</code></span>
+  </div>
+  <div class="grid">
+    {{ dim_panel('Hook it opens with', 'hook') }}
+    {{ dim_panel('Offer it asks for', 'offer') }}
+    {{ dim_panel('Who it addresses', 'audience') }}
+  </div>
+</section>
+{% endif %}
+
+
+{#- One line where the Fatigue table used to be copied. -#}
+{% set wearing = (d.tiring or []) | selectattr('score', 'ge', 2) | list %}
+{% if wearing %}
+  <div class="card" style="display:flex; align-items:center; gap:12px; padding:12px 16px">
+    <span><strong>{{ num(wearing | length) }}</strong> ad(s) show two or more fatigue
+      symptoms and need new copy first.</span>
+    <a href="/creative?brand={{ d.brand }}" style="margin-left:auto; font-weight:600">Open Fatigue &rarr;</a>
+  </div>
+{% endif %}
+
+{% endblock %}

@@ -3,13 +3,15 @@
 Everything Meta is here. This repo imports Meta's data into `public.meta_*`,
 derives every rate from it, holds the angle bank and the experiment record, and
 answers questions about all of it — through a dashboard and through a CLI the
-agent uses. `growth-engine` produces the copy those ads run and approves it.
+agent uses.
 
-That boundary is `CLAUDE.md`'s opening sentence, and it replaced an older one —
-"this repo reads, growth-engine writes" — when the importer moved here in
-`404a045`. Most of the rest of this file is a consequence of it.
+It was built as one half of a pair and now runs alone, which is worth knowing
+before you go looking for data: `public.campaigns`, `campaign_angles`,
+`campaign_assets` and `ad_reviews` are empty and stay empty, so the angle bank
+starts empty and the automatic tagging path is unavailable. `CLAUDE.md` has the
+full list under **What is structurally empty**, and says what to do instead.
 
-**Status: importing.** Migrations 001–013 are applied. The first structure pull
+**Status: importing.** Migrations 001–014 are applied. The first structure pull
 has run and `public.meta_ads` holds real rows. Two things are still missing
 before a number appears on the dashboard, and both are step 2 and step 3 below:
 the insights phase has not completed, and `ads.conversion_definition` is empty,
@@ -143,7 +145,6 @@ Until this runs, the staleness window is "whenever anyone remembers", which is
 worse than a nightly job because it is invisible.
 
 ```
-cd ..\growth-engine
 python scripts\sync.py --dry-run                 # what it would pull
 powershell -ExecutionPolicy Bypass -File scripts\register_sync_task.ps1
 ```
@@ -268,8 +269,15 @@ anything at all in `public`. Pull from Meta.
 
 The first three are decisions and carry a person's name. The fourth is enforced
 by the database rather than by convention — `ads_owner` holds `SELECT` on a
-named list of `public` tables and `INSERT` on none of them. The fifth takes
-minutes against a rate limit, which is why no page in either repo fires one.
+named list of `public` tables and `INSERT` on none of them.
+
+The fifth is narrower than it used to be. No page pulls **in-process**: the
+dashboard's Refresh button spawns `scripts\sync.py --phase insights` as a
+detached subprocess and polls `ads.pull` for progress, so the credential that
+writes `public.meta_*` never enters the web process and a closed tab cannot
+orphan a `running` row. A full pull still takes minutes against a rate limit,
+which is why the button is scoped to the insights phase and why `ask.py` still
+refuses to route to `live`.
 
 The guarantee is not that the agent lacks a password. It is that **no code path
 writes a decision.**

@@ -20,8 +20,13 @@ with two accounts must still get the working one.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import psycopg
+
+from meta_ads import client as client_mod
 from meta_ads import parse, store
 from meta_ads.client import GraphClient, MetaError, TokenInvalid
 
@@ -31,6 +36,21 @@ from meta_ads.client import GraphClient, MetaError, TokenInvalid
 #: why `meta_ad_insights` upserts on (ad_id, date) instead of only inserting.
 INSIGHTS_LOOKBACK_DAYS = 30
 INSIGHTS_RESTATEMENT_DAYS = 3
+
+#: The only ads whose creative is worth fetching.
+#:
+#: A paused ad's copy does not change, and 465 of act_153704749222533's 711 ads
+#: have never spent a cent -- so the unrestricted crawl that has never once
+#: succeeded was spending most of itself on ads nobody will ever read. Every ad
+#: that delivered in the last 30 days already has its copy in the warehouse;
+#: what the failure actually costs is NEW ads, which never arrive, so their
+#: insight rows are dropped on the foreign key and counted as
+#: `skipped_unknown_ad`.
+#:
+#: WITH_ISSUES and DISAPPROVED are included on purpose. They are ads somebody
+#: intended to run, their copy is current, and an ad that is disapproved is one
+#: you are more likely to go and read, not less.
+ACTIVE_ENOUGH = ("ACTIVE", "WITH_ISSUES", "DISAPPROVED")
 
 #: Days of insights per request.
 #:
@@ -86,7 +106,7 @@ async def _pull_structure(graph: GraphClient, account: dict, *,
                           api_version: str) -> dict:
     act_id = account["act_id"]
     counts = {"campaigns": 0, "adsets": 0, "ads": 0, "texts": 0,
-             "matched": 0}
+             "matched": 0, "statuses": 0}
     run_id = await store.start_pull(
         brand_id=brand_id, account_id=act_id, kind="structure",
         since=None, until=None, started_by=started_by,
@@ -106,10 +126,30 @@ async def _pull_structure(graph: GraphClient, account: dict, *,
             adsets, brand_id=brand_id, account_id=act_id)
 
         watermark = await store.last_successful_pull(act_id, "structure")
-        updated_since = watermark["finished_at"] if watermark else None
+        # STARTED, not finished. A structure run takes minutes, and an ad
+        # edited between its start and its finish was listed before the edit
+        # and has an updated_time before `finished_at` -- so a watermark at the
+        # finish skips that edit on every later run, and the warehouse keeps
+        # the old wording for good. Re-reading the few ads edited during the
+        # run is the cost of never losing one.
+        updated_since = (watermark.get("started_at") or watermark["finished_at"]
+                         if watermark else None)
 
+        # PASS ONE, cheap: every ad, id and status only, no creative. This is
+        # what keeps a paused ad from sitting in the warehouse marked ACTIVE
+        # forever now that the heavy pass below only asks for live ones. It is
+        # also the pass that gives the account's true ad count (944 on
+        # 2026-09-25), which the old single-pass crawl never lived to report.
+        statuses = [row async for row in graph.ads(
+            act_id, fields=client_mod.AD_STATUS_FIELDS)]
+        counts["statuses"] = await store.set_ad_statuses(statuses)
+
+        # PASS TWO, heavy: creatives, and only for ads worth the expansion.
+        # `updated_since` still applies on top -- once one pull succeeds, this
+        # narrows again to the handful edited since.
         candidates = await store.candidates_for_match(brand_id)
-        async for ad in graph.ads(act_id, updated_since=updated_since):
+        async for ad in graph.ads(act_id, updated_since=updated_since,
+                                  effective_status=ACTIVE_ENOUGH):
             result = await store.upsert_ad(
                 ad, brand_id=brand_id, account_id=act_id,
                 candidates=candidates)
@@ -125,11 +165,44 @@ async def _pull_structure(graph: GraphClient, account: dict, *,
         raise
 
 
+def _account_today(account: dict) -> date:
+    """Today in the AD ACCOUNT's timezone, which is the only day Meta means.
+
+    An insights date is a day in the account's own timezone (042 says so on
+    meta_ad_accounts.timezone_name), and this used to read
+    `datetime.now(timezone.utc).date()`. For a US account that asks Meta for a
+    day that has not started yet.
+
+    Observed on 2026-09-22 at 05:35 UTC against act_153704749222533
+    (America/Los_Angeles, so still 2026-09-21 locally): the window ran to
+    2026-09-22, Meta returned NOTHING for it, and the watermark advanced to a
+    day with no rows -- so the dashboard reported "insights through
+    2026-09-22" over an empty day. One wasted day per request, and a watermark
+    a day ahead of the data.
+
+    `ads.settled_through()` already does this correctly in SQL and says in its
+    own comment that it reads the account timezone "rather than trusting the
+    importer" precisely because of this bug. This makes the importer agree.
+
+    Falls back to UTC, loudly enough to be findable: an account whose
+    timezone_name is null has never completed a structure pull, and a missing
+    tzdata entry is a packaging problem rather than a reason to import
+    nothing.
+    """
+    name = account.get("timezone_name")
+    if not name:
+        return datetime.now(timezone.utc).date()
+    try:
+        return datetime.now(ZoneInfo(name)).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        return datetime.now(timezone.utc).date()
+
+
 async def _pull_insights(graph: GraphClient, account: dict, *,
                          brand_id: str, started_by: str, api_version: str,
                          since: date | None, until: date | None) -> dict:
     act_id = account["act_id"]
-    today = datetime.now(timezone.utc).date()
+    today = _account_today(account)
     window_until = until or today
     if since is not None:
         window_since = since
@@ -178,6 +251,12 @@ async def _pull_insights(graph: GraphClient, account: dict, *,
         await store.finish_pull(
             run_id, status="failed", counts=counts, error=str(exc))
         raise
+
+
+#: A phase that loses its database connection is run again this many times in
+#: all, after a pause long enough for a pooler restart to finish.
+DB_ATTEMPTS = 2
+DB_RETRY_WAIT_SECONDS = 15
 
 
 async def run_pull(*, brand_slug: str, started_by: str,
@@ -239,16 +318,38 @@ async def run_pull(*, brand_slug: str, started_by: str,
             ):
                 if phase not in phases:
                     continue
-                try:
-                    summary[phase] = await run()
-                except TokenInvalid:
-                    # Still raised, still for client.py's reason: every account
-                    # and every phase fails a dead token identically, so
-                    # carrying on only spends time learning that again.
-                    raise
-                except MetaError as exc:
-                    summary["ok"] = False
-                    errors.append(f"{phase}: {type(exc).__name__}: {exc}")
+                for attempt in range(1, DB_ATTEMPTS + 1):
+                    try:
+                        summary[phase] = await run()
+                        break
+                    except TokenInvalid:
+                        # Still raised, still for client.py's reason: every
+                        # account and every phase fails a dead token
+                        # identically, so carrying on only spends time
+                        # learning that again.
+                        raise
+                    except MetaError as exc:
+                        summary["ok"] = False
+                        errors.append(f"{phase}: {type(exc).__name__}: {exc}")
+                        break
+                    except psycopg.OperationalError as exc:
+                        # THE DATABASE, NOT META. Supabase dropped the
+                        # connection mid-phase on 2026-09-22 and 2026-09-25,
+                        # both times a structure run gone long. This used to
+                        # propagate out of run_pull, so a blip in structure
+                        # cost the brand its INSIGHTS too -- a different edge
+                        # and table that never got asked. Every write here is
+                        # an upsert or an update, so running the phase again is
+                        # safe; the pool's connection check discards the dead
+                        # socket and lends a fresh one.
+                        if attempt < DB_ATTEMPTS:
+                            await asyncio.sleep(DB_RETRY_WAIT_SECONDS)
+                            continue
+                        summary["ok"] = False
+                        errors.append(
+                            f"{phase}: database connection lost "
+                            f"{DB_ATTEMPTS} times: {type(exc).__name__}: "
+                            f"{str(exc).splitlines()[0] if str(exc) else ''}")
 
             # Kept as one string so existing readers -- scripts/sync.py's log
             # line, __main__'s JSON -- still show something, but named by phase

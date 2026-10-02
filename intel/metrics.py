@@ -119,6 +119,18 @@ async def why(slug: str, days: int = 7, until: date | None = None,
         """,
         (f["brand_id"], f["since"], f["until"]),
     )
+    # The part of the move the split cannot assign, and how much it covers --
+    # from the function the brief reads, so the two pages cannot disagree.
+    # Without unattributable_effect, rate + mix does not add up to the net and
+    # a reader who checks the arithmetic trusts neither number.
+    bridge = await fetch_one(
+        """
+        select unattributable_effect, attributable_share, attributable_ads
+          from ads.cpa_bridge_totals(%s, %s, %s)
+        """,
+        (f["brand_id"], f["since"], f["until"]),
+    )
+    totals = {**(totals or {}), **(bridge or {})}
     changes = await _changes(f["brand_id"], f["since"], f["until"])
     return {"verb": "why", **f, "totals": totals,
             "row_count": len(rows), "rows": rows,

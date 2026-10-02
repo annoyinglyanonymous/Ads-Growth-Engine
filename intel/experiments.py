@@ -96,8 +96,10 @@ async def experiment(slug: str, name: str) -> dict:
         return {"verb": "experiment", "brand": b["slug"], "experiment": head,
                 "arms": arms, "result": None, "state": "proposed",
                 "note": "Not launched, so there is no window and no result. "
-                        "started_on is set in the UI when the test goes live; "
-                        "it is not part of the agent write shape."}
+                        "started_on is recorded by the person who launches it, "
+                        "with the statement in CLAUDE.md ('Starting and "
+                        "concluding an experiment'); it is not part of the "
+                        "agent write shape."}
 
     result = await fetch_all(
         """

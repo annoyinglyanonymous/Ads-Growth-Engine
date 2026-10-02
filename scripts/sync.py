@@ -2,6 +2,7 @@
 
     python scripts/sync.py                      # every brand with an account
     python scripts/sync.py --brand renegade     # just one
+    python scripts/sync.py --phase insights     # just the numbers
     python scripts/sync.py --dry-run            # say what it would pull
 
 WHY THIS EXISTS
@@ -25,6 +26,52 @@ WHAT IT ADDS OVER THE BARE COMMAND
   * An exit code Task Scheduler can show: 0 all good, 1 something failed, 2 a
     run was already in progress.
 
+WHY --phase EXISTS HERE TOO
+
+`meta_ads/__main__.py` has carried this flag since the phases were split. The
+reason it is now on the scheduled wrapper as well is the dashboard's refresh
+button, which spawns this script rather than importing the importer: structure
+and insights use different Graph edges and fail independently, and today
+structure is the broken one. A refresh scoped to `insights` is one Graph call
+and a couple of seconds; an unscoped one is five to nine minutes of pagination
+that has never yet succeeded on act_153704749222533. A button wired to the
+second is a button that looks broken.
+
+Unscoped is still the default, and the scheduled task still runs both.
+
+WHAT RUNS AFTER IT
+
+A tagging pass, then a suggestion -- in that order, because the suggestion is
+better when the tags are current. scripts/tag.py labels what each new or
+rewritten ad ARGUES, which is what makes hook, offer and audience countable;
+without it the creative analysis can only talk about ads one at a time.
+
+The first tagging run pays for every ad that has spent. After that it selects
+on (ad_key, copy_hash) having no facet, so an ordinary run sees only ads that
+are new or whose copy changed -- usually none, and it exits in seconds.
+
+A suggestion, unless --no-suggest. `scripts/suggest.py` reads the copy that was
+just imported and publishes what is worth writing next, so the answer is on the
+page before anybody opens it -- a suggestion somebody has to remember to ask for
+is a suggestion nobody asks for, which is this file's own argument about the
+pull, one layer up.
+
+Then the brief, unless --no-brief. `scripts/brief.py` is weekly and gated on
+`ads.settled_through()`, so on six days in seven it looks at the week, sees it
+has not settled, exits 3 and costs nothing -- which is why it can sit on a
+twice-daily job rather than needing a second scheduled task nobody registered.
+Exit 3 is logged as the ordinary thing it is, not as a failure.
+
+--no-suggest skips both. It has only ever meant "do not make model calls after
+the pull", and the brief now makes one.
+
+It runs as a SEPARATE PROCESS and its outcome does NOT change this one's exit
+code. The import either happened or it did not, and that is what a scheduler
+needs to branch on; a model call that failed afterwards is a different fact, and
+folding it into exit 1 would have somebody re-running a pull that worked. It is
+logged here and again in logs/suggest.log, and `python scripts/suggest.py` is
+the way to alert on it separately.
+
 WHAT IT DOES NOT DO
 
 Backfills. `--since` is deliberately absent: a 13-month backfill is chunked, run
@@ -38,6 +85,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -54,6 +102,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import identity  # noqa: E402
 from db_meta import fetch_all, pool  # noqa: E402
 from meta_ads import pull as meta_pull  # noqa: E402
+
 
 LOCK = PROJECT_ROOT / ".sync.lock"
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -109,18 +158,20 @@ async def brands_to_pull(only: str | None) -> list[str]:
     return slugs
 
 
-async def run(only: str | None, dry_run: bool) -> int:
+async def run(only: str | None, dry_run: bool,
+              phases: tuple[str, ...] = ("structure", "insights")) -> int:
     # The pool is opened by the FastAPI lifespan, so a CLI entry point has to
     # open it itself -- meta_ads/__main__.py:79 does the same. Without it every
     # query raises PoolClosed, which reads as a database problem and is not one.
     await pool.open()
     try:
-        return await _run(only, dry_run)
+        return await _run(only, dry_run, phases)
     finally:
         await pool.close()
 
 
-async def _run(only: str | None, dry_run: bool) -> int:
+async def _run(only: str | None, dry_run: bool,
+               phases: tuple[str, ...]) -> int:
     slugs = await brands_to_pull(only)
     if not slugs:
         # Not a crash and not a success. meta_ads/__main__.py takes the same
@@ -131,14 +182,15 @@ async def _run(only: str | None, dry_run: bool) -> int:
         return 1
 
     if dry_run:
-        log(f"would pull: {', '.join(slugs)}")
+        log(f"would pull {'+'.join(phases)} for: {', '.join(slugs)}")
         return 0
 
     failed = False
     for slug in slugs:
         try:
             summaries = await meta_pull.run_pull(
-                brand_slug=slug, started_by=identity.cli_operator())
+                brand_slug=slug, started_by=identity.cli_operator(),
+                phases=phases)
         except Exception as exc:
             # Per BRAND isolation. run_pull already isolates per account, but a
             # missing token or an invalid one propagates out of it by design --
@@ -166,26 +218,98 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brand", help="one brand; default is every brand with an "
                                    "active account")
+    p.add_argument("--phase", choices=("structure", "insights"), default=None,
+                   help="run only this half of the pull. Default is both. "
+                        "structure is the ad list and its copy, insights the "
+                        "daily numbers; they use different Graph edges, so one "
+                        "being broken is not a reason to skip the other.")
+    p.add_argument("--no-brief", action="store_true",
+                   help="skip the weekly brief; the suggestion still runs")
+    p.add_argument("--no-suggest", action="store_true",
+                   help="import only; do not tag or publish a creative "
+                        "suggestion afterwards")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
 
+    phases = (a.phase,) if a.phase else ("structure", "insights")
+
     if a.dry_run:
-        return asyncio.run(run(a.brand, True))
+        return asyncio.run(run(a.brand, True, phases))
 
     if not take_lock():
         return 2
 
-    log(f"sync starting ({a.brand or 'all brands'})")
+    log(f"sync starting ({a.brand or 'all brands'}, {'+'.join(phases)})")
     try:
-        code = asyncio.run(run(a.brand, False))
+        code = asyncio.run(run(a.brand, False, phases))
     except Exception as exc:
         log(f"sync ABORTED  {type(exc).__name__}: {exc}")
         code = 1
     finally:
         LOCK.unlink(missing_ok=True)
 
+    # AFTER the lock is released and after the pull's own exit code is
+    # settled. suggest.py takes its own lock, and running it inside this one
+    # would mean a slow model call kept the next scheduled PULL out.
+    if code == 0 and not a.no_suggest:
+        # Tags first: the suggestion and the brief both read hook/offer/
+        # audience, and reading them BEFORE this run's new ads are labelled
+        # would describe the account as it was one import ago.
+        _run_after("tag.py", a.brand)
+        _run_after("suggest.py", a.brand, extra=("--force",), timeout=600,
+                   benign={3: "nothing to publish for"})
+        if a.no_brief:
+            log("skipping the brief (--no-brief)")
+        else:
+            _run_after("brief.py", a.brand, timeout=900, benign={
+                3: "this week has not settled yet, so there is nothing to "
+                   "publish; it will go out on the first run after it does"})
+    elif a.no_suggest:
+        log("skipping the follow-on analysis (--no-suggest)")
+    else:
+        log("not analysing: the import did not succeed, and an analysis "
+            "written from a failed import describes numbers that did not land")
+
     log(f"sync finished, exit {code}")
     return code
+
+
+def _run_after(script: str, brand: str | None, *, extra: tuple = (),
+               timeout: int = 1800, benign: dict | None = None) -> None:
+    """Run a follow-on script. Never changes this script's exit code.
+
+    The import either happened or it did not, and that is what a scheduler
+    branches on. A tagging pass that failed afterwards is a different fact,
+    logged here and again in its own log.
+
+    `benign` maps an exit code to what it actually means, because two of these
+    scripts use a non-zero code for a perfectly ordinary outcome and logging
+    those as failures is how a log stops being read. suggest.py exits 3 when a
+    brand spent nothing; brief.py exits 3 on the six mornings a week when the
+    week has not settled yet. sys.executable, not `python`: a scheduled task
+    inherits no PATH worth trusting, and sync.bat already went to the trouble
+    of finding the venv -- spending that only to call a bare `python` would
+    undo it.
+    """
+    cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / script), *extra]
+    if brand:
+        cmd += ["--brand", brand]
+    try:
+        done = subprocess.run(cmd, cwd=str(PROJECT_ROOT), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log(f"{script}: timed out after {timeout}s; the import is unaffected")
+        return
+    except OSError as exc:
+        log(f"{script}: could not start ({type(exc).__name__}: {exc}); "
+            f"the import is unaffected")
+        return
+    if done.returncode == 0:
+        log(f"{script}: done")
+    elif benign and done.returncode in benign:
+        log(f"{script}: {benign[done.returncode]}")
+    else:
+        log(f"{script}: exit {done.returncode} -- see its own log. The import "
+            f"itself succeeded.")
 
 
 if __name__ == "__main__":

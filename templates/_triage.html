@@ -1,0 +1,223 @@
+{#- One card per campaign, from `published.triage`, in three groups -- Critical
+    / Needs changes / No change -- each folded shut until it is clicked.
+
+    Included by suggestions.html inside its "AI read" block, so this renders
+    only the groups: no heading, no pill of its own. Reads only `published` and
+    the money/num globals.
+
+    FOLDED, because twenty-four open cards is a wall nobody reads. A group is a
+    <details>: the summary bar says how many campaigns it holds and names them,
+    and a click opens its cards. No script and no button -- the page has
+    neither, and tests/test_suggestions.py keeps it that way.
+
+    EVERY PROBLEM CARRIES ITS FIX. A card lists what is wrong, with the
+    evidence, and under each one how to fix it. A file published before that
+    shape existed has fixes only (`changes`, or problems with no `problem`),
+    and those render as fixes rather than inventing a problem for them.
+
+    RED / AMBER / GREEN, and this is the only template allowed them. The rest
+    of the dashboard is blue and white (tests/test_charts_and_templates.py::
+    test_the_dashboard_is_blue_and_white); the user granted this panel an
+    exception by name on 2026-09-23. The word still carries the rating too,
+    so a reader who cannot tell the hues apart loses nothing.
+
+    Red first, then yellow, then green: the order a reader works through it.
+    Within a group, the pack's order, which is spend. The figures on a card are
+    the pack's (creative.triage_from attaches them), never the model's. -#}
+{% set t = published.triage %}
+{% set groups = [
+     ('red',    'Critical',      'Look at these first',
+      t | selectattr('rating', 'equalto', 'red') | list),
+     ('yellow', 'Needs changes', 'Some changes worth making',
+      t | selectattr('rating', 'equalto', 'yellow') | list),
+     ('green',  'No change',     'Leave these alone',
+      t | selectattr('rating', 'equalto', 'green') | list),
+     ('none',   'Not rated',     'The reply did not rate these',
+      t | rejectattr('rating') | list),
+   ] %}
+
+<style>
+  .tgroup { border:1px solid var(--line); border-left-width:5px;
+    border-radius:var(--radius); background:var(--surface); margin:0 0 10px; }
+  .tgroup.red    { border-left-color:var(--err);    }
+  .tgroup.yellow { border-left-color:var(--warn);   }
+  .tgroup.green  { border-left-color:var(--ok);     }
+  .tgroup.none   { border-left-color:var(--subtle); }
+  .tgroup > summary { list-style:none; cursor:pointer; padding:12px 16px;
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .tgroup > summary::-webkit-details-marker { display:none; }
+  .tgroup > summary::after { content:"Show"; margin-left:auto; font-size:12px;
+    font-weight:600; color:var(--accent); }
+  .tgroup[open] > summary::after { content:"Hide"; }
+  .tgroup > summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  .tgroup .count { font-size:20px; font-weight:700; color:var(--ink-2);
+    min-width:1.6em; }
+  .tgroup .sub { font-size:12.5px; color:var(--muted); }
+  .tgroup .names { flex-basis:100%; font-size:12px; color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tgroup[open] .names { display:none; }
+  .tgroup .body { padding:0 16px 16px; }
+
+  .tpill { display:inline-block; font-size:11px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.04em; padding:2px 9px;
+    border-radius:999px; border:1px solid; }
+  .tpill.red    { color:var(--err);   background:var(--err-bg);  border-color:var(--err-line);  }
+  .tpill.yellow { color:var(--warn);  background:var(--warn-bg); border-color:var(--warn-line); }
+  .tpill.green  { color:var(--ok);    background:var(--ok-bg);   border-color:var(--ok-line);   }
+  .tpill.none   { color:var(--muted); background:var(--surface); border-color:var(--line);    }
+
+  .triage-grid { display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+  .tcard { border:1px solid var(--line); border-radius:var(--radius);
+    padding:12px 14px; background:var(--surface); }
+  .tcard h3 { font-size:13.5px; margin:0 0 4px; line-height:1.35;
+    color:var(--accent); overflow-wrap:anywhere; }
+  .tcard .figs { font-size:12px; color:var(--muted); margin:0 0 8px; }
+  .tcard .verdict { margin:0 0 10px; font-size:13px; }
+  .tcard ol { margin:0; padding:0; list-style:none; counter-reset:p; }
+  .tcard li { counter-increment:p; border-top:1px solid var(--line);
+    padding:9px 0 0; margin:9px 0 0; font-size:13px; }
+  .tcard .lbl { display:block; font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.05em; margin:0 0 2px; }
+  .tcard .problem .lbl::before { content:"Problem " counter(p); }
+  .tcard .problem .lbl { color:var(--err); }
+  .tcard .fix { margin-top:6px; padding:7px 10px; border-radius:var(--radius-sm);
+    background:var(--accent-soft); }
+  .tcard .fix .lbl { color:var(--accent); }
+
+  .tcard .note { font-size:12px; color:var(--muted); background:var(--surface-3);
+    border-radius:var(--radius-sm); padding:6px 9px; margin:0 0 10px; }
+  .tcard .note.warn { color:var(--warn); background:var(--warn-bg); }
+  .since { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+    font-size:12.5px; color:var(--muted); margin:0 0 12px; }
+  .since b { color:var(--ink-2); }
+  .ptag { display:inline-block; font-size:10.5px; font-weight:700;
+    padding:1px 7px; border-radius:999px; margin-left:6px;
+    text-transform:none; letter-spacing:0; vertical-align:1px; }
+  .ptag.new   { color:var(--accent); background:var(--accent-soft); }
+  .ptag.still { color:var(--warn);   background:var(--warn-bg); }
+  .ptag.fixed { color:var(--on-accent); background:var(--ok); margin:0 6px 0 0; }
+  .ptag.moved { color:var(--ok); background:var(--surface); border:1px solid var(--ok-line);
+    margin:0 6px 0 0; }
+  .tcard .done { margin-top:12px; padding:8px 10px; border-radius:var(--radius-sm);
+    background:var(--ok-bg); font-size:12.5px; }
+  .tcard .done .lbl { color:var(--ok); }
+  .tcard .done div + div { margin-top:6px; }
+  .tcard .quiet { margin-top:10px; font-size:12px; color:var(--muted); }
+  .tcard .quiet .lbl { color:var(--muted); }
+</style>
+
+{#- SINCE THE LAST REVIEW. Counts of what the checker in creative.triage_from
+    decided, not of what the model claimed. Only files published after
+    2026-09-24 carry these fields, so an older file shows nothing here. -#}
+{% set resolved_n = t | map(attribute='resolved') | select('defined') | map('length') | sum %}
+{% set fixed = namespace(you=0) %}
+{% for c in t %}{% for x in c.resolved or [] %}{% if x.by == 'you' %}{% set fixed.you = fixed.you + 1 %}{% endif %}{% endfor %}{% endfor %}
+{% set dropped_n = t | map(attribute='dropped') | select('defined') | map('length') | sum %}
+{% set open_n = namespace(still=0, new=0) %}
+{% for c in t %}{% for p in c.problems or [] %}{% if p is mapping %}
+  {%- if p.status == 'still_open' %}{% set open_n.still = open_n.still + 1 %}
+  {%- elif p.status == 'new' %}{% set open_n.new = open_n.new + 1 %}{% endif %}
+{%- endif %}{% endfor %}{% endfor %}
+{% if published.previous_file %}
+<div class="since">
+  <span>Since the last review ({{ published.previous_file[:10] }}):</span>
+  <span class="tpill green">{{ resolved_n }} resolved
+    {%- if resolved_n %} ({{ fixed.you }} by a change you made){% endif %}</span>
+  <span class="tpill yellow">{{ open_n.still }} still open</span>
+  <span class="tpill none">{{ open_n.new }} new</span>
+  {% if dropped_n %}<span class="tpill none">{{ dropped_n }} no longer mentioned</span>{% endif %}
+  {% if published.data_changed == false %}
+    <span>&middot; <b>no new data since then</b>, so nothing could be marked resolved</span>
+  {% endif %}
+</div>
+{% endif %}
+
+{% for key, label, sub, rows in groups if rows %}
+<details class="tgroup {{ key }}">
+  <summary>
+    <span class="count">{{ rows|length }}</span>
+    <span class="tpill {{ key }}">{{ label }}</span>
+    <span class="sub">{{ sub }}</span>
+    {% set gres = rows | map(attribute='resolved') | select('defined') | map('length') | sum %}
+    {% if gres %}<span class="tpill green">{{ gres }} resolved</span>{% endif %}
+    <span class="names">{{ rows | map(attribute='campaign') | join(' · ') }}</span>
+  </summary>
+  <div class="body">
+    <div class="triage-grid">
+    {% for c in rows %}
+      {#- `problems` from files published after 2026-09-24; `changes` before. -#}
+      {% set items = c.problems if c.problems is defined
+                     else (c.changes or []) | map('string') | list %}
+      <article class="tcard">
+        <h3>{{ c.campaign }}</h3>
+        <div class="figs">
+          {{ money(c.spend) }} spent &middot; {{ num(c.conversions) }} conv
+          {%- if c.cpa is not none %} &middot; {{ money(c.cpa) }} CPA{% endif %}
+          {%- if c.optimization_goals %} &middot;
+            {{ c.optimization_goals | join(', ') }}{% endif %}
+          {%- if c.status and c.status != 'ACTIVE' %} &middot;
+            {{ c.status | lower }}{% endif %}
+        </div>
+        <p class="verdict">{{ c.why | replace('\\n', ' ') }}</p>
+        {% if c.rating_adjusted_from %}
+          <div class="note">The review rated this {{ c.rating_adjusted_from }};
+            the numbers put it here{% if c.rating_reasons %}:
+            {{ c.rating_reasons | join('; ') }}{% endif %}.</div>
+        {% endif %}
+        {% if c.unverified_figures %}
+          <div class="note warn">Not found in the data:
+            {{ c.unverified_figures | join(', ') }}. Probably worked out by the
+            review rather than read from the numbers; check before relying on it.</div>
+        {% endif %}
+        {% if items %}
+          <ol>
+          {% for p in items %}
+            <li>
+              {% if p is mapping and p.problem %}
+                <div class="problem"><span class="lbl">
+                  {%- if p.status == 'still_open' %}<span class="ptag still">still open since {{ p.open_since }}</span>
+                  {%- elif p.status == 'new' and published.previous_file %}<span class="ptag new">new</span>{% endif -%}
+                  </span>{{ p.problem }}</div>
+              {% endif %}
+              {% set fix = p.fix if p is mapping else p %}
+              {% if fix %}
+                <div class="fix"><span class="lbl">How to fix it</span>
+                  {{- fix | replace('\\n', ' ') }}</div>
+              {% endif %}
+            </li>
+          {% endfor %}
+          </ol>
+        {% endif %}
+        {% if c.resolved %}
+          <div class="done"><span class="lbl">Resolved since the last review</span>
+          {% for x in c.resolved %}
+            <div>
+              {%- if x.by == 'you' %}<span class="ptag fixed">fixed &mdash; you changed it</span>
+              {%- elif x.by == 'numbers' %}<span class="ptag moved">no longer showing in the numbers</span>
+              {%- endif %}
+              <b>{{ x.problem }}</b><br>
+              <span class="small">Open since {{ x.open_since }}.
+              {%- if x.change %} What changed: {{ x.change }}.{% endif %}
+              {{ x.evidence }}</span></div>
+          {% endfor %}
+          </div>
+        {% endif %}
+        {% if c.dropped %}
+          <div class="quiet"><span class="lbl">No longer mentioned &mdash; not confirmed fixed</span>
+          {% for x in c.dropped %}<div>{{ x.problem }} <span class="small">(raised {{ x.open_since }})</span></div>{% endfor %}
+          </div>
+        {% endif %}
+      </article>
+    {% endfor %}
+    </div>
+  </div>
+</details>
+{% endfor %}
+
+<p class="small muted" style="margin-top:4px; max-width:80ch">
+  Click a group to open its campaigns. Each campaign is judged only against ad
+  groups with the same optimization goal. Red means look here first; it
+  decides nothing. A campaign whose ad groups span two goals shows no CPA,
+  because that number would mix two different events.
+</p>

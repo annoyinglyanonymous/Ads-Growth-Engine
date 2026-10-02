@@ -65,6 +65,26 @@ async def record(kind: str, path: str, identity: str) -> dict:
         raise ShapeError(f"{path} must contain a JSON object, not a "
                          f"{type(payload).__name__}.")
 
+    return await record_payload(kind, payload, identity)
+
+
+async def record_payload(kind: str, payload: dict, identity: str) -> dict:
+    """The same write, from a dict already in hand. Validated identically.
+
+    `record` above still takes a PATH and still should: a person filing one
+    proposal should leave the thing they filed on disk, because "a payload that
+    arrived down a pipe leaves nothing to inspect when the row turns out to be
+    wrong".
+
+    A PASS is the case that reasoning does not cover. scripts/tag.py proposes
+    two hundred facets in one run; writing two hundred single-row files to read
+    them straight back would be ceremony, not evidence. It writes ONE file with
+    every proposal and every dropped row, then files from memory -- so there is
+    more on disk to look at afterwards, not less.
+
+    Same `validate`, same shapes, same three kinds. Nothing here is a shortcut
+    past the registry; it is the registry with the file step lifted out.
+    """
     validate(kind, payload)
     brand_id = await _brand_id(payload["brand"])
 
@@ -135,8 +155,11 @@ async def _angle_proposal(brand_id: str, d: dict, identity: str) -> dict:
                 "why": f"an angle with slug {d['slug']!r} already exists for "
                        f"this brand. Proposing it again would not change it."}
     return {"kind": "angle_proposal", "written": True, **row,
-            "next": "It is 'proposed'. A person activates it in the UI; until "
-                    "then it is excluded from coverage and from the bank."}
+            "next": "It is 'proposed'. A person activates it by running the "
+                    "signing statement in CLAUDE.md ('Approving an angle') "
+                    "under their own name -- there is no verb or button for "
+                    "it. Until then it is excluded from coverage and from "
+                    "the bank."}
 
 
 async def _experiment(brand_id: str, d: dict, identity: str) -> dict:
@@ -180,9 +203,10 @@ async def _experiment(brand_id: str, d: dict, identity: str) -> dict:
             arms.append((await cur.fetchone())["label"])
 
     return {"kind": "experiment", "written": True, **row, "arms": arms,
-            "next": "It is proposed, not running. started_on is set in the UI "
-                    "when the test actually goes live, and the conclusion is "
-                    "never written from here."}
+            "next": "It is proposed, not running. The person who launches it "
+                    "records started_on with the statement in CLAUDE.md "
+                    "('Starting and concluding an experiment') once the new ad "
+                    "is live; the conclusion is never written from here."}
 
 
 async def close() -> None:

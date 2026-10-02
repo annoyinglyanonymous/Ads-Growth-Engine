@@ -23,12 +23,19 @@
        somebody to copy. A proportional shell command is a shell command
        people mistype. Numerals stay Instrument Sans with tabular figures.
 
-    2. Green and red now carry meaning. The previous palette was blue-only,
-       and its rule -- severity by intensity, direction by arrow -- existed
-       because one hue cannot say "good". Agency Heights ships success and
-       error families, so they are used. The arrows STAY: colour is the
-       second channel, never the only one, or the 8% of men with a red-green
-       deficiency read a rising CPA as a win.
+    2. BLUE AND WHITE, ALWAYS. The success, warning and error families are
+       still declared below -- the palette does not change -- but no rule in
+       this sheet fills anything with them any more. That is a decision
+       about the product, made by the person who owns it: the dashboard is
+       blue and white, and a page that turns amber or red is not this
+       system. It is also the rule the palette started with, and the one
+       charts.py still argues for: severity by INTENSITY, direction by
+       ARROW. Darker navy means more, or needs you; it never means worse.
+
+       Better and worse are therefore WORDS. `.delta.good` and `.delta.bad`
+       print a small pill after the figure -- an outlined "better", a solid
+       navy "worse" -- so merit reaches the reader as language, which a
+       colour-blind reader gets too, instead of as a hue.
 
     And one rule that outranks both palettes, in `.delta` below: in
     advertising, up is not good. Spend up is neither. CPA up is bad.
@@ -160,6 +167,32 @@ img { max-width: 100%; }
                 font-variant-numeric: tabular-nums; }
 .freshness .n { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 
+/* The import-freshness card and the one button in this app. A SECOND card
+   rather than two more lines in the first, because the two dates answer
+   different questions: the settled edge is a fact about Meta (it restates
+   attributed conversions for about three days) and this is a fact about us
+   (when the importer last succeeded). Folded together, "four days old" reads
+   as "Meta is slow" -- which sends you to the wrong half of the system. */
+.freshness + .freshness { margin-top: 8px; }
+.freshness .refresh-btn {
+  margin-top: 9px; width: 100%; cursor: pointer; font: inherit;
+  font-size: 11.5px; font-weight: 600; padding: 6px 10px;
+  border-radius: var(--radius-sm); border: 1px solid var(--accent-line);
+  background: var(--surface); color: var(--accent);
+}
+.freshness .refresh-btn:hover:not(:disabled) { background: var(--accent-soft); }
+.freshness .refresh-btn:disabled { opacity: .55; cursor: default; }
+.freshness .refresh-btn:focus-visible { outline: 2px solid var(--focus);
+                                        outline-offset: 1px; }
+/* Stale is a pale wash; broken is a navy frame. Two intensities of one hue,
+   and the sentence underneath says which -- colour is never the message. */
+.freshness.stale  { border-color: var(--accent-line); background: var(--accent-soft); }
+.freshness.stale .v  { color: var(--accent); }
+.freshness.broken { border-color: var(--accent); background: var(--surface);
+                    box-shadow: inset 0 0 0 1px var(--accent); }
+.freshness.broken .v { color: var(--accent); }
+.freshness .n.err { color: var(--accent); font-weight: 600; }
+
 .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 .topbar {
@@ -167,13 +200,24 @@ img { max-width: 100%; }
   padding: 18px 26px 0;
 }
 .topbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -.015em;
-             color: var(--accent); margin: 0; }
+             color: var(--accent); margin: 0; max-width: 560px; overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap; }
 .topbar .spacer { flex: 1; }
 .chip { font-size: 11.5px; font-weight: 600; color: var(--accent);
         background: var(--surface); border: 1px solid var(--line);
         border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
 .topbar .sub { flex-basis: 100%; color: var(--muted); font-size: 12.5px;
                margin-top: -4px; }
+.topbar-ask { display: flex; align-items: center; gap: 8px; width: 300px;
+              height: 34px; padding: 0 10px; border: 1px solid var(--line-2);
+              border-radius: var(--radius-sm); background: var(--surface);
+              color: var(--muted); }
+.topbar-ask:focus-within { border-color: var(--focus); }
+.topbar-ask input[type="text"] { flex: 1; min-width: 0; border: 0; outline: none;
+                                 background: none; font: 400 12.5px var(--sans);
+                                 color: var(--ink); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+           overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 main { padding: 16px 26px 28px; }
 
@@ -237,12 +281,21 @@ button:hover, .btn:hover { background: var(--accent-hi);
 
 /* ---------------------------------------------------------- deltas
    `.good` and `.bad` mean better and worse, not up and down. The arrow is
-   set from the sign by .up/.down; the colour is set from the meaning by
-   .good/.bad; a template uses one of each. Colour is never the only signal. */
+   set from the sign by .up/.down; the MERIT is set by .good/.bad, and it is
+   a word rather than a colour: every page that already marks a delta good
+   or bad gets the pill without its template changing. An outlined "better",
+   a solid "worse" -- the solid one is the one that needs you. */
 .delta { font-size: 11.5px; font-weight: 600; margin-top: 2px;
          font-variant-numeric: tabular-nums; color: var(--muted); }
-.delta.good { color: var(--good); }
-.delta.bad  { color: var(--bad); }
+.delta.good, .delta.bad { color: var(--ink-2); }
+.delta.good::after, .delta.bad::after {
+  display: inline-block; margin-left: 6px; padding: 0 7px;
+  border-radius: 999px; font-size: 10.5px; font-weight: 700;
+  line-height: 16px; vertical-align: 1px; }
+.delta.good::after { content: "better"; color: var(--accent);
+                     background: var(--surface); border: 1px solid var(--accent-hi); }
+.delta.bad::after  { content: "worse"; color: var(--on-accent);
+                     background: var(--accent); border: 1px solid var(--accent); }
 .delta.up::before   { content: "\2191\00a0"; }
 .delta.down::before { content: "\2193\00a0"; }
 .delta.flat::before { content: "\2192\00a0"; }
@@ -291,21 +344,28 @@ td .why { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
         border: 1px solid var(--line); }
 .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
                 background: currentColor; }
-.pill.ok    { background: var(--ok-bg);   color: var(--ok);   border-color: var(--ok-line); }
-.pill.warn  { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-line); }
-.pill.stop  { background: var(--err-bg);  color: var(--err);  border-color: var(--err-line); }
+/* Three intensities of navy, weakest to strongest. The WORD on the pill
+   carries the meaning; the intensity says how much it wants you. */
+.pill.ok    { background: var(--surface);     color: var(--accent);    border-color: var(--accent-hi); }
+.pill.warn  { background: var(--accent-soft); color: var(--accent);    border-color: var(--accent-line); }
+.pill.stop  { background: var(--accent);      color: var(--on-accent); border-color: var(--accent); }
 .pill.quiet { background: var(--surface-3); color: var(--muted); }
 
 /* =========================================================== notices */
 .caveat, .flash { display: flex; gap: 10px; padding: 11px 14px;
                   margin-bottom: 16px; border-radius: var(--radius);
                   font-size: 13px; align-items: flex-start; }
-.caveat { background: var(--warn-bg); border: 1px solid var(--warn-line);
-          color: var(--warn); }
-.caveat .ico { margin-top: 1px; }
-.flash.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-line); }
-.flash.error { background: var(--err-bg); color: var(--err);
-               border: 1px solid var(--err-line); }
+/* A caveat is a pale blue note with a navy mark; an error is solid navy.
+   Both read as "stop and look" through intensity, not through a warning
+   colour -- and the sentence inside is always what says why. */
+.caveat { background: var(--accent-soft); border: 1px solid var(--accent-line);
+          color: var(--ink); }
+.caveat .ico { margin-top: 1px; color: var(--accent); }
+.caveat strong { color: var(--accent); }
+.flash.ok { background: var(--accent-soft); color: var(--accent);
+            border: 1px solid var(--accent-line); }
+.flash.error { background: var(--accent); color: var(--on-accent);
+               border: 1px solid var(--accent); }
 
 .empty { background: var(--surface); border: 1px dashed var(--line-2);
          border-radius: var(--radius); padding: 24px; text-align: center;
@@ -340,6 +400,107 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
 .spark { display: block; width: 104px; height: 24px; }
 .spark path { fill: none; stroke: var(--accent-hi); stroke-width: 1.5; }
 
+/* The two miniatures charts.py renders beside a finding. `.split` stretches
+   to whatever box it is given (preserveAspectRatio="none", so the viewBox is
+   a percentage ruler rather than a size); the radius lives here rather than
+   on each rect so the ENDS round and the joins between segments do not. */
+.split { display: block; width: 100%; border-radius: 3px; }
+.chart.micro { height: auto; }
+.chart .track { fill: var(--surface-2); }
+
+/* A bar inside a table row. The figure beside it is the fact; this is only
+   for an eye running down the column. */
+.meter { display: inline-block; height: 8px; border-radius: 2px;
+         background: var(--surface-2); vertical-align: middle; }
+.meter > span { display: block; height: 100%; border-radius: 2px;
+                background: var(--accent-hi); }
+.num-bar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+
+/* The window switcher. Links, not a form: each window is a URL somebody can
+   send, and changing it needs no Apply button and no script. */
+.seg { display: inline-flex; border: 1px solid var(--line-2);
+       border-radius: var(--radius-sm); overflow: hidden; background: var(--surface); }
+.seg a { padding: 7px 11px; font-size: 12px; font-weight: 600; color: var(--ink-2);
+         line-height: 1; }
+.seg a + a { border-left: 1px solid var(--line-2); }
+.seg a:hover { background: var(--surface-2); text-decoration: none; }
+.seg a[aria-current="page"] { background: var(--accent); color: var(--on-accent); }
+
+/* Tabs over a table, one per optimization goal, each with its count. */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.tabs a { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px;
+          border-radius: var(--radius-sm); border: 1px solid var(--line-2);
+          background: var(--surface); color: var(--ink-2); font-size: 12.5px;
+          font-weight: 600; line-height: 1; }
+.tabs a:hover { text-decoration: none; background: var(--surface-2); }
+.tabs a .c { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+             background: var(--surface-3); color: var(--muted); }
+.tabs a[aria-current="page"] { background: var(--accent); border-color: var(--accent);
+                               color: var(--on-accent); }
+.tabs a[aria-current="page"] .c { background: var(--accent-hi); color: var(--on-accent); }
+
+/* An ad's wording beside what it cost: the evidence a copy suggestion
+   quotes. The words lead because the argument is about the words. */
+.copy-card { display: flex; gap: 14px; align-items: flex-start; padding: 12px 18px;
+             border-top: 1px solid var(--line); }
+.board > header + .copy-card { border-top: 0; }
+.copy-text { flex: 1; min-width: 0; }
+.copy-ad { font-size: 12px; color: var(--muted); }
+.copy-head { font-size: 13.5px; font-weight: 700; color: var(--ink); margin-top: 2px; }
+.copy-body { font-size: 13px; color: var(--ink-2); margin-top: 3px; }
+.copy-cost { flex: 0 0 104px; text-align: right; }
+.copy-cost .v { font-size: 19px; font-weight: 700; color: var(--accent);
+                font-variant-numeric: tabular-nums; }
+.copy-cost .n { font-size: 11px; color: var(--muted); }
+
+/* One label, what it spent, what it converted. */
+.dim-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12.5px;
+           font-variant-numeric: tabular-nums; }
+.dim-row .dim-v { flex: 0 0 132px; color: var(--ink-2); overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+.dim-row strong { margin-left: auto; color: var(--accent); }
+.dim-row .muted { flex: 0 0 62px; text-align: right; }
+
+/* What moved, as small chips: a metric and its change. The arrow is the
+   sign; nothing is coloured by merit. */
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip-m { font-size: 11.5px; font-weight: 600; color: var(--accent); white-space: nowrap;
+          background: var(--surface-3); border: 1px solid var(--line);
+          border-radius: 4px; padding: 1px 6px; font-variant-numeric: tabular-nums; }
+
+/* Words an ad actually runs, quoted from ads.ad_copy. */
+.quote { margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+         background: var(--surface-2); font-size: 12.5px; max-width: 76ch; }
+
+/* A short process, drawn: numbered steps with an arrow between them. */
+.steps { display: flex; gap: 10px; align-items: stretch; }
+.step { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 16px 18px; }
+.step-h { display: flex; align-items: center; gap: 10px; color: var(--accent); }
+.step-h .n { display: grid; place-items: center; width: 24px; height: 24px;
+             border-radius: 50%; background: var(--accent); color: var(--on-accent);
+             font-size: 12px; font-weight: 700; }
+.step p { margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+.step code { display: block; margin-top: 8px; padding: 5px 8px; border-radius: 4px;
+             background: var(--surface-2); border: 1px solid var(--line); color: var(--accent); }
+.step-arrow { display: grid; place-items: center; color: var(--focus); font-size: 18px; }
+@media (max-width: 860px) { .steps { flex-direction: column; }
+                            .step-arrow { transform: rotate(90deg); } }
+
+/* The page's answer, in one navy line. */
+.answer { background: var(--accent); color: var(--on-accent); border-radius: var(--radius);
+          padding: 20px 24px; margin-bottom: 16px; }
+.answer p { margin: 0; font-size: 19px; line-height: 1.45; font-weight: 500;
+            max-width: 76ch; letter-spacing: -.01em; }
+.answer strong { font-weight: 700; font-variant-numeric: tabular-nums; }
+.answer .jumps { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.answer .jumps a { padding: 6px 11px; border-radius: var(--radius-sm);
+                   background: var(--accent-hi); color: var(--on-accent);
+                   font-size: 12.5px; font-weight: 600; }
+.answer .jumps a:hover { color: var(--on-accent); text-decoration: underline; }
+.chart .zero  { stroke: var(--line-2); stroke-width: 1; }
+.chart.micro .axis, .chart.micro .val { font-size: 9.5px; }
+
 .chart-tip {
   position: fixed; z-index: 40; pointer-events: none;
   background: var(--surface); color: var(--ink);
@@ -362,6 +523,20 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
               color: var(--ink-2); min-width: 0; }
 .ask-row.me { flex-direction: row-reverse; }
 .ask-row.me .ask-bubble { background: var(--accent); color: var(--on-accent); }
+/* The written answer. Roomier than the JSON it replaces, and pre-wrap because
+   the session writes paragraphs and lists and the newlines are the layout. */
+.ask-prose { white-space: pre-wrap; line-height: 19px; color: var(--ink); }
+/* The wait is about a minute, which is long enough that a static word reads
+   as a hang. A slow pulse says "still going" without a spinner claiming to
+   know how far along it is -- it does not. Motion is opt-out for anyone who
+   has asked the OS for less of it. */
+.ask-thinking { animation: ask-pulse 1.6s ease-in-out infinite;
+                color: var(--subtle); }
+@keyframes ask-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+  .ask-thinking { animation: none; }
+}
+.ask-bubble details summary { cursor: pointer; }
 .ask-bubble pre { margin: 6px 0 0; font: 500 11.5px/16px var(--mono);
                   white-space: pre-wrap; word-break: break-word;
                   max-height: 190px; overflow: auto; }
@@ -404,6 +579,91 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
 .board .table-wrap { margin: 0; }
 .board .body table th { background: var(--surface); }
 .card.quiet { background: var(--surface-2); }
+
+/* ================================================================ AI read
+   A model's reading of the figures below it, published rather than fetched.
+   Prose on white, under a solid "AI read" pill and a stamp naming the window
+   it was written against -- shaped nothing like a finding row or a tile, so
+   an interpretation never passes for a measurement. */
+.ai-read { background: var(--surface); border: 1px solid var(--line);
+           border-radius: var(--radius); padding: 18px 24px; margin-bottom: 20px; }
+.ai-read-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                margin-bottom: 12px; }
+.ai-read-head .state { font-size: 12px; color: var(--muted); }
+.ai-read > p, .ai-read [data-analysis-body] p { margin: 0 0 12px; max-width: 78ch;
+                                               font-size: 15px; line-height: 1.65;
+                                               color: var(--ink); }
+.ai-read > p:last-child { margin-bottom: 0; }
+
+/* ============================================ the brief's findings band
+   A finding is a rank, a sentence, a picture of that sentence, and a link to
+   the table underneath it. The picture is what lets the sentence be short --
+   the band exists because six rules were producing six sentences and the page
+   was scattering them one per section, where nobody read them in order.
+
+   Only ONE row is ever tinted, and only when the finding is about the data
+   rather than about the advertising. A reading is an opinion; tinting them all
+   would turn opinions into alarms, which is the distinction this whole page is
+   built to keep. */
+.finding { display: flex; align-items: center; gap: 18px; padding: 14px 20px;
+           border-bottom: 1px solid var(--line); }
+.finding:last-child { border-bottom: 0; }
+.finding.flag { background: var(--accent-soft); }
+.finding .rank { flex: none; display: grid; place-items: center;
+                 width: 26px; height: 26px; border-radius: 50%;
+                 background: var(--surface-3); color: var(--accent);
+                 font-size: 12px; font-weight: 700; }
+.finding.flag .rank { background: var(--accent); color: var(--on-accent); }
+.finding .says { flex: 1; min-width: 0; font-size: 14.5px; line-height: 1.5; }
+.finding .says p { margin: 0; }
+.finding .vis { flex: 0 0 200px; }
+.finding .vis .n { font-size: 10px; margin-top: 4px; }
+.finding .go { flex: none; font-size: 12.5px; font-weight: 600;
+               white-space: nowrap; }
+
+/* Two tracks, drawn rather than described: what imported, and what did not. */
+.track-row { display: flex; align-items: center; gap: 6px; font-size: 10px;
+             color: var(--muted); }
+.track-row + .track-row { margin-top: 5px; }
+.track-row .k { flex: 0 0 52px; text-align: right; }
+.track-row .v { flex: 0 0 48px; }
+.track-row .bar { flex: 1; height: 10px; border-radius: 2px;
+                  background: var(--accent); }
+.track-row .bar.off { background: var(--surface); border: 1px dashed var(--line-2); }
+
+/* ================================================ the fatigue symptom grid
+   Five cells, one per named symptom, in a fixed order with the names above
+   them. POSITION says which symptom fired and fill says whether it did, so
+   colour is never the only channel -- and the count of filled cells IS the
+   score, which is why the score no longer prints beside it. */
+.sym { display: flex; gap: 3px; }
+.sym span { width: 20px; height: 15px; border-radius: 3px;
+            background: var(--surface); border: 1px solid var(--line); }
+.sym span.on { background: var(--accent); border-color: var(--accent); }
+th .sym-head { display: flex; gap: 3px; margin-top: 4px; letter-spacing: 0; }
+th .sym-head span { width: 20px; text-align: center; font-size: 8.5px;
+                    color: var(--subtle); }
+
+/* ====================================== a section with nothing in it today
+   One line instead of a stage, carrying the REASON. "It loaded and there is
+   nothing" and "it could not be read" are different claims and an empty box
+   says neither. Open it and the whole section is still there. */
+.quiet-row { display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+             border-bottom: 1px solid var(--line); }
+.quiet-row:last-child { border-bottom: 0; }
+.quiet-row .t { flex: 0 0 200px; font-size: 13.5px; font-weight: 700;
+                color: var(--accent); }
+.quiet-row .w { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); }
+
+/* The tail of a cut table. A <details> rather than a button because the rows
+   must be there for Ctrl-F and for print whether or not anyone opened it. */
+details.more { border-top: 1px solid var(--line); }
+details.more > summary { cursor: pointer; padding: 10px 20px;
+                         background: var(--surface-2); font-size: 12.5px;
+                         color: var(--muted); }
+details.more > summary strong { color: var(--ink-2); }
+details.more > summary::marker { color: var(--subtle); }
+details.more[open] > summary { border-bottom: 1px solid var(--line); }
 .stage .table-wrap { background: var(--surface); border: 1px solid var(--line);
                      border-radius: var(--radius); }
 .stage .table-wrap th { background: var(--surface); }
@@ -424,8 +684,18 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
   .span2, .span3 { grid-column: span 2; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 1180px) {
+  /* The miniature goes under the sentence rather than beside it. It is an
+     illustration of the claim, so it may move; it may not be dropped. */
+  .finding { flex-wrap: wrap; }
+  .finding .says { flex-basis: 100%; }
+  .finding .vis { margin-left: 44px; }
+}
 @media (max-width: 860px) {
   .shell { flex-direction: column; }
+  .quiet-row { flex-wrap: wrap; }
+  .quiet-row .t, .quiet-row .w { flex-basis: 100%; }
+  .topbar-ask { width: 100%; }
   .rail { width: auto; flex: none; height: auto; position: static;
           border-right: 0; border-bottom: 1px solid var(--line); }
   .rail nav { flex-direction: row; flex-wrap: wrap; }
@@ -449,7 +719,12 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
     <span class="name">Ads Intelligence</span>
   </a>
 
-  <div class="rail-group">Measurement</div>
+  {#- Two groups, by the reader's question. READ is "what happened": the
+      brief, the live numbers, and why cost moved. CREATIVE is "what do we
+      write next": what is wearing out, what the copy is saying, the angle
+      bank, and the tests. Suggestions sits second because it is the one
+      page in that group that already answers the question on its own. -#}
+  <div class="rail-group">Read</div>
   <nav>
     {% for key, href, label, glyph in [
         ('brief',    '/brief',    'The brief',   'overview'),
@@ -464,6 +739,7 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
   <nav>
     {% for key, href, label, glyph in [
         ('creative',    '/creative',    'Fatigue',     'creative'),
+        ('suggestions', '/suggestions', 'Suggestions', 'suggest'),
         ('angles',      '/angles',      'Angles',      'angles'),
         ('experiments', '/experiments', 'Experiments', 'experiments')] %}
       <a class="rail-link" href="{{ href }}{% if brand %}?brand={{ brand }}{% endif %}"
@@ -483,6 +759,20 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
         {%- endif -%}
       </div>
     </div>
+
+    {#- Import freshness. Rendered empty and filled by app.js from
+        /refresh/status, rather than passed in by every route: this is the only
+        thing on the page that changes while you are looking at it, and every
+        page handler would otherwise have to carry a field it never uses.
+        `hidden` until the first reply, so a server that predates the endpoint
+        shows nothing rather than a card stuck on an em dash. -#}
+    <div class="freshness" id="import-freshness"
+         data-brand="{{ brand or '' }}" hidden>
+      <div class="t">Imported</div>
+      <div class="v" data-fresh-age>&mdash;</div>
+      <div class="n" data-fresh-note></div>
+      <button type="button" class="refresh-btn" data-refresh>Refresh now</button>
+    </div>
   </div>
 </aside>
 
@@ -492,29 +782,52 @@ h2 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
     {% if brand %}<span class="chip">{{ brand }}</span>{% endif %}
     <span class="spacer"></span>
     {% block toolbar %}{% endblock %}
+    {#- Ask, on every page, in the same place. A plain GET form: submitting
+        lands on /ask, which renders the answer as a page, so the field works
+        with scripts blocked. /ask itself blanks this block, because a page
+        whose body is an ask form does not want a second one above it. -#}
+    {% block topbar_ask %}
+    <form class="topbar-ask" method="get" action="/ask" role="search">
+      <input type="hidden" name="brand" value="{{ brand or '' }}">
+      {{ ico.i('search') }}
+      <label for="topbar-q" class="sr-only">Ask a question about this account</label>
+      <input id="topbar-q" name="q" type="text" autocomplete="off"
+             placeholder="Ask about spend, CPA, fatigue&hellip;">
+    </form>
+    {% endblock %}
     {% block page_sub %}{% endblock %}
   </header>
 
   <main>
     {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
-    {% if caveat %}
-      <div class="caveat">{{ ico.i('warn') }}<span><strong>Provisional.</strong>
-        {{ caveat }}</span></div>
-    {% endif %}
-    {#- The window stops at the settled edge by default, which is right for
-        conversions and over-cautious for spend: spend is final within hours,
-        conversions restate for about three days. So rather than move the
-        default and make every CPA optimistic, the freshest days are one click
-        away and labelled. Only offered where there is something to see --
-        `settled` is null until an account has imported. -#}
-    {% if nav == 'overview' and settled and not until %}
-      <div class="caveat" style="background:var(--surface-2);border-color:var(--line)">
-        {{ ico.i('info') }}<span>Showing up to <strong>{{ settled }}</strong>,
-        the settled edge. The last few days are imported but excluded, because
-        a day still in progress reads as a collapse in spend.
-        <a href="/?brand={{ brand }}&amp;days={{ days }}&amp;until={{ today }}">Include
-        them anyway</a> &mdash; the numbers arrive marked provisional.</span></div>
-    {% endif %}
+    {#- The "Provisional." caveat used to render here, on every page whose
+        window touched the unsettled edge -- which, now that these pages end at
+        the latest day with data, is every page every time. A banner that is
+        always up is wallpaper, and wallpaper is worse than nothing because it
+        trains the reader past the one occasion it matters.
+
+        The fact it carried is not gone. The rail's "Settled through" card is
+        on every screen and says which days can still move, and `python -m
+        intel` still defaults to the settled edge and still reports
+        unsettled_days -- the agent is held to the old contract, the dashboard
+        reader is not. intel/context.py:caveat() is still the one definition
+        of the sentence, still used by the verbs.
+
+        brief.html keeps its own settled_through and unsettled-day tiles: the
+        brief is a dated artifact somebody reads back later, where "as of when"
+        is part of the content rather than chrome. -#}
+    {#- The "Showing up to <settled edge> ... Include them anyway" banner used
+        to sit here. It existed to offer the freshest days as one click away;
+        they are now simply the default, so the offer has nothing to offer.
+
+        Its link was also wrong in a way worth remembering if anything like it
+        comes back: it built `until={{ today }}` from date.today(), the SERVER's
+        date, which on this machine (UTC+5:45) is a day ahead of an account in
+        America/Los_Angeles. Clicking it asked for a day that had not started,
+        got zero rows for it, and reported four unsettled days where there were
+        three. Any date this page offers has to come from the account's clock,
+        not the box's -- the same rule meta_ads/pull.py:_account_today() now
+        follows on the import side. -#}
     {% block body %}{% endblock %}
   </main>
 </div>

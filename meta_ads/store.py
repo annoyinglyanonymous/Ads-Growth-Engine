@@ -58,6 +58,34 @@ async def add_account(*, brand_id: str, act_id: str, label: str | None,
         return await cur.fetchone()
 
 
+async def deactivate_account(*, act_id: str) -> dict | None:
+    """Stop pulling one account. Returns the row, or None if it is not known.
+
+    A flag rather than a delete, for the same reason `add_account` revives
+    instead of failing: the account's imported rows stay joinable and the
+    decision is reversible by re-adding it.
+
+    WHY THIS VERB EXISTS. An account the token cannot read fails every pull in
+    under a second, and the cost is not the wasted call. `run_pull` isolates
+    per account, so the import still succeeds -- but the run's exit code is 1,
+    `intel status` reports `healthy: false`, and the dashboard's import card
+    goes amber, all on behalf of an account nobody reads. A scheduled task that
+    reports failure on every single run is a task nobody checks, which is the
+    invisible staleness scripts/sync.py exists to prevent.
+
+    It does NOT touch the account's history. Deactivating act_9105140029692
+    leaves its `meta_pulls` rows where they are; `intel status` still lists the
+    failures under `recent_failures` for anybody asking why it stopped.
+    """
+    async with cursor() as cur:
+        await cur.execute(
+            "update public.meta_ad_accounts set active = false "
+            " where act_id = %s "
+            "returning id, brand_id, act_id, label, active",
+            (act_id,))
+        return await cur.fetchone()
+
+
 async def accounts_for(brand_id: str | None = None, *,
                        active_only: bool = True) -> list[dict]:
     return await fetch_all(
@@ -217,6 +245,35 @@ async def candidates_for_match(brand_id: str) -> list[dict]:
         "where c.brand_id = %s and ca.channel = 'meta_ads' "
         "  and ca.tracked_url is not null",
         (brand_id,))
+
+
+async def set_ad_statuses(rows: list[dict]) -> int:
+    """Update effective_status and status on ads we already have. Nothing else.
+
+    Deliberately an UPDATE and not an upsert. These rows come from the cheap
+    pass, which asks for no creative and no name, so inserting from them would
+    create an ad with almost every column null -- and that row would then look
+    to every reader like an ad whose copy we failed to import, rather than one
+    we have not fetched yet. An ad this pass has never seen is picked up by the
+    heavy pass when it is active, or is genuinely not worth a creative fetch.
+
+    `updated_at` is deliberately not touched: this is a correction to what we
+    already knew, not evidence that the ad changed.
+    """
+    if not rows:
+        return 0
+    n = 0
+    async with cursor() as cur:
+        for row in rows:
+            if not row.get("id"):
+                continue
+            await cur.execute(
+                "update public.meta_ads "
+                "   set effective_status = %s, status = %s, pulled_at = now() "
+                " where id = %s",
+                (row.get("effective_status"), row.get("status"), row["id"]))
+            n += cur.rowcount or 0
+    return n
 
 
 async def upsert_ad(raw: dict, *, brand_id: str, account_id: str,
@@ -476,6 +533,43 @@ async def finish_pull(run_id: int, *, status: str, counts: dict,
             (status, json.dumps(counts), error, run_id))
 
 
+async def close_stale_runs(older_than_hours: int = 2) -> list[dict]:
+    """Close `running` rows that nothing is going to finish. Returns them.
+
+    A pull writes its row at the start and closes it at the end, so a process
+    that dies in between -- a terminal shut, a machine slept, a dropped
+    database connection eighteen minutes in -- leaves a row that says `running`
+    for ever. Two have said so since 2026-09-21.
+
+    The cost is not the row. `intel status` reports them as recent failures,
+    the dashboard's import card reads the newest as a pull in flight, and
+    /refresh/status has to distinguish "running" from "stalled" by age because
+    of them. They make a healthy account look permanently mid-import.
+
+    TWO HOURS, matching scripts/sync.py's STALE_LOCK_AFTER. A pull of a normal
+    window is minutes; past the window that lock would already have been broken
+    as dead, and a row outliving its own lock is by definition abandoned.
+
+    Marked `failed`, not deleted. What happened is that a run started and did
+    not finish, which is a failure and is worth being able to count -- deleting
+    it would make the ledger say the run never happened.
+    """
+    async with cursor() as cur:
+        await cur.execute(
+            "update public.meta_pulls "
+            "   set status = 'failed', finished_at = now(), "
+            "       error = %s "
+            " where status = 'running' "
+            "   and started_at < now() - make_interval(hours => %s) "
+            "returning run_id, account_id, kind, started_at",
+            (f"Closed by --close-stale-runs: still 'running' more than "
+             f"{older_than_hours}h after it started, so the process that "
+             f"opened it is gone. Whatever it imported before dying was "
+             f"committed as it went and is still there.",
+             older_than_hours))
+        return await cur.fetchall()
+
+
 async def recent_pulls(brand_id: str, limit: int = 6) -> list[dict]:
     """The last few runs, whatever they did. A failed run is the one worth
     seeing, so this does not filter on status."""
@@ -558,7 +652,7 @@ async def last_successful_pull(account_id: str, kind: str) -> dict | None:
     window to the 30-day default on every pull.
     """
     return await fetch_one(
-        "select since, until, finished_at from public.meta_pulls "
+        "select since, until, started_at, finished_at from public.meta_pulls "
         "where account_id = %s and kind = %s and status = 'ok' "
         "order by until desc nulls last, finished_at desc limit 1",
         (account_id, kind))

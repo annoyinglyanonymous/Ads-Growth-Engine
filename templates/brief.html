@@ -5,10 +5,33 @@
 
 {#- =====================================================================
     THE BRIEF. Every other page answers one question; this one is the whole
-    account read in the order a person has to read it, and THE ORDER IS THE
-    GOVERNANCE. Trust first, because a number you cannot trust is worse than
-    no number at all. Actions late, because an action taken before the
-    evidence is read is a guess with a keyboard behind it.
+    account, read in the order a person has to read it.
+
+    WHAT THIS PAGE LEARNED FROM BEING READ
+
+    It used to render nine numbered sections at full fidelity whatever they
+    contained. Against this account that meant roughly three thousand of its
+    five and a half thousand pixels were empty boxes -- the angle bank is
+    inert, nothing is tagged, no experiment has been filed -- and the first
+    row naming an ad somebody could act on today sat about nineteen hundred
+    pixels down. Meanwhile the six sentences the rules had already written
+    were scattered one per section, in six places, where nobody read them in
+    order.
+
+    So: FINDINGS FIRST, EVIDENCE UNDER THEM, AND A SECTION EARNS ITS HEIGHT.
+
+      * The readings are promoted into one ranked band at the top, grouped by
+        the section they belong to, each with a miniature carrying the shape
+        of the claim and a link to the table that proves it.
+      * A section with no rows collapses to one line that says WHY it is
+        empty. "It loaded and the answer is none" and "it could not be read"
+        are different claims, and an empty box says neither. Opening the line
+        still gives the whole section.
+      * A long table shows five rows and then says what is in the tail, so
+        the reader knows the shape of it without scrolling it.
+
+    Nothing was deleted. Every section is still here and every number still
+    comes out of the same function.
 
     THE ONE RULE THIS TEMPLATE EXISTS TO ENFORCE
 
@@ -17,404 +40,479 @@
     is an opinion" -- and a page that renders an opinion inside a table cell
     has quietly promoted it to a measurement. So:
 
-      facts    live in .kpi tiles, .stat tiles, tables and charts, and every
-               table names the SQL that produced it on the .n line above it --
-               `ads.fatigue.score`, not "score". If the source cannot be
-               named, it does not belong in a table.
-      readings live in a block-level element with a "Reading" eyebrow, the
-               rule name in small type, and the citations that back it.
-               NEVER in a table cell.
+      facts    live in .kpi tiles, .stat tiles, tables and charts, and a table
+               names the SQL that produced it beside its heading.
+      readings live in the findings band, labelled as readings of the figures
+               below and never inside a table cell.
       proposals get a third label -- "Proposal -- not filed" -- and the
                command that would file them, so the reader can see for
                themselves that nothing has been filed.
 
-    They are told apart by INDENT and a RULE-LINE, not by colour. base.html
-    argues that case at :16-37 and it holds here for a reason beyond
-    accessibility: colour would make a reading look like a severity, and the
-    difference between an opinion and an alarm is the entire point.
+    They are told apart by PLACE and SHAPE, not by colour. Exactly one finding
+    row is ever tinted, and only when it is about the data rather than about
+    the advertising: colour on the rest would make an opinion read as an
+    alarm, and the difference between the two is the entire point.
 
-    Readings carry a solid rule; proposals a dashed one. Shape, not hue.
+    WHAT IS NOT PRINTED HERE, AND WHERE IT WENT
 
-    A NOTE ON WHAT IS NOT HERE
-
-    Only the four chart helpers ui.py registers are used -- line_chart,
-    bar_chart, sparkline and the money/num/pct/fmt formatters. charts.py also
-    defines column_chart, which is not a Jinja global and is called from no
-    template; using it here would render an exception, not a chart.
+    Rule names, /facts pointers and provisional flags are not on the page.
+    They are still on every reading, readings.py still refuses to let a rule
+    state a figure it cannot cite, and briefs/<date>-<brand>.json still holds
+    the whole chain. The audit trail is for the person CHECKING the brief, not
+    the person reading it, and printing both to one page made the second job
+    harder.
     ===================================================================== -#}
 
-{% block page_sub %}
-<div class="sub">
-  Generated {{ d.generated_at }} &mdash; nothing here concludes anything: an
-  angle goes active and an experiment gets a conclusion in growth-engine,
-  where a person is signed in and attributable.
-</div>
+{#- THE CHIPS SAY WHICH DOCUMENT THIS IS. A published brief is a dated
+    week; a live one is whatever window was asked for. The two read alike, so
+    the difference goes where the eye lands first.
+
+    There is no "Explain this brief" button any more when a summary was
+    published: the prose is already on the page. The button survives only for
+    a brief with no summary -- a live window, or a week the model call failed
+    on -- and it lives in the summary slot below, not up here. -#}
+{% block toolbar %}
+{% if live %}
+  <span class="chip">live &middot; {{ days }} days to {{ d.until }}</span>
+{% else %}
+  <span class="chip">{% if days == 7 %}week{% else %}{{ days }} days{% endif %} to {{ d.until }}</span>
+  <span class="chip">published {{ (d.generated_at | string)[:10] }}</span>
+{% endif %}
 {% endblock %}
 
 {% block body %}
 
-{#- ---------------------------------------------------------------- macros -#}
+{#- ---------------------------------------------------------------- setup -#}
+{% set f  = d.facts or {} %}
+{% set t  = f.trust or {} %}
+{% set s  = f.spend or {} %}
+{% set mv = f.movement or {} %}
+{% set cr = f.creative or {} %}
+{#- f.get('copy'), not f.copy: `copy` is a dict METHOD, so dotted access here
+    returns the method rather than the facts and every dimension renders
+    empty. The one key in this whole brief whose name collides. -#}
+{% set cp = f.get('copy') or {} %}
+{% set an = f.angles or {} %}
+{% set ut = f.untagged or {} %}
+{% set ex = f.experiments or {} %}
+{% set w  = d.waiting_on_you or {} %}
 
-{#- A READING. Block-level, indented, ruled, labelled, cited. The rule name is
-    printed because "the agent thinks CPA rose" and "rule cpa_rise_flat_ctr
-    fired" are different claims, and only the second one can be argued with. -#}
-{#- A READING. The sentence a rule concluded, and nothing else.
+{% set cred  = t.credential or {} %}
+{% set cov   = t.coverage or {} %}
+{% set match = t.match or {} %}
+{% set rates = s.rates or {} %}
+{% set dl    = s.delta or {} %}
+{% set pc    = s.pct   or {} %}
+{% set arows = an.rows or [] %}
+{% set one_currency = not s.mixed_currency %}
 
-    The rule name and the /facts pointers it fired on USED TO PRINT HERE and
-    deliberately do not any more. They are not gone: every reading still
-    carries `rule`, `author` and `cites`, readings.py still refuses to let a
-    rule state a figure it cannot cite, and briefs/<date>-<brand>.json still
-    holds the whole chain. What changed is who it is shown to -- the audit
-    trail is for the person checking the brief, not the person reading it,
-    and printing both to the same page made the second job harder.
+{#- The one place a multi-part bar is allowed a second hue, and it is not a
+    hue: five steps down the SAME navy, so an optimization-goal split is read
+    as one quantity cut up rather than as five competing series. charts.py's
+    header argues the case for single-series charts and this is the exception
+    it names -- composition, where the parts are shares of one total. -#}
+{% set tones = ['--accent', '--accent-hi', '--line-2', '--accent-line', '--surface-3'] %}
 
-    tests/test_brief_and_readings.py tests the pack, not this macro, so the
-    guarantee is unaffected by what this template chooses to display.
+{#- Which sections failed to load, by name. A section that is MISSING and a
+    section that is EMPTY are different findings and the quiet strip below
+    says which -- `degraded` is the only thing that can tell them apart, and
+    until now it was built on every run and never printed. -#}
+{% set failed = {} %}
+{% for g in d.degraded or [] %}
+  {% set _ = failed.update({g.section: g.guard}) %}
+{% endfor %}
 
-    The left rule stays. A reading is still an opinion and a table is still a
-    fact, and the reader has to be able to tell them apart at a glance. -#}
-{% macro reading(r) -%}
-<div role="note" style="margin:12px 0 12px 2px; padding:2px 0 2px 16px;
-     border-left:3px solid var(--line-2)">
-  <p style="margin:0; max-width:80ch">{{ r.says }}</p>
-</div>
-{%- endmacro %}
+{#- THE PRIOR WINDOW MAY NOT BE COMPARABLY COVERED, and a delta measured
+    against a window the importer had barely reached is a fact about the
+    import rather than about the advertising. ui.py's note beside
+    `prior_since` explains why this is a proxy and names the missing verb.
+    Rates survive the mismatch and totals do not, so only spend and
+    conversions are withheld. -#}
+{% set prior_partial = (prior_since is defined and prior_since
+                        and cov.get('first_day') and cov.get('first_day') > prior_since) %}
 
-{#- A reading says which section it belongs to, so this page obeys it rather
-    than guessing: readings.py's `_reading` carries `section`, and that is the
-    rule author's own placement. Subject KIND is only the fallback, for a rule
-    that left the section blank.
-
-    A reading this page cannot place is NOT dropped -- it lands in the guard at
-    the very bottom, because silently losing an opinion is how a brief begins
-    lying by omission. Keep `claimed` below in step with these lists. -#}
-{% macro readings_for(rows, keys) -%}
-  {%- for r in (rows or []) if (r.section or (r.subject or {}).kind or 'unattached') in keys -%}
-    {{ reading(r) }}
-  {%- endfor -%}
-{%- endmacro %}
-
-{#- A PROPOSAL. Dashed rule, third label, and the command spelled out rather
-    than run: `intel record` takes a path and a person runs it, which is the
-    same boundary the rest of this repo keeps. -#}
-{% macro proposal(p) -%}
-<div role="note" style="margin:12px 0 12px 2px; padding:2px 0 2px 16px;
-     border-left:3px dashed var(--line-2)">
-  <div class="eyebrow">Proposal &mdash; not filed</div>
-  <p style="margin:3px 0 0; max-width:80ch">
-    <strong>{{ p.angle_name }}</strong>
-    {% if p.family %}<span class="pill quiet">{{ p.family }}</span>{% endif %}
-  </p>
-  {% if p.gap %}
-    <div class="small" style="margin-top:3px; max-width:80ch">{{ p.gap }}</div>
-  {% endif %}
-  <div class="small muted" style="margin-top:4px">
-    {% if p.already_tested %}
-      Tested before &mdash; this is a re-run, not a new idea.
-    {% else %}
-      No prior test on record.
-    {% endif %}
-    {% for e in (p.prior_experiments or []) %}
-      <div style="margin-top:2px">
-        {{ e.name or e }}{% if e.conclusion %} &mdash; {{ e.conclusion }}
-        {%- elif e.name %} &mdash; no conclusion recorded{% endif %}
-      </div>
-    {% endfor %}
-  </div>
-  {% if p.how_to_file %}
-    <div style="margin-top:6px"><code>{{ p.how_to_file }}</code></div>
-  {% endif %}
-</div>
-{%- endmacro %}
-
-{#- The unsettled edge, repeated in every section whose window touches it.
-    The repetition is the point: the reader who scrolled past the banner at
-    the top is exactly the reader about to read a partial day as a decline. -#}
-{% macro edge(c) -%}
-{% if c %}<div class="caveat"><span><strong>Provisional.</strong> {{ c }}</span></div>{% endif %}
-{%- endmacro %}
+{#- --------------------------------------------------------------- macros -#}
 
 {#- Money, or a refusal. When a brand's accounts do not all report in one
     currency a total adds different units, and printing it is worse than
     printing nothing because it looks like an answer. -#}
-{% macro cash(v, ok) -%}
-{% if ok %}{{ money(v) }}{% else %}<span class="muted" title="accounts report in more than one currency">withheld</span>{% endif %}
+{% macro cash(v) -%}
+{% if one_currency %}{{ money(v) }}{% else %}<span class="muted" title="accounts report in more than one currency">withheld</span>{% endif %}
 {%- endmacro %}
 
-{% set f = d.facts or {} %}
-{% set t = f.trust or {} %}
-{% set s = f.spend or {} %}
-{% set one_currency = not s.mixed_currency %}
+{#- A window-over-window delta, or the reason there isn't one. Withheld the
+    same way money is withheld under mixed currency, and for the same reason:
+    a figure that looks like an answer and is not is worse than no figure.
+    Never silently dropped, or the reader cannot tell it from a delta of
+    zero. -#}
+{% macro delta(value, pctv, merit, guardable=false) -%}
+{% if guardable and prior_partial %}
+  <div class="delta flat"><span class="pill warn">prior window incomplete</span></div>
+{% elif value is not none %}
+  {% set n = value or 0 %}
+  <div class="delta {{ 'up' if n > 0 else 'down' if n < 0 else 'flat' }}
+       {{- ' good' if (merit and ((n > 0) == (merit > 0)) and n != 0) else ' bad' if (merit and n != 0) else '' }}">
+    {{ caller() }}</div>
+{% else %}
+  <div class="delta flat">{{ caller() }}</div>
+{% endif %}
+{%- endmacro %}
 
-{#- Every section name and every subject kind this page knows where to put --
-    the union of the ten lists passed to readings_for() below. The overflow
-    guard at the bottom renders anything that is not in here, so a rule shipped
-    with a new section name becomes visible instead of vanishing. -#}
-{#- 'gaps', 'gap' and 'degraded' belonged to section 10, which was removed.
-    They are kept in this list DELIBERATELY: dropping them would send their
-    readings to the overflow guard at the bottom, which would rebuild the
-    section under a different heading. Those readings are still in the pack
-    and still in briefs/<date>-<brand>.json -- they are simply not printed.
-    Put the section back and they render again. -#}
-{% set claimed = ['trust', 'credential', 'match', 'coverage', 'account', 'pull',
-                  'conversion_definition',
-                  'spend', 'window', 'brand',
-                  'movement', 'bridge', 'structure', 'structure_change',
-                  'creative', 'fatigue', 'ad',
-                  'copy', 'format', 'hook', 'offer', 'family',
-                  'angles', 'angle', 'untagged', 'tag', 'facet',
-                  'never_run', 'under_spent',
-                  'experiments', 'experiment',
-                  'waiting', 'action', 'owner',
-                  'gaps', 'gap', 'degraded'] %}
-
-
-{#- ============================================================= 1. TRUST
-    Never collapsed, never moved. The banner that used to sit here -- red when
-    the checks failed, a caveat when the window was unsettled -- was removed on
-    request. The FACTS it summarised are still in this section: settled_through
-    and the unsettled-day count are the first two tiles, and the account and
-    pull rows below say what has and has not imported.
-
-    What is gone is the page telling the reader what to make of that. `intel
-    status --brand <slug>` still names every problem in one sentence each. -#}
-<section class="stage" aria-label="Trust">
-  <div class="stage-head">
-    <h2>1 &middot; Trust</h2>
+{#- ONE FINDING. A rank, the sentences the rules wrote, a miniature carrying
+    their shape, and a link to the table underneath. The miniature is what
+    lets the sentence be short; it is an illustration of the claim, never an
+    extra claim of its own, and every figure in it is one the pack already
+    holds. -#}
+{% macro finding(n, label, anchor, rows, vis, flag=false) -%}
+<div class="finding{{ ' flag' if flag else '' }}">
+  <div class="rank" aria-hidden="true">
+    {%- if flag %}{{ ico.i('warn') }}{% else %}{{ n }}{% endif -%}
   </div>
-
-  {% set cred  = t.credential or {} %}
-  {% set cov   = t.coverage or {} %}
-  {% set match = t.match or {} %}
-
-  <div class="kpis" style="margin-bottom:16px">
-    <div class="card kpi">
-      <div class="k">Settled through</div>
-      <div class="v">{{ t.settled_through or '--' }}</div>
-      <div class="delta flat">{{ num(t.get('unsettled_days')) }} unsettled day(s) in
-        this window</div>
-    </div>
-    <div class="card kpi">
-      <div class="k">Credential</div>
-      <div class="v" style="font-size:16px; margin-top:6px">
-        {% if cred.ok %}<span class="pill ok">confirmed</span>
-        {% else %}<span class="pill stop">not confirmed</span>{% endif %}
-      </div>
-      <div class="delta flat">{{ cred.confirmed_as or 'no identity returned' }}</div>
-    </div>
-    <div class="card kpi">
-      <div class="k">Coverage</div>
-      <div class="v">{{ num(cov.get('ad_days')) }}</div>
-      <div class="delta flat">ad-days &middot; {{ num(cov.get('ads')) }} ads &middot;
-        {{ cash(cov.get('spend'), one_currency) }}</div>
-    </div>
-    <div class="card kpi">
-      <div class="k">Approved copy on a live ad</div>
-      <div class="v">{{ pct(match.get('match_rate')) }}</div>
-      <div class="delta flat">{{ num(match.get('matched')) }} matched of
-        {{ num(match.get('with_tracked_url')) }} tracked &middot;
-        {{ num(match.get('approved_assets')) }} approved</div>
-    </div>
+  <div class="says">
+    <p>
+      {%- for r in rows %}
+        {%- set subj = (r.subject or {}).get('name') %}
+        {%- if subj %}<strong>{{ subj }}</strong> {% endif -%}
+        {{ r.says }}{% if not loop.last %} {% endif %}
+      {%- endfor -%}
+    </p>
   </div>
+  <div class="vis">{{ vis }}</div>
+  <a class="go" href="#{{ anchor }}">Evidence{{ ico.i('arrow-right') }}</a>
+</div>
+{%- endmacro %}
 
-  <div class="boards">
-    <section class="board" aria-label="Conversion definitions">
-      <header>
-        <h2>What counts as a conversion</h2>
-      </header>
-      <div class="body">
-        {% set cd = t.conversion_definitions %}
-        {% if cd is number %}
-          <p class="small" style="margin:0">{{ num(cd) }} definition(s)
-            registered for this brand.</p>
-        {% elif cd is string %}
-          <p class="small" style="margin:0">{{ cd }}</p>
-        {% elif cd %}
-          <ul class="small" style="margin:0; padding-left:18px">
-            {% for c in cd %}
-              <li>{{ c.name or c.action_type or c.label or c }}
-                {%- if c.name and c.action_type %}
-                  <span class="muted">&middot; {{ c.action_type }}</span>
-                {%- endif %}</li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted small" style="margin:0">No conversion definition is
-            registered, so every CPA on this page is a cost per
-            <em>nothing in particular</em>.</p>
-        {% endif %}
-      </div>
-    </section>
+{#- The five named fatigue symptoms as five cells in a fixed order. The word
+    travels with the mark: position says WHICH symptom and the aria-label
+    spells them out, so colour is the second channel rather than the only one.
+    The count of filled cells is the score, which is why the score no longer
+    prints beside it. -#}
+{% macro symptoms(r) -%}
+{% set flags = [(r.link_ctr_decline, 'click-through down'),
+                (r.cpm_rise,         'impression cost up'),
+                (r.cpa_rise,         'acquisition cost up'),
+                (r.frequency_rise,   'daily frequency up'),
+                (r.ranking_drop,     'ranking down')] %}
+{% set names = [] %}
+{% for on, name in flags %}{% if on %}{% set _ = names.append(name) %}{% endif %}{% endfor %}
+<div class="sym" role="img" aria-label="{{ names | join(', ') if names else 'no symptoms' }}">
+  {%- for on, name in flags -%}
+    <span{% if on %} class="on"{% endif %} title="{{ name }}"></span>
+  {%- endfor -%}
+</div>
+{%- endmacro %}
 
-    <section class="board" aria-label="Copy to ad match">
-      <header>
-        <h2>Copy-to-ad match</h2>
-      </header>
-      <div class="body">
-        <p class="small" style="margin:0">
-          {{ num(match.get('matched')) }} of {{ num(match.get('with_tracked_url')) }} approved
-          assets carrying a tracked URL were found on a live ad
-          ({{ pct(match.get('match_rate')) }}). An unmatched asset is not a missing ad
-          &mdash; it is an ad this brief cannot attribute to the copy that was
-          approved for it, which means its spend is counted and its creative is
-          not judged.
-        </p>
-      </div>
-    </section>
+{#- A section with nothing in it, as one line carrying the reason. -#}
+{% macro quiet(anchor, title, code, why) -%}
+<div class="quiet-row" id="{{ anchor }}">
+  <span class="t">{{ title }}</span>
+  <span class="pill {{ 'warn' if code == 'could not be read' else 'quiet' }}">{{ code }}</span>
+  <span class="w">{{ why }}</span>
+</div>
+{%- endmacro %}
+
+{#- ------------------------------------------------------------- findings
+    The readings, grouped by the section they belong to and ordered by what
+    the group costs. Trust is first because a number you cannot trust is worse
+    than no number; the rest follow the order the evidence appears in.
+
+    A reading says which section it belongs to -- readings.py's `_reading`
+    carries it -- so this page obeys the rule author rather than guessing.
+    Subject KIND is only the fallback, for a rule that left the section blank,
+    and a reading this page cannot place lands in the guard at the very bottom
+    rather than vanishing. -#}
+{% set groups = [
+     ('trust',   'Trust',                  'trust',
+      ['trust', 'credential', 'match', 'coverage', 'account', 'pull',
+       'conversion_definition']),
+     ('movement', 'What moved it',         'moved',
+      ['movement', 'bridge', 'structure', 'structure_change']),
+     ('creative', "What's tiring",         'tiring',
+      ['creative', 'fatigue', 'ad']),
+     ('angles',   'Angles and tagging',    'angles',
+      ['angles', 'angle', 'untagged', 'tag', 'facet', 'never_run',
+       'under_spent', 'gaps', 'gap', 'degraded']),
+     ('spend',    'The window',            'window',
+      ['spend', 'window', 'brand']),
+     ('copy',     'What the copy is doing', 'copy',
+      ['copy', 'format', 'hook', 'offer', 'family']),
+     ('experiments', 'Tests in flight',    'experiments',
+      ['experiments', 'experiment']),
+     ('waiting',  'Waiting on you',        'waiting',
+      ['waiting', 'action', 'owner']),
+] %}
+
+{% set findings = [] %}
+{% set placed = [] %}
+{% for key, label, anchor, sections in groups %}
+  {% set rows = [] %}
+  {% for r in d.readings or [] %}
+    {% if (r.section or (r.subject or {}).get('kind') or 'unattached') in sections %}
+      {% set _ = rows.append(r) %}
+      {% set _ = placed.append(r) %}
+    {% endif %}
+  {% endfor %}
+  {% if rows %}{% set _ = findings.append((key, label, anchor, rows)) %}{% endif %}
+{% endfor %}
+
+{#- The miniature for each group. Composition where the finding is a split,
+    signed bars where it is a cancellation, two tracks where it is coverage.
+    A group with no picture worth drawing gets none rather than a decorative
+    one. -#}
+{% set sym_total = cr.rows | length %}
+{% set sc = namespace(hi=0, two=0, one=0, none=0) %}
+{% for r in cr.rows or [] %}
+  {% if (r.score or 0) >= 3 %}{% set sc.hi = sc.hi + 1 %}
+  {% elif (r.score or 0) == 2 %}{% set sc.two = sc.two + 1 %}
+  {% elif (r.score or 0) == 1 %}{% set sc.one = sc.one + 1 %}
+  {% else %}{% set sc.none = sc.none + 1 %}{% endif %}
+{% endfor %}
+{% set structure_ok = (t.accounts or []) | selectattr('last_structure_ok') | list %}
+
+{% macro miniature(key) -%}
+{% if key == 'trust' %}
+  <div class="track-row"><span class="k">Insights</span>
+    <span class="bar"></span>
+    <span class="v">{{ (cov.get('last_day') or t.settled_through) or '--' }}</span></div>
+  <div class="track-row"><span class="k">Structure</span>
+    <span class="bar{{ '' if structure_ok else ' off' }}"></span>
+    <span class="v">{{ 'ok' if structure_ok else 'never' }}</span></div>
+{% elif key == 'movement' %}
+  {#- merit is -1 on every row: these are all CPA, where up is worse. The
+      sign still decides which side of zero the bar sits on. -#}
+  {{ effect_bars([('Rate', mv.get('rate_effect'), -1),
+                  ('Mix',  mv.get('mix_effect'),  -1),
+                  ('Net',  mv.get('cpa_change'),  -1)], kind='cpa') | safe }}
+{% elif key == 'creative' %}
+  {{ split_bar([('3 or more symptoms', sc.hi,   '--accent'),
+                ('2 symptoms',         sc.two,  '--accent-hi'),
+                ('1 symptom',          sc.one,  '--line-2'),
+                ('no symptom',         sc.none, '--surface-3')]) | safe }}
+  <div class="n muted">{{ num(sym_total) }} readable &middot;
+    {{ num(cr.get('suppressed_unconfident')) }} below the floor</div>
+{% elif key == 'angles' %}
+  {#- The two coverages side by side, drawn: the copy is labelled, the angle
+      is not. One bar for both would say "untagged" and be wrong about half. -#}
+  {% set cl = f.get('creative_labels') or {} %}
+  <div class="track-row"><span class="k">Labels</span>
+    <span class="bar{{ '' if cl.get('with_an_offer') else ' off' }}"></span>
+    <span class="v">{{ num(cl.get('with_an_offer')) if cl.get('ads') else '--' }} ads</span></div>
+  <div class="track-row"><span class="k">Angle</span>
+    <span class="bar{{ '' if ut.get('tagged_spend') else ' off' }}"></span>
+    <span class="v">{{ cash(ut.get('tagged_spend')) if ut.get('tagged_spend') else 'none' }}</span></div>
+{% elif key == 'spend' %}
+  {{ split_bar([('Conversions', s.get('conversions'), '--accent'),
+                ('Link clicks that did not convert', s.get('link_clicks'), '--surface-3')]) | safe }}
+  <div class="n muted">{{ num(s.get('conversions')) }} of
+    {{ num(s.get('link_clicks')) }} link clicks</div>
+{% endif %}
+{%- endmacro %}
+
+
+{#- ============================================================== THE AI READ
+    The brief writes its own prose now. scripts/brief.py asks a model to read
+    the pack after every import and publishes the answer beside the facts, so
+    the reading is on the page before anybody opens it -- the page renders it,
+    it does not fetch it.
+
+    It goes FIRST and it is labelled. A summary is interpretation, the
+    findings under it are the rules' cited claims, and the tiles are facts;
+    CLAUDE.md wants the three visibly apart, which is what the "AI read" pill
+    and the stamp are for. The stamp names the model's window and its
+    unsettled days, because the model wrote against exactly that and a reader
+    comparing the prose to a tile needs to know it is the same week.
+
+    `summary` is null when the model was unavailable or the call failed, and
+    on a live brief. Then the slot says so and offers the old button, which is
+    the one case a button still earns its place: there is nothing published to
+    read. -#}
+{% set sm = d.get('summary') %}
+<section class="ai-read" id="brief-summary" aria-label="AI read">
+  <div class="ai-read-head">
+    <span class="pill stop">AI read</span>
+    {% if sm and sm.text %}
+      <span class="state">written {{ (sm.written_at | string)[:10] }} &middot; from the
+        {{ days }} days to {{ d.until }} &middot; {{ num(d.unsettled_days) }} unsettled day(s)</span>
+    {% else %}
+      <span class="state" data-analysis-state>no summary was published for this
+        {{ 'window' if live else 'week' }}</span>
+      <button type="button" class="btn ghost" style="margin-left:auto"
+              data-ask-url="/brief/summary.json?brand={{ d.brand }}&amp;days={{ days }}{% if product %}&amp;product={{ product | urlencode }}{% endif %}"
+              data-ask-target="brief-summary">Explain this brief</button>
+    {% endif %}
   </div>
-
-  {#- The unmatched table prints the EXPECTED utm_content, not only the name.
-      "Asset 41 did not match" is a complaint; "asset 41 should have carried
-      ren-ws-q3-a2 and no ad does" is something a person can go and fix. -#}
-  {% if match.unmatched %}
-    <div class="stage-head" style="margin-top:16px">
-      <h2>Approved copy with no ad behind it</h2>
-      <span class="state">{{ match.unmatched | length }} asset(s)</span>
+  {% if sm and sm.text %}
+    {% for para in sm.text.split('\n\n') if para.strip() %}
+      <p>{{ para.strip() }}</p>
+    {% endfor %}
+  {% else %}
+    <div data-analysis-body>
+      <p class="muted">The findings below stand on their own.</p>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th scope="col">Approved asset</th>
-          <th scope="col">Expected utm_content</th>
-          <th scope="col">What is on the ad</th>
-          <th scope="col">Why it did not match</th>
-        </tr></thead>
-        <tbody>
-        {% for u in match.unmatched %}
-          <tr>
-            <td class="name">
-              {{ u.asset_name or u.name or u.title or u.headline or u.asset_id or u.key or '--' }}
-              {% if u.asset_id %}<div class="why mono">{{ u.asset_id }}</div>{% endif %}
-            </td>
-            <td><code>{{ u.expected_utm_content or u.utm_content or u.expected or '--' }}</code></td>
-            <td class="mono small">{{ u.observed_utm_content or u.observed or u.found or '--' }}</td>
-            <td class="small muted">{{ u.reason or u.why or u.note or 'no ad in this window carries this value' }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    <p class="small muted" data-analysis-foot hidden>Written by a Claude Code
+      session from the numbers below. It reports; it decides nothing.</p>
   {% endif %}
-
-  {{ readings_for(d.readings, ['trust', 'credential', 'match', 'coverage',
-                               'account', 'pull', 'conversion_definition']) }}
 </section>
 
 
-{#- ======================================================== 2. THE WINDOW -#}
-<section class="stage" aria-label="The window">
-  <div class="stage-head">
-    <h2>2 &middot; The window</h2>
-    <span class="state">totals over totals, never an average of daily rates</span>
+{#- ===================================================== THE SCOREBOARD
+    Six facts, one row. `.stats` is auto-fit rather than a fixed column count,
+    so this lands as six across on a wide screen and reflows without a second
+    grid definition. -#}
+<div class="stats" id="window">
+  <div class="stat">
+    <div class="k">Spend</div>
+    <div class="v">{{ cash(s.get('spend')) }}</div>
+    {#- Spend has no direction of merit. More spend is not better and not
+        worse, so this one gets an arrow and the muted colour -- the same
+        reason a weather report does not colour rainfall red. -#}
+    {% call delta(dl.get('spend'), pc.get('spend'), 0, true) %}
+      {{ cash(dl.get('spend')) }}
+      {%- if pc.get('spend') is not none %} ({{ pct(pc.get('spend')) }}){% endif %}
+      vs prior window
+    {% endcall %}
   </div>
-  {{ edge(caveat) }}
 
-  {% if s.mixed_currency %}
-    <div class="caveat"><span><strong>Money is withheld in this brief.</strong>
-      This brand's accounts report in more than one currency
-      {#- ads.window_metrics returns `currencies` as a COUNT, which is what
-          ui.py:96 tests. A list is accepted too, so this line survives a
-          caller that hands over the names instead. -#}
-      {%- set cur = s.currencies %}
-      ({% if cur is string %}{{ cur }}
-       {%- elif cur is sequence %}{{ cur | join(', ') }}
-       {%- else %}{{ num(s.get('currencies')) }} distinct currencies in this
-       window{% endif %}), so a spend total would be an
-      addition of different units and a CPA would be a ratio of them. The
-      counts and the rates that carry no currency are printed; the money is
-      not. Filter to one account to get it back.</span></div>
-  {% endif %}
-
-  {% set rates = s.rates or {} %}
-  {% set dl    = s.delta or {} %}
-  {% set pc    = s.pct   or {} %}
-
-  <div class="kpis" style="margin-bottom:16px">
-    <div class="card kpi">
-      <div class="k">Spend</div>
-      <div class="v">{{ cash(s.get('spend'), one_currency) }}</div>
-      {#- Spend has no direction of merit. More spend is not better and not
-          worse, so this delta gets an arrow and the muted colour -- the same
-          reason a weather report does not colour rainfall red. -#}
-      <div class="delta {{ 'up' if (dl.get('spend') or 0) > 0 else 'down' if (dl.get('spend') or 0) < 0 else 'flat' }}">
-        {{ cash(dl.get('spend'), one_currency) }}
-        {%- if pc.get('spend') is not none %} ({{ pct(pc.get('spend')) }}){% endif %}
-        vs prior window</div>
-    </div>
-    <div class="card kpi">
-      <div class="k">Conversions</div>
-      <div class="v">{{ num(s.get('conversions')) }}</div>
-      <div class="delta {{ 'up good' if (dl.get('conversions') or 0) > 0 else 'down bad' if (dl.get('conversions') or 0) < 0 else 'flat' }}">
-        {{ num(dl.get('conversions')) }}
-        {%- if pc.get('conversions') is not none %} ({{ pct(pc.get('conversions')) }}){% endif %}
-        vs prior window</div>
-    </div>
-    <div class="card kpi">
-      <div class="k">CPA</div>
-      {#- s.rates.cpa, read out of the jsonb ads.rate() returned. Never a flat
-          key, and never a division done on this page: this tile and
-          `intel overview` read the same number or one of them is wrong. -#}
-      <div class="v">{{ cash(rates.get('cpa'), one_currency) }}</div>
+  <div class="stat">
+    <div class="k">CPA</div>
+    {#- s.rates.cpa, read out of the jsonb ads.rate() returned. Never a flat
+        key, and never a division done on this page: this tile and
+        `intel overview` read the same number or one of them is wrong. -#}
+    <div class="v">{{ cash(rates.get('cpa')) }}</div>
+    {% call delta(dl.get('cpa'), pc.get('cpa'), -1) %}
       {% if dl.get('cpa') is not none %}
-        <div class="delta {{ 'down good' if (dl.get('cpa') or 0) < 0 else 'up bad' if (dl.get('cpa') or 0) > 0 else 'flat' }}">
-          {{ cash(dl.get('cpa'), one_currency) }}
-          {%- if pc.get('cpa') is not none %} ({{ pct(pc.get('cpa')) }}){% endif %}
-          vs prior window</div>
+        {{ cash(dl.get('cpa')) }}
+        {%- if pc.get('cpa') is not none %} ({{ pct(pc.get('cpa')) }}){% endif %}
+        vs prior window
       {% else %}
-        <div class="delta flat">no prior CPA &mdash; nothing converted in one of
-          the two windows</div>
+        no prior CPA &mdash; nothing converted in one of the two windows
       {% endif %}
-    </div>
-    <div class="card kpi">
-      <div class="k">Link CTR</div>
-      <div class="v">{{ pct(rates.get('link_ctr')) }}</div>
-      <div class="delta {{ 'up good' if (dl.get('link_ctr') or 0) > 0 else 'down bad' if (dl.get('link_ctr') or 0) < 0 else 'flat' }}">
-        {{ pct(dl.get('link_ctr')) }} vs prior &middot; link clicks, not all
-        clicks</div>
-    </div>
+    {% endcall %}
   </div>
 
-  <div class="stats">
-    <div class="stat"><div class="k">CPM</div>
-      <div class="v">{{ cash(rates.get('cpm'), one_currency) }}</div>
-      <div class="sub">{{ num(s.get('impressions')) }} impressions</div></div>
-    <div class="stat"><div class="k">Link clicks</div>
-      <div class="v">{{ num(s.get('link_clicks')) }}</div>
-      <div class="sub">cost per link click
-        {{ cash(rates.get('cost_per_link_click'), one_currency) }}</div></div>
-    <div class="stat"><div class="k">Conversion rate</div>
-      <div class="v">{{ pct(rates.get('conversion_rate')) }}</div>
-      <div class="sub">of link clicks</div></div>
-    <div class="stat"><div class="k">Ads in and out</div>
-      <div class="v">{{ num(s.get('appeared')) }} / {{ num(s.get('disappeared')) }}</div>
-      <div class="sub">started / stopped in this window</div></div>
+  <div class="stat">
+    <div class="k">Conversions</div>
+    <div class="v">{{ num(s.get('conversions')) }}</div>
+    {% call delta(dl.get('conversions'), pc.get('conversions'), 1, true) %}
+      {{ num(dl.get('conversions')) }}
+      {%- if pc.get('conversions') is not none %} ({{ pct(pc.get('conversions')) }}){% endif %}
+      vs prior window
+    {% endcall %}
   </div>
 
-  {{ readings_for(d.readings, ['spend', 'window', 'brand']) }}
-</section>
+  <div class="stat">
+    <div class="k">Link CTR</div>
+    <div class="v">{{ pct(rates.get('link_ctr')) }}</div>
+    {#- Percentage POINTS. pct() would render 0.0999 as "0.10%", which reads
+        as a tenth of a percent relative rather than a tenth of a point. -#}
+    {% call delta(dl.get('link_ctr'), none, 1) %}
+      {{ num(dl.get('link_ctr'), 2) }} pp vs prior &middot; link clicks, not all clicks
+    {% endcall %}
+  </div>
+
+  <div class="stat">
+    <div class="k">Settled through</div>
+    <div class="v" style="font-size:19px; margin-top:4px">{{ t.settled_through or '--' }}</div>
+    <div class="sub">{{ num(d.unsettled_days) }} unsettled day(s) in this window
+      &mdash; Meta restates for about three</div>
+  </div>
+
+  <div class="stat">
+    {#- "No ANGLE", not "no tag". ads.untagged_spend counts an ad as tagged
+        only when a facet resolves an angle, and the angle bank is empty on
+        this brand -- so this reads 100% forever while scripts/tag.py has
+        labelled every ad's hook and offer. The old label said the copy was
+        unread; it is not. creative_labels is the other coverage, and the
+        line under the figure names it so the two are never confused.
+
+        The share would read better and this template may not compute one:
+        the function returns the two amounts and no ratio. -#}
+    {% set cl = f.get('creative_labels') or {} %}
+    <div class="k">Spend with no angle</div>
+    <div class="v">{{ cash(ut.get('untagged_spend')) }}</div>
+    <div class="sub">of {{ cash(ut.get('total_spend')) }}
+      {%- if cl.get('ads') %} &middot; the copy is labelled: offer on
+        {{ num(cl.get('with_an_offer')) }} of {{ num(cl.get('ads')) }} ads, hook on
+        {{ num(cl.get('with_a_hook')) }}{% endif %}</div>
+  </div>
+</div>
 
 
-{#- ==================================================== 3. WHAT MOVED IT
-    Structure changes come FIRST and sit above the fatigue section, because a
-    budget edit is a cause and a rate/mix split is arithmetic. Read in the
-    other order, every account edit gets re-explained as creative decay. -#}
-{% set mv = f.movement or {} %}
-<section class="stage" aria-label="What moved it">
+{#- ================================================ WHAT THIS WINDOW SAYS -#}
+{% if findings %}
+<section class="stage" id="findings" aria-label="What this window says">
   <div class="stage-head">
-    <h2>3 &middot; What moved it</h2>
-    <span class="state">rate effect and mix effect are different problems</span>
+    <h2>What this window says</h2>
+    <span class="state">readings of the figures below, not decisions about them</span>
   </div>
-  {{ edge(caveat) }}
+  <div class="card" style="padding:0">
+    {% for key, label, anchor, rows in findings %}
+      {{ finding(loop.index, label, anchor, rows, miniature(key),
+                 flag=(key == 'trust' and t.healthy is sameas false)) }}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
+
+{#- ==================================================== WHAT MOVED IT
+    Structure changes come FIRST inside this section, because a budget edit is
+    a cause and a rate/mix split is arithmetic. Read the other way round, every
+    account edit gets re-explained as creative decay. -#}
+<section class="stage" id="moved" aria-label="What moved it">
+  <div class="stage-head">
+    <h2>What moved it</h2>
+    <span class="state">Source: <code>ads.cpa_bridge_totals</code> + <code>intel why</code></span>
+  </div>
+
+  <div class="grid" style="margin-bottom:16px">
+    <div class="card span2">
+      <div class="card-head"><h2 class="card-t">The two things that can move a CPA</h2></div>
+      {#- Rate, mix, and the ads that converted in only one window -- the third
+          row is what makes the bars add up to the net. Without it a reader
+          sums rate and mix, gets a different number, and trusts neither. -#}
+      {% set eff = [('Rate effect', mv.get('rate_effect'), -1),
+                    ('Mix effect',  mv.get('mix_effect'),  -1)] %}
+      {% if mv.get('unattributable_effect') is not none %}
+        {% set _ = eff.append(('One window', mv.get('unattributable_effect'), -1)) %}
+      {% endif %}
+      {% set _ = eff.append(('Net', mv.get('cpa_change'), -1)) %}
+      {{ effect_bars(eff, kind='cpa', width=560, row_h=30, label_w=76,
+                     value_w=90) | safe }}
+    </div>
+
+    <div class="card">
+      {#- The part the split cannot assign, in dollars; the share only when it
+          can honestly be called coverage (see why.html -- when the one-window
+          ads pull the other way the function's share exceeds 100%). The old
+          bar stacked that percentage against a dollar amount, two units on
+          one axis. -#}
+      {% set share = mv.get('attributable_share') %}
+      <div class="k">Outside the split</div>
+      <div class="big">{{ ('+' if (mv.get('unattributable_effect') or 0) > 0 else '') ~ money(mv.get('unattributable_effect')) }}</div>
+      {% if share is not none and 0 <= share <= 100 %}
+        <div style="margin:9px 0 0; border-radius:3px; overflow:hidden">
+          {{ split_bar([('Covered', share, '--accent'), ('Not covered', 100 - share, '--line')],
+                       height=8) | safe }}
+        </div>
+        <div class="n" style="margin-top:6px">the split covers {{ pct(share) }} of the move</div>
+      {% endif %}
+      <div class="n" style="margin-top:8px">
+        {{ num(mv.get('attributable_ads')) }} ad(s) converted in <em>both</em> windows,
+        which is all the split can be computed for.
+        {{ num(mv.get('unattributable_ads')) }} did not.
+      </div>
+    </div>
+  </div>
+
+  {#- `why` is printed verbatim and an empty table is never drawn in its place.
+      "No changes recorded" and "we cannot see changes" look identical as an
+      empty list, and only one of them is a fact. -#}
   {% set ch = mv.structure_changes or {} %}
-  <div class="stage-head" style="margin-top:4px">
+  <div class="stage-head">
     <h2>What changed in the account</h2>
-    <span class="state">budget, status and goal edits</span>
   </div>
   {% if not ch.available %}
-    {#- `why` is printed verbatim and an empty table is never drawn in its
-        place. "No changes recorded" and "we cannot see changes" look
-        identical as an empty list, and only one of them is a fact. -#}
     <div class="empty">
       {{ ch.why or 'No reason given for why account changes are unavailable, which is itself a gap.' }}
       <div class="small muted" style="margin-top:8px">This is not the same as
@@ -429,11 +527,8 @@
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th scope="col">When</th>
-          <th scope="col">What</th>
-          <th scope="col">Field</th>
-          <th scope="col">From</th>
-          <th scope="col">To</th>
+          <th scope="col">When</th><th scope="col">What</th>
+          <th scope="col">Field</th><th scope="col">From</th><th scope="col">To</th>
         </tr></thead>
         <tbody>
         {% for c in ch.rows %}
@@ -450,42 +545,29 @@
     </div>
   {% endif %}
 
-  <div class="stats" style="margin-top:20px">
-    <div class="stat"><div class="k">CPA change</div>
-      <div class="v">{{ cash(mv.get('cpa_change'), one_currency) }}</div>
-      <div class="sub">this window against the one before it</div></div>
-    <div class="stat"><div class="k">Rate effect</div>
-      <div class="v">{{ cash(mv.get('rate_effect'), one_currency) }}</div>
-      <div class="sub">creatives got more (or less) expensive</div></div>
-    <div class="stat"><div class="k">Mix effect</div>
-      <div class="v">{{ cash(mv.get('mix_effect'), one_currency) }}</div>
-      <div class="sub">budget moved between creatives</div></div>
-    <div class="stat"><div class="k">Attributable</div>
-      <div class="v">{{ pct(mv.get('attributable_share')) }}</div>
-      <div class="sub">{{ num(mv.get('unattributable_ads')) }} ad(s) converted in only
-        one window</div></div>
-  </div>
-
-  {% if (mv.unattributable_ads or 0) > 0 %}
-    <div class="caveat" style="margin-top:16px"><span>
-      <strong>Partly unattributable.</strong>
-      {{ num(mv.get('unattributable_ads')) }} ad(s) converted in only one of the two
-      windows, so the rate/mix split is undefined for them. Their contribution
-      is still counted in the total &mdash; they are the rows below with no
-      rate and no mix &mdash; but it cannot be blamed on a creative getting
-      worse or on budget moving, because both of those need two defined CPAs.
-    </span></div>
-  {% endif %}
+  {% macro mv_row(r) -%}
+  <tr>
+    <td class="name">
+      <a href="/ad/{{ r.ad_key }}{% if brand %}?brand={{ brand }}{% endif %}">{{ r.entity_name or r.ad_key }}</a>
+      {% if r.reason and r.reason != 'attributable' %}
+        <div class="why">{{ r.reason | replace('_', ' ') }}</div>
+      {% endif %}
+    </td>
+    <td class="num">{% if r.get('rate_effect') is not none %}{{ cash(r.get('rate_effect')) }}{% else %}--{% endif %}</td>
+    <td class="num">{% if r.get('mix_effect') is not none %}{{ cash(r.get('mix_effect')) }}{% else %}--{% endif %}</td>
+    <td class="num"><strong>{{ cash(r.get('total_effect')) }}</strong></td>
+  </tr>
+  {%- endmacro %}
 
   <div class="stage-head" style="margin-top:16px">
-    <h2>Per ad</h2>
-    <span class="state">largest contribution first; the column sums to the total</span>
+    <h2>The ads that moved it most</h2>
   </div>
   {% if not mv.rows %}
     <div class="empty">Nothing spent in either window, so there is no movement
       to decompose.</div>
   {% else %}
-    <div class="table-wrap">
+    {% set undefined_split = mv.rows | rejectattr('reason', 'equalto', 'attributable') | list %}
+    <div class="table-wrap" style="border-bottom-left-radius:0; border-bottom-right-radius:0">
       <table>
         <thead><tr>
           <th scope="col">Ad</th>
@@ -493,394 +575,352 @@
           <th scope="col" class="num">Mix effect</th>
           <th scope="col" class="num">Total effect</th>
         </tr></thead>
-        <tbody>
-        {% for r in mv.rows %}
-          <tr>
-            <td class="name">
-              <a href="/ad/{{ r.ad_key }}{% if brand %}?brand={{ brand }}{% endif %}">{{ r.entity_name or r.ad_key }}</a>
-              {% if r.reason and r.reason != 'attributable' %}
-                <div class="why">{{ r.reason | replace('_', ' ') }}</div>
-              {% endif %}
-            </td>
-            <td class="num">{% if r.get('rate_effect') is not none %}{{ cash(r.get('rate_effect'), one_currency) }}{% else %}--{% endif %}</td>
-            <td class="num">{% if r.get('mix_effect') is not none %}{{ cash(r.get('mix_effect'), one_currency) }}{% else %}--{% endif %}</td>
-            <td class="num"><strong>{{ cash(r.get('total_effect'), one_currency) }}</strong></td>
-          </tr>
-        {% endfor %}
-        </tbody>
+        <tbody>{% for r in mv.rows[:5] %}{{ mv_row(r) }}{% endfor %}</tbody>
       </table>
     </div>
+    {% if mv.rows | length > 5 %}
+      {#- The shape of the tail is itself a fact. A cut that says only "show
+          all" asks the reader to scroll in order to find out whether it
+          matters. -#}
+      <details class="more" style="background:var(--surface); border:1px solid var(--line);
+               border-top:0; border-radius:0 0 var(--radius) var(--radius)">
+        <summary><strong>Show the other {{ mv.rows | length - 5 }}</strong> &mdash;
+          {{ undefined_split | length }} of them carry no split at all, having
+          converted in only one of the two windows.</summary>
+        <div class="table-wrap" style="border:0">
+          <table><tbody>{% for r in mv.rows[5:] %}{{ mv_row(r) }}{% endfor %}</tbody></table>
+        </div>
+      </details>
+    {% endif %}
   {% endif %}
-
-  {{ readings_for(d.readings, ['movement', 'bridge', 'structure', 'structure_change']) }}
 </section>
 
 
-{#- ==================================================== 4. WHAT'S TIRING -#}
-{% set cr = f.creative or {} %}
-<section class="stage" aria-label="What is tiring">
+{#- ==================================================== WHAT'S TIRING -#}
+{% if cr.rows %}
+<section class="stage" id="tiring" aria-label="What is tiring">
   <div class="stage-head">
-    <h2>4 &middot; What's tiring</h2>
-    <span class="state">five named symptoms and their count</span>
+    <h2>What's tiring</h2>
+    <span class="state">Source: <code>ads.fatigue</code>, the last seven days against the seven before</span>
   </div>
-  {{ edge(caveat) }}
 
-  <div class="caveat"><span><strong>Daily frequency.</strong>
-    {{ cr.frequency_note or 'Daily frequency is impressions over that day\'s
-    deduplicated reach.' }} An ad at 1.4 has not been seen 1.4 times by each
-    person &mdash; it was shown 1.4 times per person <em>that day</em>.
-    Cumulative frequency is not in this database at all.</span></div>
+  {% macro cr_row(r) -%}
+  {% set rec = (r.recent or {}).get('rates') or {} %}
+  {% set pri = (r.prior  or {}).get('rates') or {} %}
+  <tr>
+    <td class="name">
+      <a href="/ad/{{ r.ad_key }}{% if brand %}?brand={{ brand }}{% endif %}">{{ r.entity_name or r.ad_key }}</a>
+      <div class="why">{{ num(r.get('impressions_recent')) }} impressions over
+        {{ num(r.get('days_observed')) }} day(s)</div>
+    </td>
+    <td>{{ symptoms(r) }}</td>
+    <td class="num">{{ cash(r.get('spend_recent')) }}</td>
+    <td class="num">{{ cash(pri.get('cpa')) }}</td>
+    <td class="num">{{ cash(rec.get('cpa')) }}</td>
+    <td class="num">{{ pct(pri.get('link_ctr')) }}</td>
+    <td class="num">{{ pct(rec.get('link_ctr')) }}</td>
+    {#- CPL is not comparable across optimization goals, so the goal travels
+        with the row. An ad group optimising link clicks and one optimising
+        conversions are different animals however similar the creative. -#}
+    <td>{% if r.optimization_goal %}<span class="pill quiet">{{ words(r.optimization_goal) }}</span>
+        {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
+  </tr>
+  {%- endmacro %}
 
-  {% if (cr.suppressed_unconfident or 0) > 0 %}
-    {#- A count and one sentence. These are deliberately NOT listed as
-        findings: below the spend or impression floor the score is
-        arithmetically correct and means nothing, and a list of them reads
-        like a list of problems. -#}
-    <div class="card quiet" style="margin-bottom:16px">
-      {{ num(cr.get('suppressed_unconfident')) }} ad(s) show symptoms but fall below
-      the spend or impression floor, so their score would be arithmetically
-      correct and meaningless &mdash; they are counted here rather than listed,
-      because a list of them reads like a list of problems.
+  <div class="table-wrap" style="border-bottom-left-radius:0; border-bottom-right-radius:0">
+    <table>
+      <thead><tr>
+        <th scope="col">Ad</th>
+        <th scope="col">Symptoms
+          <div class="sym-head" aria-hidden="true">
+            <span>CTR</span><span>CPM</span><span>CPA</span><span>FRQ</span><span>RNK</span>
+          </div></th>
+        <th scope="col" class="num">Spend, 7d</th>
+        <th scope="col" class="num">CPA before</th>
+        <th scope="col" class="num">CPA now</th>
+        <th scope="col" class="num">Link CTR before</th>
+        <th scope="col" class="num">Link CTR now</th>
+        <th scope="col">Goal it was buying</th>
+      </tr></thead>
+      <tbody>{% for r in cr.rows[:5] %}{{ cr_row(r) }}{% endfor %}</tbody>
+    </table>
+  </div>
+  {% if cr.rows | length > 5 or (cr.suppressed_unconfident or 0) > 0 %}
+    <details class="more" style="background:var(--surface); border:1px solid var(--line);
+             border-top:0; border-radius:0 0 var(--radius) var(--radius)">
+      <summary>
+        {%- if cr.rows | length > 5 -%}
+          <strong>Show the other {{ cr.rows | length - 5 }}</strong> &mdash;
+          {{ sc.one }} carry a single symptom and {{ sc.none }} carry none.
+        {%- endif %}
+        {% if (cr.suppressed_unconfident or 0) > 0 -%}
+          A further {{ num(cr.get('suppressed_unconfident')) }} fall below the spend
+          or impression floor, where a symptom count would be arithmetic rather
+          than a finding, so they are counted here and not listed.
+        {%- endif -%}
+      </summary>
+      {% if cr.rows | length > 5 %}
+        <div class="table-wrap" style="border:0">
+          <table><tbody>{% for r in cr.rows[5:] %}{{ cr_row(r) }}{% endfor %}</tbody></table>
+        </div>
+      {% endif %}
+    </details>
+  {% endif %}
+</section>
+{% endif %}
+
+
+{#- ========================================= WHAT THE COPY IS DOING
+    Format first, and deliberately: it needs no tag and no signature, so this
+    section says something real even when the bank is inert and every angle
+    number below is empty. -#}
+{% set copy_dims = [] %}
+{% for dim, label in [('format', 'Format'), ('hook', 'Hook'),
+                      ('offer', 'Offer'), ('family', 'Family'),
+                      ('audience', 'Audience')] %}
+  {% set rows = cp.get(dim) or [] %}
+  {% set real = rows | rejectattr('value', 'none') | list %}
+  {% if real %}{% set _ = copy_dims.append((dim, label, real)) %}{% endif %}
+{% endfor %}
+
+{% if copy_dims %}
+<section class="stage" id="copy" aria-label="What the copy is doing">
+  <div class="stage-head">
+    <h2>What the copy is doing</h2>
+    <span class="state">Source: <code>ads.facet_performance</code></span>
+  </div>
+
+  {#- What the money was buying, once, at the top. Every cost figure in this
+      section is confounded by it, and one bar says so faster than a paragraph
+      repeated under each dimension. `family` carries every ad in the window,
+      so its goal split is the window's. -#}
+  {% set all_goals = ((cp.get('family') or [{}])[0] or {}).get('optimization_goals') or [] %}
+  {% if all_goals | length > 1 %}
+    {% set segs = [] %}
+    {% for g in all_goals %}
+      {% set _ = segs.append((words(g.goal) if g.goal else 'no goal recorded', g.get('spend'),
+                              tones[loop.index0 % tones | length])) %}
+    {% endfor %}
+    <div class="caveat" style="display:block">
+      <div><strong>Cost is not comparable across these rows.</strong> The
+        window's spend bought {{ all_goals | length }} different things, and an ad
+        group buying link clicks is not comparable with one buying conversions.</div>
+      <div style="margin-top:9px; border-radius:3px; overflow:hidden">
+        {{ split_bar(segs, height=14) | safe }}
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:16px; margin-top:7px; font-size:11.5px">
+        {% for name, spend, tone in segs %}
+          <span style="display:inline-flex; align-items:center; gap:5px">
+            <span style="width:9px; height:9px; border-radius:2px;
+                         background:var({{ tone }})"></span>
+            {{ name }} <strong>{{ cash(spend) }}</strong></span>
+        {% endfor %}
+      </div>
     </div>
   {% endif %}
 
-  {% if not cr.rows %}
-    <div class="empty">No ad ran in both the recent window and the one before
-      it, so there is nothing to compare. That is the usual answer on a new
-      account.</div>
-  {% else %}
+  {% for dim, label, rows in copy_dims %}
+    <div class="stage-head" {% if not loop.first %}style="margin-top:18px"{% endif %}>
+      <h2>By {{ label | lower }}</h2>
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th scope="col">Ad</th>
-          <th scope="col">Symptoms</th>
-          <th scope="col" class="num">Score</th>
-          <th scope="col" class="num">Spend (recent)</th>
-          <th scope="col" class="num">CPA now</th>
-          <th scope="col" class="num">CPA before</th>
-          <th scope="col" class="num">Link CTR now</th>
-          <th scope="col" class="num">Link CTR before</th>
+          <th scope="col">{{ label }}</th>
+          <th scope="col" class="num">Ads</th>
+          <th scope="col" class="num">Spend</th>
+          <th scope="col" class="num">Conv</th>
+          <th scope="col" class="num">CPA</th>
+          <th scope="col" class="num">Rank in goal</th>
+          <th scope="col">What that spend was buying</th>
         </tr></thead>
         <tbody>
-        {% for r in cr.rows %}
-          {% set rec = (r.recent or {}).get('rates') or {} %}
-          {% set pri = (r.prior  or {}).get('rates') or {} %}
+        {% for r in rows %}
+          {% set rr = r.rates or {} %}
           <tr>
-            <td class="name">
-              <a href="/ad/{{ r.ad_key }}{% if brand %}?brand={{ brand }}{% endif %}">{{ r.entity_name or r.ad_key }}</a>
+            <td class="name"><strong>{{ r.value }}</strong>
+              {% if not r.spend_sufficient %}
+                <div class="why">below the spend floor &mdash; shown, but thin</div>
+              {% endif %}
             </td>
-            <td>
-              {#- The word travels with the mark. One pill tone for all five,
-                  because which symptom fired is carried by the LABEL --
-                  colouring them differently would say that CPM up is more
-                  urgent than CTR down, which is not a thing this page knows. -#}
-              {% for flag, label in [
-                   (r.link_ctr_decline, 'CTR down'),
-                   (r.cpm_rise,         'CPM up'),
-                   (r.cpa_rise,         'CPA up'),
-                   (r.frequency_rise,   'daily freq up'),
-                   (r.ranking_drop,     'ranking down')] %}
-                {% if flag %}<span class="pill warn">{{ label }}</span> {% endif %}
-              {% endfor %}
-              {% if not (r.score or 0) %}<span class="muted small">none</span>{% endif %}
+            <td class="num">{{ num(r.get('ads_run')) }}</td>
+            <td class="num">{{ cash(r.get('spend')) }}</td>
+            <td class="num">{{ num(r.get('conversions')) }}</td>
+            <td class="num">{{ cash(rr.get('cpa')) }}</td>
+            <td class="num">
+              {%- if r.comparable_on_cost %}{{ r.rank_within_goal or '--' }}
+              {%- else %}<span class="muted" title="ran under more than one optimization goal">not rankable</span>{% endif -%}
             </td>
-            <td class="num"><strong>{{ num(r.get('score')) }}</strong>/5</td>
-            <td class="num">{{ cash(r.get('spend_recent'), one_currency) }}</td>
-            <td class="num">{{ cash(rec.get('cpa'), one_currency) }}</td>
-            <td class="num">{{ cash(pri.get('cpa'), one_currency) }}</td>
-            <td class="num">{{ pct(rec.get('link_ctr')) }}</td>
-            <td class="num">{{ pct(pri.get('link_ctr')) }}</td>
+            <td style="min-width:220px">
+              {% set goals = r.optimization_goals or [] %}
+              {% if goals %}
+                {% set gsegs = [] %}
+                {% for g in goals %}
+                  {% set _ = gsegs.append((words(g.goal) if g.goal else 'no goal recorded', g.get('spend'),
+                                           tones[loop.index0 % tones | length])) %}
+                {% endfor %}
+                <div style="border-radius:3px; overflow:hidden">
+                  {{ split_bar(gsegs, height=9) | safe }}
+                </div>
+                <div class="why">{% for name, _v, _t in gsegs %}{{ name }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</div>
+              {% else %}
+                <span class="muted small">no goal recorded</span>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
+  {% endfor %}
+
+  {% set absent = [] %}
+  {% for dim, label in [('hook', 'hook'), ('offer', 'offer'),
+                        ('audience', 'audience'), ('family', 'family')] %}
+    {% if not (cp.get(dim) or []) | rejectattr('value', 'none') | list %}
+      {% set _ = absent.append(label) %}
+    {% endif %}
+  {% endfor %}
+  {% if absent %}
+    <p class="sub" style="margin-top:10px">
+      <strong>{{ absent | join(', ') | capitalize }}
+      {{- ' are' if absent | length > 1 else ' is' }} absent rather than empty.</strong>
+      Each returns a single unlabelled row holding every ad in the window, and
+      there is nothing to group by until the creative has been classified.
+    </p>
   {% endif %}
-
-  {{ readings_for(d.readings, ['creative', 'fatigue', 'ad']) }}
 </section>
+{% endif %}
 
 
-{#- ========================================= 5. WHAT THE COPY IS DOING
-    One block per dimension. Within each, the rows that can be ranked on cost
-    are ranked and the rows that cannot are shown separately -- because CPL is
-    not comparable across optimization goals, and ranking them anyway produces
-    a league table whose top row is an artefact of what Meta was told to buy. -#}
-{#- f.get('copy'), not f.copy: `copy` is a dict METHOD, so dotted access here
-    returns the method rather than the facts and every dimension below renders
-    empty. The one key in this whole brief whose name collides. -#}
-{% set cp = f.get('copy') or {} %}
-<section class="stage" aria-label="What the copy is doing">
-  <div class="stage-head">
-    <h2>5 &middot; What the copy is doing</h2>
-    <span class="state">format, hook, offer, family</span>
-  </div>
-  {{ edge(caveat) }}
-
-  <div class="boards">
-    {% for dim, label, src in [
-         ('format', 'Format', 'ads.ad.format'),
-         ('hook',   'Hook',   'ads.facet_effective.hook'),
-         ('offer',  'Offer',  'ads.facet_effective.offer'),
-         ('family', 'Family', 'ads.angle_family.name')] %}
-      {% set rows = cp.get(dim) or [] %}
-      {% set ranked   = rows | selectattr('comparable_on_cost') | list %}
-      {% set unranked = rows | rejectattr('comparable_on_cost') | list %}
-      <section class="board" aria-label="Copy dimension: {{ label }}">
-        <header>
-          <h2>{{ label }}</h2>
-        </header>
-        <div class="body">
-          {% if not rows %}
-            <p class="muted small" style="margin:0">Nothing tagged on this
-              dimension in this window.</p>
-          {% else %}
-            {% if ranked %}
-              <div class="table-wrap">
-                <table>
-                  <thead><tr>
-                    <th scope="col">{{ label }}</th>
-                    <th scope="col" class="num">Ads</th>
-                    <th scope="col" class="num">Spend</th>
-                    <th scope="col" class="num">Conv</th>
-                    <th scope="col" class="num">CPA</th>
-                    <th scope="col" class="num">Rank in goal</th>
-                  </tr></thead>
-                  <tbody>
-                  {% for r in ranked %}
-                    {% set rr = r.rates or {} %}
-                    <tr>
-                      <td class="name">{{ r.value or '--' }}
-                        {% if not r.spend_sufficient %}
-                          <div class="why">below the spend floor &mdash; ranked,
-                            but thin</div>
-                        {% endif %}
-                      </td>
-                      <td class="num">{{ num(r.get('ads_run')) }}</td>
-                      <td class="num">{{ cash(r.get('spend'), one_currency) }}</td>
-                      <td class="num">{{ num(r.get('conversions')) }}</td>
-                      <td class="num">{{ cash(rr.get('cpa'), one_currency) }}</td>
-                      <td class="num">{{ r.rank_within_goal or '--' }}</td>
-                    </tr>
-                  {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-            {% else %}
-              <p class="muted small" style="margin:0">No value on this dimension
-                can be ranked on cost in this window.</p>
-            {% endif %}
-
-            {% if unranked %}
-              {#- Kept, and kept OUT of the ranking. Dropping these rows would
-                  turn "we cannot compare this" into "this did not run". -#}
-              <div style="margin-top:14px; padding-top:10px;
-                          border-top:1px solid var(--line)">
-                <div class="eyebrow">Cannot be ranked on cost</div>
-                <p class="small muted" style="margin:4px 0 8px">
-                  These ran under optimization goals that buy different things.
-                  An ad group optimising link clicks and one optimising
-                  conversions are different animals however similar the copy, so
-                  their cost figures are printed and not ordered.
-                </p>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr>
-                      <th scope="col">{{ label }}</th>
-                      <th scope="col" class="num">Ads</th>
-                      <th scope="col" class="num">Spend</th>
-                      <th scope="col" class="num">Conv</th>
-                      <th scope="col">Goals it ran under</th>
-                    </tr></thead>
-                    <tbody>
-                    {% for r in unranked %}
-                      <tr>
-                        <td class="name">{{ r.value or '--' }}</td>
-                        <td class="num">{{ num(r.get('ads_run')) }}</td>
-                        <td class="num">{{ cash(r.get('spend'), one_currency) }}</td>
-                        <td class="num">{{ num(r.get('conversions')) }}</td>
-                        <td class="small">
-                          {#- A goal arrives either as a bare name or as
-                              {goal, spend}; both print as the name. -#}
-                          {% for g in (r.optimization_goals or []) %}
-                            <span class="pill quiet">{{ g.goal or g }}</span>
-                          {% else %}
-                            <span class="muted">no goal recorded</span>
-                          {% endfor %}
-                        </td>
-                      </tr>
-                    {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            {% endif %}
-          {% endif %}
-        </div>
-      </section>
-    {% endfor %}
-  </div>
-
-  {{ readings_for(d.readings, ['copy', 'format', 'hook', 'offer', 'family']) }}
-</section>
-
-
-{#- ========================================== 6. WHICH ANGLES EARNED THEIR PLACE
+{#- ========================================== WHICH ANGLES EARNED THEIR PLACE
     Spend share beside conversion share, in adjacent columns, because THAT
     CONTRAST IS THE FINDING. An angle taking 40% of the budget and returning
-    12% of the conversions is the whole story, and neither number tells it
+    12% of the conversions is the whole story and neither number tells it
     alone. -#}
-{% set an = f.angles or {} %}
-{% set arows = an.rows or [] %}
-<section class="stage" aria-label="Which angles earned their place">
+{% set silent = [] %}
+{% if arows %}
+<section class="stage" id="angles" aria-label="Which angles earned their place">
   <div class="stage-head">
-    <h2>6 &middot; Which angles earned their place</h2>
-    <span class="state">share of spend against share of conversions</span>
+    <h2>Which angles earned their place</h2>
+    <span class="state">Source: <code>ads.angle_performance</code></span>
   </div>
-  {{ edge(caveat) }}
 
   {% set bars = [] %}
   {% for r in arows if r.comparable_on_cost %}
-    {% set rr = r.rates or {} %}
-    {% set _ = bars.append((r.angle_name or '--', rr.get('cpa'))) %}
+    {% set _ = bars.append((r.angle_name or '--', (r.rates or {}).get('cpa'))) %}
   {% endfor %}
   {% if bars %}
-    <div class="card" style="margin-bottom:16px">
+    <div class="card pad0" style="margin-bottom:16px">
       <div class="card-head"><h2 class="card-t">CPA by angle</h2>
         <span class="more">sorted; identity is the label, not the colour</span></div>
       {{ bar_chart(bars, kind='cpa') | safe }}
-      <p class="small muted" style="margin:10px 0 0">
-        Only the {{ bars | length }} angle(s) comparable on cost are plotted.
-        An angle with no bar had no conversions in this window, which is a
-        finding and not an omission.
+      <p class="n" style="margin:0 0 12px">
+        Only the {{ bars | length }} angle(s) comparable on cost are plotted. An
+        angle with no bar had no conversions in this window, which is a finding
+        and not an omission.
       </p>
     </div>
   {% endif %}
 
-  {% if not arows %}
-    <div class="empty">No angle carried spend in this window.</div>
-  {% else %}
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th scope="col">Angle</th>
-          <th scope="col">Family</th>
-          <th scope="col" class="num">Spend</th>
-          <th scope="col" class="num">Spend share</th>
-          <th scope="col" class="num">Conv share</th>
-          <th scope="col" class="num">Conv</th>
-          <th scope="col" class="num">CPA</th>
-          <th scope="col" class="num">Rank in goal</th>
-          <th scope="col" class="num">Tagged</th>
-          <th scope="col" class="num">Inherited</th>
-          <th scope="col">State</th>
-        </tr></thead>
-        <tbody>
-        {% for r in arows %}
-          {% set rr = r.rates or {} %}
-          <tr>
-            <td class="name"><strong>{{ r.angle_name or '--' }}</strong>
-              {% if r.definition %}<div class="why">{{ r.definition }}</div>{% endif %}
-              {% if not r.spend_sufficient %}
-                <div class="why">below the spend floor &mdash; ran, but not
-                  enough to read</div>
-              {% endif %}
-            </td>
-            <td>{% if r.family %}<span class="pill quiet">{{ r.family }}</span>
-                {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
-            <td class="num">{{ cash(r.get('spend'), one_currency) }}</td>
-            <td class="num"><strong>{{ pct(r.get('spend_share_pct'), 1) }}</strong></td>
-            <td class="num"><strong>{{ pct(r.get('conversion_share_pct'), 1) }}</strong></td>
-            <td class="num">{{ num(r.get('conversions')) }}</td>
-            <td class="num">
-              {%- if r.comparable_on_cost %}{{ cash(rr.get('cpa'), one_currency) }}
-              {%- else %}<span class="muted" title="ran under more than one optimization goal">not comparable</span>{% endif -%}
-            </td>
-            <td class="num">{{ r.rank_within_goal or '--' }}</td>
-            <td class="num">{{ num(r.get('tagged_ads')) }}</td>
-            <td class="num">{{ num(r.get('inherited_ads')) }}
-              {%- if (r.inherited_ads or 0) > 0 %}
-                <div class="why">never judged</div>{% endif -%}
-            </td>
-            <td>{% if r.state %}<span class="pill quiet">{{ r.state | replace('_', ' ') }}</span>
-                {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% endif %}
-
-  {#- How much of the money was judged at all. This is the denominator under
-      every share in the table above: if a third of the spend is untagged, a
-      40% spend share is 40% of the part somebody happened to label. -#}
-  {% set ut = f.untagged or {} %}
-  <div class="stage-head" style="margin-top:20px">
-    <h2>How much of the window was actually judged</h2>
-    <span class="state">the denominator under every share above</span>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th scope="col">Angle</th><th scope="col">Family</th>
+        <th scope="col" class="num">Spend</th>
+        <th scope="col" class="num">Spend share</th>
+        <th scope="col" class="num">Conv share</th>
+        <th scope="col" class="num">Conv</th>
+        <th scope="col" class="num">CPA</th>
+        <th scope="col" class="num">Rank in goal</th>
+        <th scope="col" class="num">Tagged</th>
+        <th scope="col" class="num">Inherited</th>
+        <th scope="col">State</th>
+      </tr></thead>
+      <tbody>
+      {% for r in arows %}
+        {% set rr = r.rates or {} %}
+        <tr>
+          <td class="name"><strong>{{ r.angle_name or '--' }}</strong>
+            {% if r.definition %}<div class="why">{{ r.definition }}</div>{% endif %}
+            {% if not r.spend_sufficient %}
+              <div class="why">below the spend floor &mdash; ran, but not enough to read</div>
+            {% endif %}
+          </td>
+          <td>{% if r.family %}<span class="pill quiet">{{ r.family }}</span>
+              {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
+          <td class="num">{{ cash(r.get('spend')) }}</td>
+          <td class="num"><strong>{{ pct(r.get('spend_share_pct'), 1) }}</strong></td>
+          <td class="num"><strong>{{ pct(r.get('conversion_share_pct'), 1) }}</strong></td>
+          <td class="num">{{ num(r.get('conversions')) }}</td>
+          <td class="num">
+            {%- if r.comparable_on_cost %}{{ cash(rr.get('cpa')) }}
+            {%- else %}<span class="muted" title="ran under more than one optimization goal">not comparable</span>{% endif -%}
+          </td>
+          <td class="num">{{ r.rank_within_goal or '--' }}</td>
+          <td class="num">{{ num(r.get('tagged_ads')) }}</td>
+          <td class="num">{{ num(r.get('inherited_ads')) }}
+            {%- if (r.inherited_ads or 0) > 0 %}<div class="why">never judged</div>{% endif -%}
+          </td>
+          <td>{% if r.state %}<span class="pill quiet">{{ r.state | replace('_', ' ') }}</span>
+              {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
   </div>
-  <div class="stats">
-    <div class="stat"><div class="k">Total spend</div>
-      <div class="v">{{ cash(ut.get('total_spend'), one_currency) }}</div>
-      <div class="sub">everything in the window</div></div>
-    <div class="stat"><div class="k">Tagged</div>
-      <div class="v">{{ cash(ut.get('tagged_spend'), one_currency) }}</div>
-      <div class="sub">carries a creative tag</div></div>
-    <div class="stat"><div class="k">Untagged</div>
-      <div class="v">{{ cash(ut.get('untagged_spend'), one_currency) }}</div>
-      <div class="sub">{{ num(ut.get('untagged_ads')) }} ad(s) &mdash; spent, unattributed</div></div>
-    <div class="stat"><div class="k">Inheritable</div>
-      <div class="v">{{ cash(ut.get('inheritable_spend'), one_currency) }}</div>
-      <div class="sub">{{ num(ut.get('inheritable_ads')) }} ad(s) &mdash; the approved
-        campaign angle already says, no judgement needed</div></div>
-    <div class="stat"><div class="k">Stale tags</div>
-      <div class="v">{{ cash(ut.get('stale_tag_spend'), one_currency) }}</div>
-      <div class="sub">{{ num(ut.get('stale_tag_ads')) }} ad(s) &mdash; the copy was
-        rewritten, so the tag describes an ad that no longer exists</div></div>
-  </div>
-
-  {{ readings_for(d.readings, ['angles', 'angle', 'untagged', 'tag', 'facet']) }}
+  <p class="sub" style="margin-top:10px">Spend share against conversion share is
+    the comparison that matters. Inherited means the angle was read off the
+    campaign_asset chain rather than judged by anyone.</p>
 </section>
+{% else %}
+  {% set _ = silent.append(('angles', 'Which angles earned their place',
+      failed.get('angles') and 'could not be read' or 'nothing to show',
+      failed.get('angles') or (
+        'The angle bank has no members, so no ad can carry an angle and none '
+        'carried spend. The copy itself is labelled: hook, offer and audience '
+        'are read below under What the copy is doing.'))) %}
+{% endif %}
 
 
-{#- ================================================ 7. WHAT WE'VE NEVER SAID
+{#- ================================================ WHAT WE'VE NEVER SAID
     The set difference the angle bank exists for. A free-text handle cannot
     produce this list, because you cannot count what nobody wrote down. -#}
-<section class="stage" aria-label="What we have never said">
+{% set pri = an.prior_experiments or [] %}
+{% if an.never_run or an.under_spent or d.proposals %}
+<section class="stage" id="gaps" aria-label="What we have never said">
   <div class="stage-head">
-    <h2>7 &middot; What we've never said</h2>
-    <span class="state">never run, and run too little to read</span>
+    <h2>What we've never said</h2>
   </div>
-  {% set pri = an.prior_experiments or [] %}
+
+  {% macro prior_for(r) -%}
+  {% set hits = pri | selectattr('angle_slug', 'equalto', r.angle_slug) | list %}
+  {% if not hits %}{% set hits = pri | selectattr('angle_name', 'equalto', r.angle_name) | list %}{% endif %}
+  {% if hits %}
+    {% for e in hits %}
+      <div class="why">tested before: {{ e.name }}
+        {%- if e.conclusion %} &mdash; {{ e.conclusion }}
+        {%- else %} &mdash; no conclusion recorded{% endif %}</div>
+    {% endfor %}
+  {% else %}
+    <div class="why">no prior experiment on record</div>
+  {% endif %}
+  {%- endmacro %}
 
   <div class="boards">
     <section class="board" aria-label="Never run">
-      <header>
-        <h2>Never run</h2>
-      </header>
+      <header><h2>Never run</h2></header>
       <div class="body">
         {% if not an.never_run %}
           <p class="muted small" style="margin:0">Every active angle has run in
             this window.</p>
         {% else %}
           {% for r in an.never_run %}
-            {% set prior = pri | selectattr('angle_slug', 'equalto', r.angle_slug) | list %}
-            {% if not prior %}
-              {% set prior = pri | selectattr('angle_name', 'equalto', r.angle_name) | list %}
-            {% endif %}
             <div style="margin-bottom:12px">
               {% if r.family %}<span class="pill quiet">{{ r.family }}</span>{% endif %}
               <strong>{{ r.angle_name or r.name or r }}</strong>
               {% if r.definition %}<div class="why">{{ r.definition }}</div>{% endif %}
-              {% if prior %}
-                {% for e in prior %}
-                  <div class="why">tested before: {{ e.name }}
-                    {%- if e.conclusion %} &mdash; {{ e.conclusion }}
-                    {%- else %} &mdash; no conclusion recorded{% endif %}</div>
-                {% endfor %}
-              {% else %}
-                <div class="why">no prior experiment on record</div>
-              {% endif %}
+              {{ prior_for(r) }}
             </div>
           {% endfor %}
         {% endif %}
@@ -888,9 +928,7 @@
     </section>
 
     <section class="board" aria-label="Under spent">
-      <header>
-        <h2>Ran, but not enough to read</h2>
-      </header>
+      <header><h2>Ran, but not enough to read</h2></header>
       <div class="body">
         {% if not an.under_spent %}
           <p class="muted small" style="margin:0">Every angle that ran cleared
@@ -900,26 +938,14 @@
             angles. They are angles with no verdict, and treating the two the
             same is how an idea gets retired before it was tried.</p>
           {% for r in an.under_spent %}
-            {% set prior = pri | selectattr('angle_slug', 'equalto', r.angle_slug) | list %}
-            {% if not prior %}
-              {% set prior = pri | selectattr('angle_name', 'equalto', r.angle_name) | list %}
-            {% endif %}
             {% set rr = r.rates or {} %}
             <div style="margin-bottom:12px">
               {% if r.family %}<span class="pill quiet">{{ r.family }}</span>{% endif %}
               <strong>{{ r.angle_name or r.name or r }}</strong>
-              <div class="why">{{ cash(r.get('spend'), one_currency) }} &middot;
+              <div class="why">{{ cash(r.get('spend')) }} &middot;
                 {{ num(r.get('conversions')) }} conversion(s) &middot;
-                CPA {{ cash(rr.get('cpa'), one_currency) }}</div>
-              {% if prior %}
-                {% for e in prior %}
-                  <div class="why">tested before: {{ e.name }}
-                    {%- if e.conclusion %} &mdash; {{ e.conclusion }}
-                    {%- else %} &mdash; no conclusion recorded{% endif %}</div>
-                {% endfor %}
-              {% else %}
-                <div class="why">no prior experiment on record</div>
-              {% endif %}
+                CPA {{ cash(rr.get('cpa')) }}</div>
+              {{ prior_for(r) }}
             </div>
           {% endfor %}
         {% endif %}
@@ -927,31 +953,54 @@
     </section>
   </div>
 
-  {{ readings_for(d.readings, ['never_run', 'under_spent']) }}
-
-  {#- Proposals sit here because this is where the gap is visible. They are
-      labelled a third way and they carry the command, because this repo
-      cannot file them: `intel record` takes a path and a person runs it. -#}
+  {#- Proposals sit here because this is where the gap is visible. They carry a
+      third label and the command, because this repo cannot file them: `intel
+      record` takes a path and a person runs it. -#}
   {% if d.proposals %}
     <div class="stage-head" style="margin-top:16px">
       <h2>Proposals</h2>
       <span class="state">{{ d.proposals | length }} &middot; none of them filed</span>
     </div>
     {% for p in d.proposals %}
-      {{ proposal(p) }}
+      <div role="note" style="margin:12px 0 12px 2px; padding:2px 0 2px 16px;
+           border-left:3px dashed var(--line-2)">
+        <div class="eyebrow">Proposal &mdash; not filed</div>
+        <p style="margin:3px 0 0; max-width:80ch">
+          <strong>{{ p.angle_name }}</strong>
+          {% if p.family %}<span class="pill quiet">{{ p.family }}</span>{% endif %}
+        </p>
+        {% if p.gap %}<div class="small" style="margin-top:3px">{{ p.gap }}</div>{% endif %}
+        <div class="small muted" style="margin-top:4px">
+          {% if p.already_tested %}Tested before &mdash; this is a re-run, not a
+            new idea.{% else %}No prior test on record.{% endif %}
+          {% for e in (p.prior_experiments or []) %}
+            <div style="margin-top:2px">{{ e.name or e }}
+              {%- if e.conclusion %} &mdash; {{ e.conclusion }}
+              {%- elif e.name %} &mdash; no conclusion recorded{% endif %}</div>
+          {% endfor %}
+        </div>
+        {% if p.how_to_file %}
+          <div style="margin-top:6px"><code>{{ p.how_to_file }}</code></div>
+        {% endif %}
+      </div>
     {% endfor %}
   {% endif %}
 </section>
+{% else %}
+  {% set _ = silent.append(('gaps', "What we've never said",
+      failed.get('angles.coverage') and 'could not be read' or 'nothing to show',
+      failed.get('angles.coverage') or
+      'A set difference against a vocabulary with no members in it. This '
+      'becomes a finding the day the first angle is signed.')) %}
+{% endif %}
 
 
-{#- ==================================================== 8. TESTS IN FLIGHT -#}
-{% set ex = f.experiments or {} %}
-<section class="stage" aria-label="Tests in flight">
+{#- ==================================================== TESTS IN FLIGHT -#}
+{% if ex.rows %}
+<section class="stage" id="experiments" aria-label="Tests in flight">
   <div class="stage-head">
-    <h2>8 &middot; Tests in flight</h2>
-    <span class="state">what we decided to test, before any number existed</span>
+    <h2>Tests in flight</h2>
   </div>
-
   {% if (ex.awaiting_launch or 0) > 0 %}
     <div class="card quiet" style="margin-bottom:16px">
       {{ num(ex.get('awaiting_launch')) }} proposed experiment(s) have never been
@@ -959,222 +1008,326 @@
       came back inconclusive, and only one of them is about the advertising.
     </div>
   {% endif %}
-
-  {% if not ex.rows %}
-    <div class="empty">
-      Nothing has been proposed yet. An experiment is filed with
-      <code>python -m intel record --kind experiment --json &lt;path&gt;</code>,
-      and launched by a person in Ads Manager.
-    </div>
-  {% else %}
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th scope="col">Name</th>
-          <th scope="col">State</th>
-          <th scope="col">Hypothesis</th>
-          <th scope="col">Primary metric</th>
-          <th scope="col">Conclusion</th>
-        </tr></thead>
-        <tbody>
-        {% for r in ex.rows %}
-          <tr>
-            <td class="name"><strong>{{ r.name }}</strong></td>
-            <td>
-              {% set tone = {'concluded': 'ok', 'running': 'warn',
-                             'proposed': 'quiet',
-                             'awaiting_conclusion': 'warn'}.get(r.state, 'quiet') %}
-              <span class="pill {{ tone }}">{{ (r.state or 'unknown') | replace('_', ' ') }}</span>
-            </td>
-            <td class="small">{{ r.hypothesis or '--' }}</td>
-            <td>{% if r.primary_metric %}<span class="pill quiet">{{ r.primary_metric }}</span>
-                {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
-            <td class="small">
-              {% if r.conclusion %}{{ r.conclusion }}
-              {% else %}<span class="muted">not concluded</span>{% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% endif %}
-
-  {{ readings_for(d.readings, ['experiments', 'experiment']) }}
-</section>
-
-
-{#- ===================================================== 9. WAITING ON YOU
-    The most actionable section on the page, and the only one where the verb
-    belongs to the reader rather than to this repo. It gets the accent card
-    and the full width, because everything above it is evidence and this is
-    the part somebody has to do something about. -#}
-{% set w = d.waiting_on_you or {} %}
-<section class="stage" aria-label="Waiting on you">
-  <div class="stage-head">
-    <h2>9 &middot; Waiting on you</h2>
-    <span class="state">this repo cannot do any of these</span>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th scope="col">Name</th><th scope="col">State</th>
+        <th scope="col">Hypothesis</th><th scope="col">Primary metric</th>
+        <th scope="col">Conclusion</th>
+      </tr></thead>
+      <tbody>
+      {% for r in ex.rows %}
+        <tr>
+          <td class="name"><strong>{{ r.name }}</strong></td>
+          <td>
+            {% set tone = {'concluded': 'ok', 'running': 'warn', 'proposed': 'quiet',
+                           'awaiting_conclusion': 'warn'}.get(r.state, 'quiet') %}
+            <span class="pill {{ tone }}">{{ (r.state or 'unknown') | replace('_', ' ') }}</span>
+          </td>
+          <td class="small">{{ r.hypothesis or '--' }}</td>
+          <td>{% if r.primary_metric %}<span class="pill quiet">{{ r.primary_metric }}</span>
+              {% else %}<span class="subtle">&mdash;</span>{% endif %}</td>
+          <td class="small">{% if r.conclusion %}{{ r.conclusion }}
+            {% else %}<span class="muted">not concluded</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
   </div>
+</section>
+{% else %}
+  {% set _ = silent.append(('experiments', 'Tests in flight',
+      failed.get('experiments') and 'could not be read' or 'nothing to show',
+      failed.get('experiments') or
+      'No experiment has been proposed. This one was readable and the answer '
+      'is genuinely none; experiments are filed with '
+      '<code>python -m intel record --kind experiment --json &lt;path&gt;</code> '
+      'and launched by a person in Ads Manager.')) %}
+{% endif %}
 
-  <div class="card dark" style="margin-bottom:16px">
-    <div class="k">Decisions only a signed-in person can make</div>
-    <div class="big" style="margin-top:2px">
-      {{ (w.angles_unsigned or []) | length
-       + (w.experiments_unlaunched or []) | length
-       + (w.experiments_unconcluded or []) | length
-       + (w.unmapped_handles or []) | length }}
-    </div>
-    <div class="n" style="margin-top:6px; max-width:70ch">
-      An angle goes active and an experiment gets a conclusion in growth-engine,
-      where a person is signed in and attributable. This page can propose and
-      cannot conclude &mdash; the schema enforces it, so there is no button here
-      that would help.
-    </div>
-    <a class="btn ghost" style="margin-top:12px"
-       href="http://127.0.0.1:8000/angles">Sign angles in growth-engine{{ ico.i('arrow-right') }}</a>
-    <div class="n" style="margin-top:10px">
-      {{ cash(w.get('untagged_spend'), one_currency) }} of spend is still unattributed
-      to any angle.
-    </div>
+
+{#- ===================================================== WAITING ON YOU
+    The only section where the verb belongs to the reader rather than to this
+    repo. Nothing below can be done by an agent: an angle goes active and an
+    experiment gets a conclusion only when a person signs it, under their own
+    name, and the schema enforces it. -#}
+{% set waiting_n = (w.angles_unsigned or []) | length
+                 + (w.experiments_unlaunched or []) | length
+                 + (w.experiments_unconcluded or []) | length
+                 + (w.unmapped_handles or []) | length %}
+{% if waiting_n %}
+<section class="stage" id="waiting" aria-label="Waiting on you">
+  <div class="stage-head">
+    <h2>Waiting on you</h2>
   </div>
 
   <div class="boards">
-    <section class="board" aria-label="Angles awaiting a signature">
-      <header>
-        <h2>Angles awaiting a signature</h2>
-        <div class="note">an angle is active only once a person signs it
-          (<code>angle_active_is_signed</code>)</div>
-      </header>
-      <div class="body">
-        {% if not w.angles_unsigned %}
-          <p class="muted small" style="margin:0">Nothing is waiting on a
-            signature.</p>
-        {% else %}
+    {% if w.angles_unsigned %}
+      <section class="board" aria-label="Angles awaiting a signature">
+        <header><h2>Angles awaiting a signature</h2>
+          <div class="note">an angle is active only once a person signs it
+            (<code>angle_active_is_signed</code>)</div></header>
+        <div class="body">
           <ul style="margin:0; padding-left:18px">
             {% for a in w.angles_unsigned %}
-              <li style="margin-bottom:4px">
-                <strong>{{ a.angle_name or a.name or a }}</strong>
-                {% if a.family %}<span class="pill quiet">{{ a.family }}</span>{% endif %}
-                {% if a.state %}<div class="why">{{ a.state | replace('_', ' ') }}</div>{% endif %}
-              </li>
+              <li style="margin-bottom:4px"><strong>{{ a.angle_name or a.name or a }}</strong>
+                {% if a.family %}<span class="pill quiet">{{ a.family }}</span>{% endif %}</li>
             {% endfor %}
           </ul>
           <p class="small" style="margin:10px 0 0">
-            <a href="http://127.0.0.1:8000/angles">Sign them at
-              127.0.0.1:8000/angles</a> &mdash; growth-engine, not this
-            dashboard, and never <code>localhost</code>.
-          </p>
-        {% endif %}
-      </div>
-    </section>
+            <a href="{{ w.where or 'http://127.0.0.1:8000/angles' }}">Sign them in
+              growth-engine</a> &mdash; not this dashboard, and never
+            <code>localhost</code>.</p>
+        </div>
+      </section>
+    {% endif %}
 
-    <section class="board" aria-label="Experiments never launched">
-      <header>
-        <h2>Experiments never launched</h2>
-        <div class="note">proposed here, launched by a person in Ads Manager</div>
-      </header>
-      <div class="body">
-        {% if not w.experiments_unlaunched %}
-          <p class="muted small" style="margin:0">Every proposed experiment has
-            been launched.</p>
-        {% else %}
+    {% if w.experiments_unlaunched %}
+      <section class="board" aria-label="Experiments never launched">
+        <header><h2>Experiments never launched</h2>
+          <div class="note">proposed here, launched by a person in Ads Manager</div></header>
+        <div class="body">
           <ul style="margin:0; padding-left:18px">
             {% for e in w.experiments_unlaunched %}
               <li style="margin-bottom:4px">{{ e.name or e }}
-                {% if e.hypothesis %}<div class="why">{{ e.hypothesis }}</div>{% endif %}
-              </li>
+                {% if e.hypothesis %}<div class="why">{{ e.hypothesis }}</div>{% endif %}</li>
             {% endfor %}
           </ul>
-        {% endif %}
-      </div>
-    </section>
+        </div>
+      </section>
+    {% endif %}
 
-    <section class="board" aria-label="Experiments awaiting a conclusion">
-      <header>
-        <h2>Experiments awaiting a conclusion</h2>
-        <div class="note">the result is computed; the verdict is written by a
-          person and attributed to them</div>
-      </header>
-      <div class="body">
-        {% if not w.experiments_unconcluded %}
-          <p class="muted small" style="margin:0">Every finished experiment has
-            a conclusion.</p>
-        {% else %}
+    {% if w.experiments_unconcluded %}
+      <section class="board" aria-label="Experiments awaiting a conclusion">
+        <header><h2>Experiments awaiting a conclusion</h2>
+          <div class="note">the result is computed; the verdict is written by a
+            person and attributed to them</div></header>
+        <div class="body">
           <ul style="margin:0; padding-left:18px">
             {% for e in w.experiments_unconcluded %}
               <li style="margin-bottom:4px">{{ e.name or e }}
                 {% if e.primary_metric %}<div class="why">primary metric:
-                  {{ e.primary_metric }}</div>{% endif %}
-              </li>
+                  {{ e.primary_metric }}</div>{% endif %}</li>
             {% endfor %}
           </ul>
-        {% endif %}
-      </div>
-    </section>
+        </div>
+      </section>
+    {% endif %}
 
-    <section class="board" aria-label="Unmapped handles">
-      <header>
-        <h2>Unmapped handles</h2>
-      </header>
-      <div class="body">
-        {% if not w.unmapped_handles %}
-          <p class="muted small" style="margin:0">Every handle a reviewer wrote
-            maps to an angle.</p>
-        {% else %}
+    {% if w.unmapped_handles %}
+      <section class="board" aria-label="Unmapped handles">
+        <header><h2>Unmapped handles</h2>
+          <div class="note">mapping one is a decision about vocabulary, so a
+            person files it rather than a tagging pass</div></header>
+        <div class="body">
           <div class="table-wrap">
             <table>
-              <thead><tr>
-                <th scope="col">Observed</th>
+              <thead><tr><th scope="col">Observed</th>
                 <th scope="col" class="num">Reviews</th>
-                <th scope="col">Last seen</th>
-              </tr></thead>
+                <th scope="col">Last seen</th></tr></thead>
               <tbody>
               {% for c in w.unmapped_handles %}
-                <tr>
-                  <td>{{ c.observed or c.handle or c }}</td>
+                <tr><td>{{ c.observed or c.handle or c }}</td>
                   <td class="num">{{ c.reviews if c.reviews is defined else '--' }}</td>
-                  <td class="small muted">{{ c.last_seen or '--' }}</td>
-                </tr>
+                  <td class="small muted">{{ c.last_seen or '--' }}</td></tr>
               {% endfor %}
               </tbody>
             </table>
           </div>
-          <p class="small muted" style="margin:10px 0 0">
-            Mapping one of these is a decision about vocabulary, so it is filed
-            by a person rather than by a tagging pass.
-          </p>
-        {% endif %}
-      </div>
-    </section>
+        </div>
+      </section>
+    {% endif %}
   </div>
+</section>
+{% else %}
+  {% set _ = silent.append(('waiting', 'Waiting on you', 'clear',
+      'No angle awaits a signature, no experiment awaits a launch or a '
+      'conclusion, and every handle a reviewer wrote maps to an angle.')) %}
+{% endif %}
 
-  {{ readings_for(d.readings, ['waiting', 'action', 'owner']) }}
+
+{#- ============================================== NOTHING TO REPORT, AND WHY
+    A collapsed section is never shown as a zero. "It loaded and the answer is
+    none" and "it could not be read" are different claims -- the first is a
+    finding, the second an absence of evidence -- and an empty box says
+    neither. `degraded` is what tells them apart, and it has been built on
+    every run since the brief existed without ever being printed. -#}
+{% if silent %}
+<section class="stage" aria-label="Nothing to report">
+  <div class="stage-head">
+    <h2>Nothing to report, and why</h2>
+  </div>
+  <div class="card" style="padding:0">
+    {% for anchor, title, code, why in silent %}
+      {{ quiet(anchor, title, code, why | safe) }}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+
+{#- ====================================================== TRUST, IN FULL
+    The headline facts are the scoreboard's two right-hand tiles and, when
+    something is wrong, the first finding on the page. Everything behind them
+    lives here: a reader who wants to know what "confirmed" means, or which
+    approved copy never reached an ad, opens it. It is never collapsed when
+    the checks failed. -#}
+<section class="stage" id="trust" aria-label="Trust">
+  <details class="card" style="padding:0" {% if t.healthy is sameas false %}open{% endif %}>
+    <summary style="cursor:pointer; padding:14px 20px; display:flex;
+             align-items:center; gap:10px; flex-wrap:wrap">
+      <h2 style="margin:0">Trust, in full</h2>
+      {% if t.healthy is sameas false %}
+        <span class="pill stop">{{ (t.problems or []) | length }} problem(s)</span>
+      {% else %}
+        <span class="pill ok">no problem reported</span>
+      {% endif %}
+      <span class="state" style="margin-left:auto">Source: <code>intel status</code>
+        + <code>ads.match_health</code></span>
+    </summary>
+
+    <div style="padding:0 20px 18px">
+      {% for prob in t.problems or [] %}
+        <div class="caveat"><span>{{ prob }}</span></div>
+      {% endfor %}
+
+      <div class="stats" style="margin-bottom:0">
+        <div class="stat">
+          <div class="k">Credential</div>
+          <div class="v" style="font-size:16px; margin-top:6px">
+            {% if cred.ok %}<span class="pill ok">confirmed</span>
+            {% else %}<span class="pill stop">not confirmed</span>{% endif %}
+          </div>
+          <div class="sub">{{ cred.confirmed_as or 'no identity returned' }}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Coverage</div>
+          <div class="v">{{ num(cov.get('ad_days')) }}</div>
+          <div class="sub">ad-days &middot; {{ num(cov.get('ads')) }} ads &middot;
+            {{ cash(cov.get('spend')) }} &middot; first day
+            {{ cov.get('first_day') or '--' }}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Approved copy on a live ad</div>
+          <div class="v">{{ pct(match.get('match_rate')) }}</div>
+          <div class="sub">{{ num(match.get('matched')) }} matched of
+            {{ num(match.get('with_tracked_url')) }} tracked &middot;
+            {{ num(match.get('approved_assets')) }} approved</div>
+        </div>
+        <div class="stat">
+          <div class="k">What counts as a conversion</div>
+          {% set cd = t.conversion_definitions %}
+          {% if cd is number %}
+            <div class="v">{{ num(cd) }}</div>
+            <div class="sub">definition(s) registered for this brand</div>
+          {% elif cd is string %}
+            <div class="v" style="font-size:15px; margin-top:6px">{{ cd }}</div>
+          {% elif cd %}
+            <div class="v">{{ cd | length }}</div>
+            <div class="sub">{{ cd | map(attribute='name') | join(', ') }}</div>
+          {% else %}
+            <div class="v" style="font-size:15px; margin-top:6px">none</div>
+            <div class="sub">every CPA on this page is a cost per <em>nothing in
+              particular</em></div>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if t.accounts %}
+        <div class="stage-head" style="margin-top:16px">
+          <h2>Accounts</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th scope="col">Account</th><th scope="col">Active</th>
+              <th scope="col">Currency</th><th scope="col">Insights through</th>
+              <th scope="col">Last structure pull</th>
+            </tr></thead>
+            <tbody>
+            {% for a in t.accounts %}
+              <tr>
+                <td class="name">{{ a.label or a.platform_account_id }}
+                  <div class="why mono">{{ a.platform_account_id }}</div></td>
+                <td>{% if a.active %}<span class="pill ok">active</span>
+                    {% else %}<span class="pill quiet">inactive</span>{% endif %}</td>
+                <td>{{ a.currency or '--' }}</td>
+                <td class="small">{{ a.insights_through or '--' }}</td>
+                <td class="small">
+                  {%- if a.last_structure_ok %}{{ a.last_structure_ok }}
+                  {%- else %}<span class="muted">never succeeded</span>{% endif -%}
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+
+      {#- The unmatched table prints the EXPECTED utm_content, not only the
+          name. "Asset 41 did not match" is a complaint; "asset 41 should have
+          carried ren-ws-q3-a2 and no ad does" is something a person can go and
+          fix. -#}
+      {% if match.unmatched %}
+        <div class="stage-head" style="margin-top:16px">
+          <h2>Approved copy with no ad behind it</h2>
+          <span class="state">{{ match.unmatched | length }} asset(s)</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th scope="col">Approved asset</th>
+              <th scope="col">Expected utm_content</th>
+              <th scope="col">What is on the ad</th>
+              <th scope="col">Why it did not match</th>
+            </tr></thead>
+            <tbody>
+            {% for u in match.unmatched %}
+              <tr>
+                <td class="name">
+                  {{ u.asset_name or u.name or u.title or u.headline or u.asset_id or u.key or '--' }}
+                  {% if u.asset_id %}<div class="why mono">{{ u.asset_id }}</div>{% endif %}</td>
+                <td><code>{{ u.expected_utm_content or u.utm_content or u.expected or '--' }}</code></td>
+                <td class="mono small">{{ u.observed_utm_content or u.observed or u.found or '--' }}</td>
+                <td class="small muted">{{ u.reason or u.why or u.note or 'no ad in this window carries this value' }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </details>
 </section>
 
 
-
-
 {#- ------------------------------------------------------- overflow guard
-    A reading whose subject kind none of the ten sections claims. This block
-    is empty in the normal case and exists so that a new rule shipped with a
-    new subject kind shows up somewhere visible instead of vanishing. -#}
+    A reading none of the groups above claimed. This block is empty in the
+    normal case and exists so that a rule shipped with a new section name
+    shows up somewhere visible instead of vanishing -- silently losing an
+    opinion is how a brief begins lying by omission. -#}
 {% set orphans = [] %}
-{% for r in (d.readings or []) if (r.section or (r.subject or {}).kind or 'unattached') not in claimed %}
-  {% set _ = orphans.append(r) %}
+{% for r in d.readings or [] %}
+  {% if r not in placed %}{% set _ = orphans.append(r) %}{% endif %}
 {% endfor %}
 {% if orphans %}
   <section class="stage" aria-label="Readings not attached to a section">
     <div class="stage-head">
       <h2>Readings this page could not place</h2>
-      <span class="state">{{ orphans | length }} &middot; shown rather than dropped</span>
     </div>
     <p class="sub">Each of these cites a fact from a section above, but its
-      subject kind is not one this page maps to a section. They are printed
-      here because a reading that disappears is worse than one in the wrong
-      place.</p>
-    {% for r in orphans %}
-      {{ reading(r) }}
-    {% endfor %}
+      section is not one this page maps to a band. They are printed here
+      because a reading that disappears is worse than one in the wrong place.</p>
+    <div class="card" style="padding:0">
+      {% for r in orphans %}
+        <div class="finding">
+          <div class="rank" aria-hidden="true">&middot;</div>
+          <div class="says"><p>
+            {%- set subj = (r.subject or {}).get('name') -%}
+            {%- if subj %}<strong>{{ subj }}</strong> {% endif %}{{ r.says }}</p></div>
+        </div>
+      {% endfor %}
+    </div>
   </section>
 {% endif %}
 

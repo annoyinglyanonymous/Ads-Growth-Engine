@@ -74,10 +74,20 @@ def _f(v: Number) -> float | None:
 
 
 def money(v: Number, currency: str = "$") -> str:
+    """$41.44, $15,748, and −$0.15 -- the sign goes in front of the currency.
+
+    It used to print $-0.15, which reads as a typo, and every negative CPA
+    delta on the site is one of these. The minus is U+2212 rather than a
+    hyphen so it sets at the width of a figure in a tabular column.
+    """
     n = _f(v)
     if n is None:
         return "--"
-    return f"{currency}{n:,.2f}" if abs(n) < 1000 else f"{currency}{n:,.0f}"
+    a = abs(n)
+    shown = f"{a:,.2f}" if a < 1000 else f"{a:,.0f}"
+    # A sign on a figure that rounds to nothing is noise: -0.004 is $0.00.
+    sign = "−" if n < 0 and shown.strip("0.,") else ""
+    return f"{sign}{currency}{shown}"
 
 
 def num(v: Number, places: int = 0) -> str:
@@ -88,6 +98,21 @@ def num(v: Number, places: int = 0) -> str:
 def pct(v: Number, places: int = 2) -> str:
     n = _f(v)
     return "--" if n is None else f"{n:,.{places}f}%"
+
+
+def words(v: object) -> str:
+    """An enum as a reader says it: QUALITY_LEAD -> "Quality lead".
+
+    Optimization goals, formats and a bridge's reasons arrive as the API's
+    constants, and a page that prints LEAD_GENERATION in a pill is a database
+    talking. One place turns them into words, so every page says the same
+    thing for the same goal.
+    """
+    s = "" if v is None else str(v).strip()
+    if not s:
+        return "--"
+    s = s.replace("_", " ").lower()
+    return s[:1].upper() + s[1:]
 
 
 def fmt(v: Number, kind: str) -> str:
@@ -309,3 +334,173 @@ def column_chart(rows: list[tuple[str, Number]], *, kind: str = "conversions",
     return (f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" '
             f'aria-label="{escape(aria)}" data-chart="column">'
             f'{"".join(out)}</svg>')
+
+
+# --------------------------------------------------------------- miniatures
+# Two forms sized to sit beside a sentence rather than to be looked at on
+# their own. The brief's findings band is the only caller: a finding is one
+# claim, and a picture of the claim earns its place there precisely because it
+# lets the claim be shorter. Anywhere a reader would STUDY the shape, the
+# full-size forms above are the right answer.
+
+
+def split_bar(segments: list[tuple[str, Number, str]], *, height: int = 12) -> str:
+    """One bar cut into proportional parts. Composition, not magnitude.
+
+    For the places where the FINDING IS THE SPLIT -- what share of the window's
+    spend bought which optimisation goal, how many readable ads carry how many
+    fatigue symptoms, how much of the money was tagged at all. A pie answers
+    the same question worse: people read angles badly, and the ~2% of this
+    account that bought thruplay becomes a sliver nobody can see or hover.
+
+    `tone` names a CSS custom property, so a segment follows the palette rather
+    than carrying a colour of its own. Segments draw in the order GIVEN and are
+    never sorted here: for the symptom distribution the order is the scale, and
+    ranking it by size would destroy the thing it is showing.
+
+    A zero segment is dropped rather than drawn one pixel wide. "No ad carries
+    three symptoms" is said better by absence than by a sliver that reads as
+    one ad and cannot be hovered to find out.
+    """
+    vals = [(str(name), _f(v) or 0.0, tone) for name, v, tone in segments]
+    total = sum(v for _, v, _ in vals if v > 0)
+    if total <= 0:
+        return '<div class="empty small">Nothing to split in this window.</div>'
+
+    out, x = [], 0.0
+    for name, v, tone in vals:
+        if v <= 0:
+            continue
+        w = 100.0 * v / total
+        out.append(
+            f'<rect x="{x:.4f}" y="0" width="{w:.4f}" height="{height}" '
+            f'fill="var({tone})"><title>{escape(name)}</title></rect>')
+        x += w
+
+    # The height is inline rather than in the stylesheet because the viewBox
+    # is a percentage ruler, not a size: with preserveAspectRatio="none" the
+    # bar stretches to whatever box CSS gives it, so a fixed height in
+    # base.html would silently make this argument do nothing.
+    aria = ", ".join(f"{name} {v:g}" for name, v, _ in vals if v > 0)
+    return (f'<svg class="split" viewBox="0 0 100 {height}" '
+            f'preserveAspectRatio="none" style="height:{height}px" role="img" '
+            f'aria-label="{escape(aria)}" data-chart="split">'
+            f'{"".join(out)}</svg>')
+
+
+def effect_bars(rows: list[tuple[str, Number, int]], *, kind: str = "cpa",
+                width: int = 200, row_h: int = 17, label_w: int = 30,
+                value_w: int = 58) -> str:
+    """Signed bars around a shared zero, at about the size of a line of text.
+
+    The CPA bridge in miniature: rate effect one way, mix effect the other, the
+    net between them. Two bars pointing opposite ways say "these cancelled"
+    faster than a sentence can, which is the entire reason this exists -- it is
+    what lets the finding beside it run to two lines instead of four.
+
+    BLUE ONLY. Every bar is a step of navy -- the parts in --focus, the LAST
+    row (the net, the answer) in --accent -- and merit is carried by where a
+    bar sits, not by its hue. An axis under the bars names the two sides
+    ("lowers CPA", "raises CPA"), so a rate effect of +$38 reads as raising
+    CPA because it sits on the side that says so. `merit` is kept in the
+    signature so callers do not change: +1 when a positive value is good,
+    -1 when it is bad, 0 when it has no direction of merit, and it now picks
+    which way round the axis labels read rather than which colour a bar is.
+
+    One scale across all rows, taken from the largest magnitude present. Per-row
+    scaling would make three unrelated pictures stacked up and the comparison
+    between them is the only thing this form is for.
+    """
+    vals = [(str(name), _f(v), int(merit)) for name, v, merit in rows]
+    mags = [abs(v) for _, v, _ in vals if v is not None]
+    if not mags or max(mags) <= 0:
+        return '<div class="empty small">No effect to split in this window.</div>'
+
+    top = max(mags)
+    track = width - label_w - value_w - 12
+    half = track / 2.0
+    mid = label_w + 6 + half
+    axis_h = 13
+    height = len(vals) * row_h + 4 + axis_h
+    last = len(vals) - 1
+
+    out = []
+    for i, (name, v, merit) in enumerate(vals):
+        y = i * row_h + 2
+        cy = y + row_h * 0.62
+        # The label gets as many characters as its column can hold -- nine
+        # beside a finding, a dozen inside a card.
+        out.append(f'<text class="axis" x="{label_w}" y="{cy:.1f}" '
+                   f'text-anchor="end">{escape(name[:max(9, label_w // 6)])}</text>')
+        out.append(f'<rect class="track" x="{label_w + 6}" y="{y + 3}" '
+                   f'width="{track:.1f}" height="{row_h - 8}" rx="2"/>')
+        if v is None:
+            out.append(f'<text class="axis" x="{width}" y="{cy:.1f}" '
+                       f'text-anchor="end">--</text>')
+            continue
+        tone = "--accent" if i == last else "--focus"
+        w = max(1.0, half * (abs(v) / top))
+        x = mid if v > 0 else mid - w
+        shown = ("+" if v > 0 else "") + fmt(v, kind)
+        out.append(
+            f'<rect x="{x:.1f}" y="{y + 3}" width="{w:.1f}" '
+            f'height="{row_h - 8}" rx="2" fill="var({tone})">'
+            f'<title>{escape(name)}: {escape(shown)}</title></rect>')
+        out.append(
+            f'<text class="val" x="{width}" y="{cy:.1f}" text-anchor="end" '
+            f'fill="var(--accent)">{escape(shown)}</text>')
+
+    bars_h = len(vals) * row_h + 2
+    out.append(f'<line class="zero" x1="{mid:.1f}" y1="2" x2="{mid:.1f}" '
+               f'y2="{bars_h}"/>')
+    # Which side is which, in words. For a cost (merit -1 on the first row)
+    # the left side lowers it; the labels name the metric so a reader never
+    # has to remember which way round a bridge is drawn.
+    what = kind.upper() if kind in ("cpa", "cpm", "cpc") else kind.replace("_", " ")
+    ay = bars_h + axis_h - 2
+    out.append(f'<text class="axis" x="{label_w + 6}" y="{ay}">'
+               f'← lowers {escape(what)}</text>')
+    out.append(f'<text class="axis" x="{label_w + 6 + track:.1f}" y="{ay}" '
+               f'text-anchor="end">raises {escape(what)} →</text>')
+    # Width inline, and capped, for the reason split_bar states: the caller
+    # asks for 200 beside a finding and 560 inside a card, and a width pinned
+    # in the stylesheet would make one of those a lie. max-width keeps the
+    # wide one from overflowing its card on a narrow screen.
+    aria = ", ".join(f"{name} {fmt(v, kind)}" for name, v, _ in vals)
+    return (f'<svg class="chart micro" viewBox="0 0 {width} {height}" '
+            f'style="width:{width}px; max-width:100%" role="img" '
+            f'aria-label="{escape(aria)}" data-chart="effect">'
+            f'{"".join(out)}</svg>')
+
+
+def meter(v: Number, top: Number, *, width: int = 110) -> str:
+    """A bar inside a table row, scaled against the largest value in its column.
+
+    The number beside it is the fact; this only lets an eye run down a column
+    and find the outlier without reading every figure. `top` is the caller's
+    column maximum, passed in rather than found here, so a table cut to five
+    rows is scaled against what it shows. A value with nothing to scale against
+    draws an empty track rather than a zero-length bar that reads as zero.
+    """
+    n, t = _f(v), _f(top)
+    track = f'<span class="meter" style="width:{width}px" aria-hidden="true">'
+    if n is None or not t:
+        return track + "</span>"
+    w = max(2.0, width * min(1.0, abs(n) / abs(t)))
+    return track + f'<span style="width:{w:.1f}px"></span></span>'
+
+
+def ago(hours: Number) -> str:
+    """How long ago something was written, the way a person says it.
+
+    "0.1h ago" reads as a bug. Minutes under an hour, hours under two days,
+    days after that.
+    """
+    h = _f(hours)
+    if h is None:
+        return "--"
+    if h < 1:
+        return f"{max(1, round(h * 60))} min ago"
+    if h < 48:
+        return f"{round(h)}h ago"
+    return f"{int(h // 24)} days ago"

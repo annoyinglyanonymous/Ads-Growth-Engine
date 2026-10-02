@@ -99,6 +99,39 @@ async def status(slug: str, stale_after_days: int = 2) -> dict:
         (b["id"],),
     )
 
+    # A FAILURE A LATER SUCCESS HAS ANSWERED IS NOT A PROBLEM.
+    #
+    # The query above has no time window, by design -- the history is worth
+    # keeping. But it was also what `healthy` was computed from, so one bad
+    # afternoon made this brand permanently unhealthy: the structure pull
+    # failed nine times over 21-22 September, succeeded on the 23rd, and
+    # `intel status` still said healthy: false while the brief opened with
+    # "the ad-list pull has now failed ten times". Both were reading a fixed
+    # list of old failures as if they were current.
+    #
+    # `not exists` a later 'ok' OF THE SAME KIND: structure and insights fail
+    # independently and on different edges, so a successful insights pull says
+    # nothing about whether the ad list imported. A run that has genuinely
+    # never succeeded still shows, because there is no later success to answer
+    # it -- which is the case this is here to keep reporting.
+    unresolved = await fetch_all(
+        """
+        select p.run_id, p.platform_account_id, p.kind, p.status, p.error,
+               p.started_at, p.finished_at
+          from ads.pull p
+         where p.brand_id = %s and p.status <> 'ok'
+           and not exists (select 1
+                             from ads.pull ok
+                            where ok.brand_id   = p.brand_id
+                              and ok.kind       = p.kind
+                              and ok.status     = 'ok'
+                              and ok.started_at > p.started_at)
+         order by p.started_at desc
+         limit 10
+        """,
+        (b["id"],),
+    )
+
     coverage = await fetch_one(
         """
         select min(day) as first_day, max(day) as last_day,
@@ -158,10 +191,11 @@ async def status(slug: str, stale_after_days: int = 2) -> dict:
                 f"ads.settled_through falls back to UTC for it and the window "
                 f"edges are wrong by up to a day. It is filled by a structure "
                 f"pull.")
-    if failures:
+    if unresolved:
         problems.append(
-            f"{len(failures)} import run(s) did not succeed; the most recent "
-            f"was {failures[0]['kind']} on {failures[0]['started_at']}.")
+            f"{len(unresolved)} import run(s) failed and have not succeeded "
+            f"since; the most recent was {unresolved[0]['kind']} on "
+            f"{unresolved[0]['started_at']}.")
     if (conversions_defined or {}).get("n", 0) == 0:
         problems.append(
             f"No conversion is defined for {slug}, so every conversion count "
@@ -207,6 +241,9 @@ async def status(slug: str, stale_after_days: int = 2) -> dict:
         "settled_through": settled,
         "accounts": accounts,
         "recent_failures": failures,
+        # The subset `healthy` is computed from: failures with no later run of
+        # the same kind that worked. recent_failures stays as the history.
+        "unresolved_failures": unresolved,
         "coverage": coverage,
         "conversion_definitions": (conversions_defined or {}).get("n", 0),
         "untagged_ads": (untagged or {}).get("n", 0),

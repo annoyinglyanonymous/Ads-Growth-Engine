@@ -55,9 +55,11 @@ Brands are `renegade` and `agencyheight`.
 
 ## Warehoused vs live — know which you are holding
 
-Everything except `live` reads a Postgres warehouse that growth-engine fills on
-a schedule. That is what makes "this week against the last six months" one query
-rather than a hundred API calls. The cost is that it is hours old.
+Everything except `live` reads a Postgres warehouse this repo fills itself --
+`meta_ads/` is the importer and `scripts/sync.py` is what the scheduler runs.
+That is what makes "this week against the last six months" one query rather than
+a hundred API calls. The cost is that it is hours old, and `intel status` says
+how many.
 
 **`live` is the only verb that talks to Meta**, and it returns structure only —
 which ads are running, at what budget. **No spend, no CPA, no conversions.**
@@ -148,8 +150,10 @@ available rather than saying nothing changed.
    before, say so and say what happened.** Proposing "let's test no broker fees"
    for the seventh time is the specific failure the experiment table exists to
    prevent.
-3. Ground the suggestion in the brand KB and the approved claims, which live in
-   `growth-engine`. An angle you cannot substantiate is not a proposal.
+3. Ground the suggestion in what the account actually ran -- the ad's own copy
+   (`intel ad --key`), its angle if it carries one, and what has been tested
+   before. There is no separate claims library in this database; an angle you
+   cannot substantiate from the copy and the numbers is not a proposal.
 
 To file one, see the `ads-experiments` skill. You may propose. You may not
 launch, and you may not conclude.
@@ -159,8 +163,9 @@ launch, and you may not conclude.
 - Approve an angle, launch an experiment, or record a conclusion. No verb
   exists; the schema constraints refuse it; this is deliberate.
 - Apply a migration. `ads_migrate.py --apply` is denied.
-- Pull from Meta. That is `python -m meta_ads --pull --brand X` in
-  `growth-engine`, and it takes minutes against a rate limit.
+- Pull from Meta. That is `python -m meta_ads --pull --brand X`, here, and it
+  takes minutes against a rate limit -- run by a person or by the scheduled
+  task, never from a verb or a page.
 
 ## Labelling
 

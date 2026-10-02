@@ -1,140 +1,223 @@
 {% extends "base.html" %}
+{% import "_icons.html" as ico %}
 {% block title %}Why — Ads Intelligence{% endblock %}
-{% block page_title %}What moved CPA{% endblock %}
+{% block page_title %}Why CPA moved{% endblock %}
+
+{#- =====================================================================
+    WHY CPA MOVED. A CPA change is almost never one thing: it splits into a
+    RATE effect (an ad got dearer) and a MIX effect (budget moved toward an ad
+    that already was), which are different problems with different fixes.
+
+    WHAT CHANGED, AND WHY
+
+    The account edits used to sit at the bottom of this page. They are now
+    first, because a budget, status or creative edit is a CAUSE and the
+    rate/mix split is arithmetic -- read in the other order, every edit gets
+    re-explained as creative decay. CLAUDE.md's rule about reading structure
+    changes before blaming creative is this ordering.
+
+    The split is drawn with a third bar, the ads that converted in only one of
+    the two windows, so the bars add up to the net. Without it a reader sums
+    rate and mix, gets a different number, and trusts neither.
+
+    One 40-row table became two short ones -- what pushed CPA up, and what
+    pulled it down -- because those are the two questions somebody arrives
+    with, and a single table sorted by size of effect mixes them.
+    ===================================================================== -#}
 
 {% block toolbar %}
-<form class="filters" method="get" action="/why">
-  <label>Brand<input name="brand" value="{{ d.brand }}"></label>
-  <label>Window
-    <select name="days">
-      {% for n in [7, 14, 28] %}
-        <option value="{{ n }}" {{ 'selected' if n == days }}>{{ n }} days</option>
-      {% endfor %}
-    </select>
-  </label>
-  <button type="submit">Apply</button>
-</form>
-{% endblock %}
-
-{% block page_sub %}
-<div class="sub">
-  A CPA change is almost never one thing. It splits into
-  <strong>rate effect</strong> — a creative got more expensive — and
-  <strong>mix effect</strong> — budget moved toward a creative that already
-  was. They are different problems with different fixes, so they are
-  different columns.
-</div>
+<nav class="seg" aria-label="Window">
+  {% for n in [7, 14, 28] %}
+    <a href="/why?brand={{ d.brand }}&amp;days={{ n }}"
+       {% if n == days %}aria-current="page"{% endif %}>{{ n }}d</a>
+  {% endfor %}
+</nav>
 {% endblock %}
 
 {% block body %}
+{% set t = d.totals or {} %}
+{% set ch = d.structure_changes or {} %}
+{% set edits = ch.rows or [] %}
+{% set up = d.rows | selectattr('total_effect', 'gt', 0) | sort(attribute='total_effect', reverse=true) | list %}
+{% set down = d.rows | selectattr('total_effect', 'lt', 0) | sort(attribute='total_effect') | list %}
+{% set one_window = d.rows | rejectattr('reason', 'equalto', 'attributable') | list %}
 
-{% set t = d.totals %}
-<div class="stats">
-  <div class="stat">
-    <div class="k">CPA change</div>
-    <div class="v">{{ money(t.cpa_change) }}</div>
-    <div class="sub">{{ d.since }} vs the {{ d.days }} days before</div>
-  </div>
-  <div class="stat">
-    <div class="k">Rate effect</div>
-    <div class="v">{{ money(t.rate_effect) }}</div>
-    <div class="sub">creatives got more (or less) expensive</div>
-  </div>
-  <div class="stat">
-    <div class="k">Mix effect</div>
-    <div class="v">{{ money(t.mix_effect) }}</div>
-    <div class="sub">budget moved between creatives</div>
-  </div>
-  <div class="stat">
-    <div class="k">Unattributable</div>
-    <div class="v">{{ t.unattributable_ads }}</div>
-    <div class="sub">ads that converted in only one window</div>
-  </div>
-</div>
+{% macro signed(v) -%}{{ '+' if v is not none and v > 0 else '' }}{{ money(v) }}{%- endmacro %}
 
-{% if t.unattributable_ads %}
-  <div class="caveat"><strong>Partly unattributable.</strong>
-    <span>{{ t.unattributable_ads }} ad(s) converted in only one of the two
-      windows, so the rate/mix split is undefined for them. Their contribution
-      is still counted in the total — it is the rows below marked
-      <em>no conversions</em> — but it cannot be blamed on a creative getting
-      worse or on the budget moving, because both need two defined CPAs.</span>
+{#- ================================================================ ANSWER -#}
+<section class="answer" aria-label="What moved CPA">
+  <p>
+    {%- if t.cpa_change is none or t.cpa_change == 0 %}
+      CPA did not move over the last {{ d.days }} days.
+    {%- else %}
+      CPA {{ 'rose' if t.cpa_change > 0 else 'fell' }}
+      <strong>{{ money(t.cpa_change | abs) }}</strong> over the last {{ d.days }} days.
+      Rate effect was <strong>{{ signed(t.rate_effect) }}</strong> and mix effect
+      <strong>{{ signed(t.mix_effect) }}</strong>
+    {%- endif %}
+    {%- if ch.available %}, and <strong>{{ edits | length }}</strong> account
+      edit{{ '' if edits | length == 1 else 's' }} landed in the same window.
+    {%- else %}.{% endif %}</p>
+  <div class="jumps">
+    <a href="#edits">Account edits</a>
+    <a href="#split">The split</a>
+    <a href="#ads">Which ads</a>
   </div>
-{% endif %}
+</section>
 
-<section class="stage">
+
+{#- ============================================================== EDITS FIRST
+    `why` is printed verbatim when the change log cannot be read, and an empty
+    table is never drawn in its place: "no changes" and "we cannot see
+    changes" look identical as an empty list, and only one is a fact. -#}
+<section class="stage" id="edits" aria-label="What changed in the account">
   <div class="stage-head">
-    <h2>Per ad</h2>
-    <span class="state">largest contribution first; the column sums to the total</span>
+    <h2>Read these first: what changed in the account</h2>
+    <span class="state">Source: <code>ads.structure_change</code></span>
   </div>
-  {% if not d.rows %}
-    <div class="empty">Nothing spent in either window.</div>
+  {% if not ch.available %}
+    <div class="empty">{{ ch.why or 'The change log could not be read, which is itself a gap.' }}</div>
+  {% elif not edits %}
+    <div class="empty">No budget, status or goal edit was recorded in this window,
+      and the change log was readable, so this is a finding rather than a blind spot.</div>
   {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Ad</th>
-        <th class="num">Spend now</th><th class="num">Spend before</th>
-        <th class="num">CPA now</th><th class="num">CPA before</th>
-        <th class="num">Rate</th><th class="num">Mix</th><th class="num">Total</th>
-      </tr></thead>
-      <tbody>
-      {% for r in d.rows %}
-        <tr>
-          <td class="name">
-            <a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
-            {% if r.reason != 'attributable' %}
-              <div class="why">{{ r.reason.replace('_', ' ') }}</div>
-            {% endif %}
-          </td>
-          <td class="num">{{ money(r.spend_current) }}</td>
-          <td class="num">{{ money(r.spend_prior) }}</td>
-          <td class="num">{{ money(r.cpa_current) if r.cpa_current else '--' }}</td>
-          <td class="num">{{ money(r.cpa_prior) if r.cpa_prior else '--' }}</td>
-          <td class="num">{{ money(r.rate_effect) if r.rate_effect is not none else '--' }}</td>
-          <td class="num">{{ money(r.mix_effect) if r.mix_effect is not none else '--' }}</td>
-          <td class="num"><strong>{{ money(r.total_effect) }}</strong></td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th scope="col">When</th><th scope="col">What</th>
+          <th scope="col">Field</th><th scope="col">From &rarr; to</th>
+        </tr></thead>
+        <tbody>
+        {% for c in edits %}
+          <tr>
+            <td class="small">{{ c.changed_at.strftime('%Y-%m-%d %H:%M') if c.changed_at.strftime is defined else c.changed_at }}</td>
+            <td class="name">{{ c.entity_name or c.entity_id }}
+              <div class="why">{{ words(c.entity_type) }}</div></td>
+            <td><span class="pill quiet">{{ c.field | replace('_', ' ') }}</span></td>
+            <td class="mono">{{ c.old_value or '--' }} &rarr; {{ c.new_value or '--' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% endif %}
 </section>
 
-<section class="stage">
-  <div class="stage-head">
-    <h2>What changed in the account</h2>
-    <span class="state">budget, status and goal edits</span>
-  </div>
 
-  {% set ch = d.structure_changes %}
-  {% if not ch.available %}
-    <div class="empty">
-      {{ ch.why }}
-    </div>
-  {% elif not ch.rows %}
-    <div class="empty">No budget, status or goal edits recorded in this window.</div>
-  {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>When</th><th>What</th><th>Field</th><th>From</th><th>To</th>
-      </tr></thead>
-      <tbody>
-      {% for c in ch.rows %}
-        <tr>
-          <td class="small">{{ c.changed_at.strftime('%Y-%m-%d %H:%M') }}</td>
-          <td class="name">{{ c.entity_name or c.entity_id }}
-            <div class="why">{{ c.entity_type }}</div></td>
-          <td><span class="pill quiet">{{ c.field }}</span></td>
-          <td class="mono">{{ c.old_value or '--' }}</td>
-          <td class="mono">{{ c.new_value or '--' }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
+{#- ============================================================== THE SPLIT -#}
+<section class="stage" id="split" aria-label="The split">
+  <div class="stage-head">
+    <h2>The two things that can move a CPA</h2>
+    <span class="state">Source: <code>ads.cpa_bridge_totals</code></span>
   </div>
+  <div class="grid">
+    <div class="card span2">
+      {% set eff = [('Rate effect', t.rate_effect, -1), ('Mix effect', t.mix_effect, -1)] %}
+      {% if t.unattributable_effect is defined and t.unattributable_effect is not none %}
+        {% set _ = eff.append(('One window', t.unattributable_effect, -1)) %}
+      {% endif %}
+      {% set _ = eff.append(('Net', t.cpa_change, -1)) %}
+      {{ effect_bars(eff, kind='cpa', width=640, row_h=30, label_w=76, value_w=90) | safe }}
+    </div>
+    {#- The part the split cannot assign, in dollars. The share is quoted only
+        when it can honestly be called coverage: when the one-window ads move
+        CPA the other way, rate plus mix exceeds the net and the function's
+        share reads 126% -- true, and meaningless under the word "covers". -#}
+    {% set share = t.attributable_share if t.attributable_share is defined else none %}
+    <div class="card">
+      <div class="k">Outside the split</div>
+      <div class="big">{{ signed(t.unattributable_effect) if t.unattributable_effect is defined else '--' }}</div>
+      {% if share is not none and 0 <= share <= 100 %}
+        <div style="margin-top:9px; border-radius:3px; overflow:hidden">
+          {{ split_bar([('Covered', share, '--accent'), ('Not covered', 100 - share, '--line')],
+                       height=8) | safe }}
+        </div>
+        <div class="n" style="margin-top:6px">the split covers {{ pct(share) }} of the move</div>
+      {% endif %}
+      <div class="n" style="margin-top:8px">{{ num(one_window | length) }} of the
+        {{ num(d.rows | length) }} ads below converted in only one of the two
+        windows, so no rate/mix split exists for them.</div>
+    </div>
+  </div>
+</section>
+
+
+{#- ================================================================ THE ADS -#}
+{% macro movers(title, rows) -%}
+{% set tops = rows[:5] | map(attribute='total_effect') | map('abs') | list %}
+{% set top = tops | max if tops else none %}
+<section aria-label="{{ title }}">
+  <div class="stage-head"><h2>{{ title }}</h2></div>
+  {% if not rows %}
+    <div class="empty">Nothing moved it this way.</div>
+  {% else %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th scope="col">Ad</th>
+          <th scope="col" class="num">CPA before &rarr; now</th>
+          <th scope="col" class="num">Effect</th>
+        </tr></thead>
+        <tbody>
+        {% for r in rows[:5] %}
+          <tr>
+            <td class="name"><a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
+              {% if r.reason != 'attributable' %}<div class="why">{{ words(r.reason) }}</div>{% endif %}</td>
+            <td class="num">{{ money(r.cpa_prior) if r.cpa_prior else '&mdash;' | safe }} &rarr;
+              <strong>{{ money(r.cpa_current) if r.cpa_current else '&mdash;' | safe }}</strong></td>
+            <td class="num"><div class="num-bar">{{ meter(r.total_effect, top, width=70) | safe }}
+                <strong style="min-width:52px">{{ signed(r.total_effect) }}</strong></div></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+{%- endmacro %}
+
+<section class="stage" id="ads" aria-label="Which ads">
+  {% if not d.rows %}
+    <div class="empty">Nothing spent in either window.</div>
+  {% else %}
+    <div class="boards">
+      {{ movers('Pushed CPA up', up) }}
+      {{ movers('Pulled CPA down', down) }}
+    </div>
+    {% set rest = d.rows | length - (up[:5] | length) - (down[:5] | length) %}
+    {% if rest > 0 %}
+      <details class="more" style="margin-top:14px; background:var(--surface);
+               border:1px solid var(--line); border-radius:var(--radius)">
+        <summary><strong>Show all {{ d.rows | length }}</strong> &mdash;
+          {{ num(rest) }} more moved it less.</summary>
+        <div class="table-wrap" style="border:0">
+          <table>
+            <thead><tr>
+              <th scope="col">Ad</th>
+              <th scope="col" class="num">Spend now</th><th scope="col" class="num">Spend before</th>
+              <th scope="col" class="num">CPA now</th><th scope="col" class="num">CPA before</th>
+              <th scope="col" class="num">Rate</th><th scope="col" class="num">Mix</th>
+              <th scope="col" class="num">Total</th>
+            </tr></thead>
+            <tbody>
+            {% for r in d.rows %}
+              <tr>
+                <td class="name"><a href="/ad/{{ r.ad_key }}?brand={{ d.brand }}">{{ r.entity_name or r.ad_key }}</a>
+                  {% if r.reason != 'attributable' %}<div class="why">{{ words(r.reason) }}</div>{% endif %}</td>
+                <td class="num">{{ money(r.spend_current) }}</td>
+                <td class="num">{{ money(r.spend_prior) }}</td>
+                <td class="num">{{ money(r.cpa_current) if r.cpa_current else '--' }}</td>
+                <td class="num">{{ money(r.cpa_prior) if r.cpa_prior else '--' }}</td>
+                <td class="num">{{ signed(r.rate_effect) if r.rate_effect is not none else '--' }}</td>
+                <td class="num">{{ signed(r.mix_effect) if r.mix_effect is not none else '--' }}</td>
+                <td class="num"><strong>{{ signed(r.total_effect) }}</strong></td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {% endif %}
   {% endif %}
 </section>
 {% endblock %}

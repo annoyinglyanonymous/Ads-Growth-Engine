@@ -44,7 +44,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # pragma: no cover - startup diagnostics
         print(f"  database not reachable yet: {exc}", file=sys.stderr)
 
-    print("  This app reads. It approves nothing and pulls nothing.")
+    print("  This app reads. It approves nothing and never pulls in-process.")
+    print("  Refresh spawns scripts\\sync.py detached, like the scheduler.")
     yield
     await db.close_read()
 

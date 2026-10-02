@@ -45,6 +45,38 @@ async def settled_through(brand_id: str) -> date | None:
     return row["d"] if row else None
 
 
+async def latest_day(brand_slug: str) -> date | None:
+    """The most recent day this brand actually has numbers for.
+
+    NOT the settled edge, and not today. `settled_through` is the honest end
+    for an agent reporting a rate -- it is what `window()` defaults to, and
+    every verb still uses it. This is the honest end for a READER looking at a
+    dashboard: somebody who has just imported and sees a window stopping three
+    days back reads it as the import having done nothing.
+
+    And not today either. Today is routinely a day that has not started in the
+    account's timezone, so ending a window there appends an empty day and every
+    chart falls off a cliff at the right-hand edge.
+
+    One definition, because two would drift. The page renders this window and
+    scripts/suggest.py writes its prose against it; if they disagreed, every
+    published suggestion would arrive already carrying a "written against a
+    different window" caveat, and a caveat that always fires is wallpaper.
+
+    None when the brand has no facts at all, which puts the caller back on
+    `window()`'s settled default rather than inventing a date.
+    """
+    row = await fetch_one(
+        """
+        select max(f.day) as day
+          from ads.fact_ad_day f
+          join ads.brand b on b.id = f.brand_id
+         where b.slug = %s
+        """,
+        (brand_slug,))
+    return (row or {}).get("day")
+
+
 def window(days: int, until: date | None, settled: date | None) -> tuple[date, date, int]:
     """-> (since, until, unsettled_days).
 

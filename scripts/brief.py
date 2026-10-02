@@ -55,6 +55,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # a 30-second PoolTimeout that looks exactly like an unreachable database.
 import asyncio  # noqa: E402
 
+import chat  # noqa: E402
 import db  # noqa: E402
 import brief_render  # noqa: E402
 from intel import brief as brief_mod  # noqa: E402
@@ -115,7 +116,8 @@ async def brands() -> list[str]:
     return [r["slug"] for r in rows]
 
 
-async def publish(slug: str, until: date, days: int, force: bool) -> int:
+async def publish(slug: str, until: date, days: int, force: bool,
+                  summarise: bool = True) -> int:
     settled = None
     try:
         b = await context.brand(slug)
@@ -134,6 +136,42 @@ async def publish(slug: str, until: date, days: int, force: bool) -> int:
         return 3
 
     doc = await brief_mod.brief(slug, days, until)
+
+    # THE PROSE GOES IN THE ARCHIVE, not behind a button.
+    #
+    # Until now this file published the cited readings and nothing else, and
+    # the sentences a person actually reads existed only as the response to
+    # POST /brief/summary.json -- so they were written when somebody pressed
+    # something, against numbers that had moved since, and were never kept.
+    # suggest.py's header makes the argument at length; it is the same one.
+    #
+    # It cannot fail the publish. A brief with readings and no summary is the
+    # document this script published all along; a brief that did not publish
+    # because a model call timed out is a week with no record at all.
+    doc["summary"] = None
+    if summarise:
+        try:
+            out = await brief_mod.summarise(doc, slug)
+            if out.get("ok") and out.get("answer"):
+                doc["summary"] = {
+                    "text": out["answer"],
+                    "written_at": datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"),
+                    "cost_usd": out.get("cost_usd"),
+                    "duration_ms": out.get("duration_ms"),
+                }
+                log(f"{slug}: summary {len(out['answer'])} chars, "
+                    f"${out.get('cost_usd') or 0:.2f}")
+            else:
+                log(f"{slug}: no summary -- "
+                    f"{out.get('error') or 'the session returned nothing'}. "
+                    f"Publishing the readings alone.")
+        except chat.ChatUnavailable as exc:
+            log(f"{slug}: no summary -- {exc}. Publishing the readings alone.")
+        except Exception as exc:
+            log(f"{slug}: no summary -- {type(exc).__name__}: {exc}. "
+                f"Publishing the readings alone.")
+
     BRIEF_DIR.mkdir(exist_ok=True)
     stem = BRIEF_DIR / f"{until.isoformat()}-{slug}"
 
@@ -153,7 +191,7 @@ async def publish(slug: str, until: date, days: int, force: bool) -> int:
 
 
 async def run(only: str | None, until: date | None, days: int,
-              dry_run: bool, force: bool) -> int:
+              dry_run: bool, force: bool, summarise: bool = True) -> int:
     # The pool is opened by the FastAPI lifespan, so a CLI entry point opens it
     # itself. Without this every query raises PoolClosed, which reads as a
     # database problem and is not one.
@@ -174,7 +212,8 @@ async def run(only: str | None, until: date | None, days: int,
             try:
                 # Per brand, so one brand's failure cannot cost the other its
                 # brief -- scripts/sync.py isolates the pull the same way.
-                worst = max(worst, await publish(slug, end, days, force))
+                worst = max(worst, await publish(slug, end, days, force,
+                                                 summarise))
             except Exception as exc:
                 log(f"{slug}: FAILED -- {type(exc).__name__}: {exc}")
                 worst = 1
@@ -193,6 +232,9 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true",
                    help="publish a week that has not settled, stamped provisional")
+    p.add_argument("--no-summary", action="store_true",
+                   help="publish the readings without asking a model to "
+                        "explain them")
     a = p.parse_args()
 
     until = None
@@ -206,7 +248,8 @@ def main() -> int:
     if not a.dry_run and not take_lock():
         return 2
     try:
-        return asyncio.run(run(a.brand, until, a.days, a.dry_run, a.force))
+        return asyncio.run(run(a.brand, until, a.days, a.dry_run, a.force,
+                               not a.no_summary))
     finally:
         if not a.dry_run:
             LOCK.unlink(missing_ok=True)
