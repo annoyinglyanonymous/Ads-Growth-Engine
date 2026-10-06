@@ -29,7 +29,7 @@ concluding that something is broken.
    • python -m intel, python -m meta_ads
 
   ledger: ads.schema_migrations, files 001…019
-          (001…018 applied; 019 family baselines waiting to be applied)
+          (001…019 applied; 019 is the family baselines)
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are
