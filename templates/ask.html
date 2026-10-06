@@ -38,13 +38,9 @@
         {% if reply.turns %}<span class="more">{{ reply.turns }} step(s)</span>{% endif %}
       </div>
       <div style="white-space:pre-wrap;line-height:1.55;margin-bottom:6px">{{ reply.answer }}</div>
-      <div class="n" style="margin-bottom:14px">
-        Written by a Claude Code session that ran the read verbs and may quote
-        only what they printed. It cannot approve, activate or conclude
-        anything.
-        {%- if reply.cost_usd %} This answer cost
-        ${{ '%.2f'|format(reply.cost_usd) }}.{% endif %}
-      </div>
+      {%- if reply.cost_usd %}
+      <div class="n" style="margin-bottom:14px">${{ '%.2f'|format(reply.cost_usd) }}</div>
+      {%- endif %}
     {% elif reply_error %}
       <div class="caveat">{{ ico.i('warn') }}<span>{{ reply_error }}</span></div>
     {% endif %}
