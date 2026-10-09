@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "main", "--port", "8101"],
+      "port": 8101,
+      "url": "http://127.0.0.1:8101"
+    },
+    {
+      "name": "boards",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8102", "--bind", "127.0.0.1", "--directory",
+                      "C:/Users/Renegade/AppData/Local/Temp/claude/C--Users-Renegade-Desktop-Ads-Growth-Engine/200bde97-4a68-48d2-8f85-4b2a640d2d55/scratchpad"],
+      "port": 8102,
+      "url": "http://127.0.0.1:8102"
+    }
+  ]
+}

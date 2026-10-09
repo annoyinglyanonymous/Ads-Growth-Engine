@@ -476,12 +476,18 @@ async def creative(request: Request, brand: str = "renegade", window: int = 7,
 async def angles(request: Request, brand: str = "renegade", days: int = 90,
                  product: str | None = None):
     try:
-        d = await angles_mod.coverage(brand, product, days, None)
-        cand = await angles_mod.candidates(brand)
-        q = await angles_mod.queue(brand, days, None, limit=25)
-        # Both coverages, so the page can say the copy IS labelled while the
-        # angle is not -- the two numbers mean different things.
-        labels = await angles_mod.label_coverage(brand, days, None)
+        # Four independent reads, run concurrently and sharing one brand and
+        # settled-edge lookup. gather_in_order raises what the sequential
+        # awaits raised: the earliest call's failure.
+        with context.one_request():
+            d, cand, q, labels = await context.gather_in_order(
+                angles_mod.coverage(brand, product, days, None),
+                angles_mod.candidates(brand),
+                angles_mod.queue(brand, days, None, limit=25),
+                # Both coverages, so the page can say the copy IS labelled
+                # while the angle is not -- the two numbers mean different
+                # things.
+                angles_mod.label_coverage(brand, days, None))
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail(request, "angles", exc)
     tested = d["tested"] + d["under_spent"]

@@ -482,7 +482,13 @@
     the last 26 weeks, from ads.family_baseline, all audiences. Context for a
     campaign's own windows, never a target, and never read across goals: each
     row is one family under one goal. The template groups and formats; the
-    figures are the SQL's. Closed until opened, inside a fold that is too. -#}
+    figures are the SQL's. Closed until opened, inside a fold that is too.
+    A range from fewer than BAND_MIN_WEEKS campaign-weeks prints "too few
+    weeks" instead: one week's figure is its own p25 and p75 ($70.97–$70.97),
+    which reads as a range and is not one. 8 is campaign_vs_family's
+    p_min_band_weeks (019), so the table shows exactly the ranges a campaign
+    card may be read against. -#}
+{% set BAND_MIN_WEEKS = 8 %}
 {% set fbands = (published.family_bands if published and published.family_bands is defined
                  and published.family_bands else []) | selectattr('audience', 'none') | list %}
 {% if fbands %}
@@ -492,7 +498,9 @@
   {% for b in fbands %}{% if (b.family, b.optimization_goal) not in fkeys %}{% set _ = fkeys.append((b.family, b.optimization_goal)) %}{% endif %}{% endfor %}
   {% macro band_cell(rows, metric) -%}
     {%- set b = rows | selectattr('metric', 'equalto', metric) | first -%}
-    {%- if b and b.p25 is not none and b.p75 is not none -%}
+    {%- if b and b.p25 is not none and (b.campaign_weeks or 0) < BAND_MIN_WEEKS -%}
+      <span class="muted" title="{{ num(b.campaign_weeks or 0) }} campaign-week(s); a range needs {{ BAND_MIN_WEEKS }}">too few weeks</span>
+    {%- elif b and b.p25 is not none and b.p75 is not none -%}
       {%- if metric in ('link_ctr', 'conversion_rate') %}{{ num(b.p25, 2) }}–{{ pct(b.p75, 2) }}
       {%- else %}{{ money(b.p25) }}–{{ money(b.p75) }}{% endif -%}
     {%- else %}--{% endif -%}

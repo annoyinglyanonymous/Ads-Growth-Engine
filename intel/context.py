@@ -5,6 +5,10 @@ Read-only. Imports fetch_all/fetch_one and nothing that can write.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, timedelta
 
 from db import fetch_all, fetch_one
@@ -12,6 +16,70 @@ from db import fetch_all, fetch_one
 
 class UnknownBrand(ValueError):
     pass
+
+
+# ------------------------------------------------------- one request --
+# A page like /suggestions runs a dozen verbs for one brand, and each verb
+# resolves the brand (and its settled edge) for itself: nine identical
+# `ads.brand` lookups per render, ~0.3s of pooler round trip apiece. Inside
+# `one_request()` those lookups are shared -- the first caller's query is the
+# answer for every other caller IN THAT REQUEST, including callers running
+# concurrently with it. Outside one, brand() and settled_through() query every
+# time, exactly as before.
+#
+# Deliberately per request and never across requests: a brand row is
+# config-like, but a module-level cache would outlive an import or a rename,
+# and the settled edge moves with now().
+
+_request_memo: ContextVar[dict | None] = ContextVar("intel_request_memo",
+                                                     default=None)
+
+
+@contextmanager
+def one_request() -> Iterator[None]:
+    """Share brand() and settled_through() answers until the block exits.
+
+    Re-entrant: a verb that opens one inside a page that already has one
+    joins the page's. Tasks started inside the block inherit it (contextvars
+    are copied at task creation, and the memo dict is shared by reference).
+    """
+    if _request_memo.get() is not None:
+        yield
+        return
+    token = _request_memo.set({})
+    try:
+        yield
+    finally:
+        _request_memo.reset(token)
+
+
+async def _memo(key: tuple, make: Callable[[], Awaitable]):
+    memo = _request_memo.get()
+    if memo is None:
+        return await make()
+    fut = memo.get(key)
+    if fut is None:
+        fut = memo[key] = asyncio.ensure_future(make())
+    # Shielded: one caller being cancelled must not cancel the lookup the
+    # other callers are waiting on.
+    return await asyncio.shield(fut)
+
+
+async def gather_in_order(*aws: Awaitable) -> list:
+    """Run independent awaitables concurrently; fail as sequential code would.
+
+    asyncio.gather's default raises whichever failure happens FIRST IN TIME,
+    and TaskGroup wraps failures in an ExceptionGroup -- either would change
+    what a caller catching UnknownBrand/ValueError sees. This waits for all of
+    them and raises the failure of the EARLIEST ARGUMENT, which is the one
+    `a = await x; b = await y` would have raised. The later ones are reads, so
+    having run them anyway has no effect beyond the query.
+    """
+    results = await asyncio.gather(*aws, return_exceptions=True)
+    for r in results:
+        if isinstance(r, BaseException):
+            raise r
+    return results
 
 
 async def brand(slug: str) -> dict:
@@ -24,6 +92,11 @@ async def brand(slug: str) -> dict:
     # ads.brand, not public.brands: ads_reader holds no grant in public, so
     # the direct read died with "permission denied for table brands" on the
     # first query of every verb. See migrations/008_ads_brand_seam.sql.
+    # A copy, so one caller editing its row cannot reach another's.
+    return dict(await _memo(("brand", slug), lambda: _brand(slug)))
+
+
+async def _brand(slug: str) -> dict:
     row = await fetch_one(
         "select id, slug, name from ads.brand where slug = %s", (slug,))
     if not row:
@@ -40,6 +113,11 @@ async def settled_through(brand_id: str) -> date | None:
     problem from "the data is fresh", and the caller has to be able to tell
     them apart.
     """
+    return await _memo(("settled_through", str(brand_id)),
+                       lambda: _settled_through(brand_id))
+
+
+async def _settled_through(brand_id: str) -> date | None:
     row = await fetch_one(
         "select ads.settled_through(%s, now()) as d", (brand_id,))
     return row["d"] if row else None

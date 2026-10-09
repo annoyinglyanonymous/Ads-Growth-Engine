@@ -39,6 +39,7 @@ tolerance), so the rule is held by a test rather than a promise.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -492,14 +493,21 @@ async def _campaigns(ladder: dict, brand_id, families: dict | None = None
     if not keys:
         return [], pool, windows
 
-    meta = {str(r["campaign_key"]): r for r in await fetch_all(
-        "select campaign_key, effective_status, objective from ads.campaign "
-        " where campaign_key = any(%s::uuid[])", (keys,))}
-
     w7 = windows.get(P7) or {}
-    spread = await _concentration({"brand_id": brand_id,
-                                   "since": w7.get("cur_since"),
-                                   "until": w7.get("cur_until")}) if w7 else {}
+
+    async def _no_spread() -> dict:
+        return {}
+
+    # Independent reads, one round trip of wall time; the meta read's failure
+    # is still the one raised, as when they ran one after the other.
+    meta_rows, spread = await context.gather_in_order(
+        fetch_all(
+            "select campaign_key, effective_status, objective from ads.campaign "
+            " where campaign_key = any(%s::uuid[])", (keys,)),
+        _concentration({"brand_id": brand_id,
+                        "since": w7.get("cur_since"),
+                        "until": w7.get("cur_until")}) if w7 else _no_spread())
+    meta = {str(r["campaign_key"]): r for r in meta_rows}
 
     groups = idx.get("ad_group") or {}
     rank, ranked_in = _goal_ranks(groups)
@@ -653,10 +661,20 @@ async def _impact(brand: str, campaigns: list) -> tuple:
     no campaign row in 018 (its CPA blends two events), so it carries
     impact None -- as does every campaign before 018 is applied.
     """
+    return _attach_impact(await _impact_read(brand), campaigns)
+
+
+async def _impact_read(brand: str) -> dict:
+    """metrics.goal_impact for IMPACT_PAIR, or "not available" on a refusal.
+    Needs no campaign, so creative_pack starts it alongside _campaigns."""
     try:
-        res = await metrics.goal_impact(brand, IMPACT_PAIR)
+        return await metrics.goal_impact(brand, IMPACT_PAIR)
     except ValueError as exc:
-        res = {"available": False, "why": str(exc)}
+        return {"available": False, "why": str(exc)}
+
+
+def _attach_impact(res: dict, campaigns: list) -> tuple:
+    """_impact's second half: attach `impact` per campaign from one answer."""
     rows = (res.get("rows") or []) if res.get("available") else []
     camp_rows = [r for r in rows if r.get("level") == "campaign"]
     by_key = {str(r.get("campaign_key")): r for r in camp_rows
@@ -772,12 +790,19 @@ async def _dimensions_by_goal(brand: str, windows: dict | None) -> dict | None:
     since, until = w.get("cur_since"), w.get("cur_until")
     if not (since and until):
         return None
+    # Read concurrently, then walked in GOAL_DIMENSIONS order exactly as the
+    # sequential loop was: the first dimension that refuses (ValueError) or
+    # is unavailable decides None, and any other failure is raised -- the
+    # earliest one, as before.
+    answers = await asyncio.gather(
+        *(metrics.facet_by_goal(brand, since, until, dim)
+          for dim in GOAL_DIMENSIONS), return_exceptions=True)
     out: dict = {}
-    for dim in GOAL_DIMENSIONS:
-        try:
-            res = await metrics.facet_by_goal(brand, since, until, dim)
-        except ValueError:
+    for dim, res in zip(GOAL_DIMENSIONS, answers):
+        if isinstance(res, ValueError):
             return None
+        if isinstance(res, BaseException):
+            raise res
         if not res.get("available"):
             return None
         for r in res.get("rows") or []:
@@ -830,6 +855,34 @@ def _fill_copy(item: dict, copy_by_key: dict) -> None:
         item["opening"] = f"{cut}…" if len(body) > len(cut) else (body or None)
 
 
+class _Started:
+    """Tasks started early and awaited in the order the code used to await
+    them, so the exception a caller sees is the one sequential code raised.
+
+    Not a TaskGroup: that cancels on the first failure IN TIME and raises an
+    ExceptionGroup, which no `except ValueError` in ui.py would catch. On the
+    way out (normally or not) anything never awaited is cancelled, and every
+    task is drained so no failure is left unretrieved.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: list = []
+
+    def start(self, coro) -> asyncio.Task:
+        task = asyncio.ensure_future(coro)
+        self._tasks.append(task)
+        return task
+
+    async def __aenter__(self) -> "_Started":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        for t in self._tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
 async def creative_pack(brand: str, days: int, until=None) -> dict:
     """What the account is currently saying, what it cost, and what changed.
 
@@ -843,12 +896,65 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     still renders (it builds this pack live) and scripts/suggest.py refuses
     to publish: an analysis without the window ladder is the one the
     operator rejected.
+
+    CONCURRENCY. About thirty reads, each a pooler round trip; awaited one
+    after another they made the page take twenty seconds. Each read is now
+    STARTED as soon as what it depends on is known and AWAITED where it used
+    to be awaited (_Started), so the result is the same dict and a failure
+    raises what it raised before. The brand and its settled edge are looked
+    up once per pack (context.one_request) rather than once per verb. How
+    many reads are in flight at once is bounded by the read pool's size.
     """
+    with context.one_request():
+        async with _Started() as started:
+            return await _creative_pack(brand, days, until, started)
+
+
+async def _creative_pack(brand: str, days: int, until, started: _Started
+                         ) -> dict:
+    # Needs nothing but the brand: in flight while the window is worked out.
+    ladder_task = started.start(metrics.funnel_ladder(brand))
     # Defaulted HERE rather than by each caller, so the page and the publisher
     # cannot disagree about which window the evidence is about.
     if until is None:
         until = await context.latest_day(brand)
-    d = await metrics.overview(brand, days, until, level="ad", limit=500)
+    overview_task = started.start(
+        metrics.overview(brand, days, until, level="ad", limit=500))
+    # PAGE ONLY; see `tiring` below. Needs only the window's end.
+    fatigue_task = started.start(
+        metrics.fatigue(brand, days, until, 100.0, False))
+    d = await overview_task
+
+    # Everything that needs only the overview's window. ads.untagged_spend is
+    # the slowest read in the pack by far, so it goes first.
+    angle_coverage_task = started.start(fetch_one(
+        """
+        select total_spend, tagged_spend, untagged_ads, untagged_spend,
+               stale_tag_ads, stale_tag_spend
+          from ads.untagged_spend(%s::uuid, %s, %s)
+        """, (d["brand_id"], d["since"], d["until"])))
+    facet_coverage_task = started.start(fetch_one(
+        """
+        select count(*)::int                                     as ads,
+               count(*) filter (where fe.ad_key is not null)::int as with_a_facet,
+               count(*) filter (where fe.hook is not null)::int   as with_a_hook,
+               count(*) filter (where fe.offer is not null)::int  as with_an_offer
+          from (select distinct f.ad_key
+                  from ads.fact_ad_day f
+                 where f.brand_id = %s::uuid
+                   and f.day between %s and %s) spent
+          left join ads.facet_effective fe on fe.ad_key = spent.ad_key
+        """, (d["brand_id"], d["since"], d["until"])))
+    # ads.facet_performance, one read per dimension -- see `dimensions` below.
+    facet_tasks = {dim: started.start(fetch_all(
+        """
+        select value, ads_run, spend, conversions, rates,
+               optimization_goals, optimization_goal_count,
+               comparable_on_cost, spend_sufficient, rank_within_goal
+          from ads.facet_performance(%s::uuid, %s, %s, %s)
+         order by spend desc nulls last
+        """, (d["brand_id"], d["since"], d["until"], dim)))
+        for dim in ("hook", "offer", "audience", "format")}
 
     by_goal: dict = {}
     for row in d.get("rows") or []:
@@ -890,11 +996,21 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # ---------------------------------------------------------- campaigns --
     # One round trip: every level, every pair. Built BEFORE the copy fetch so
     # the ads each campaign and the challenger pool name ride the same query.
-    ladder = await metrics.funnel_ladder(brand)
+    ladder = await ladder_task
     if ladder.get("available"):
+        # Started together: none of these needs the campaigns. Impact's
+        # read is attached to them once they exist; the per-goal dimensions
+        # read only the last_28 rung's dates, which _windows(ladder) already
+        # holds -- the same dict _campaigns returns.
+        families_task = started.start(_families(brand))
+        impact_task = started.start(_impact_read(brand))
+        dims_task = started.start(_dimensions_by_goal(brand, {
+            "settled_through": ladder.get("settled_through"),
+            **_windows(ladder)}))
+        bands_task = started.start(_family_bands(brand))
         # Before the campaigns are built: diagnose and rating_rule read each
         # campaign's family band. {} (every family None) before 019.
-        families = await _families(brand)
+        families = await families_task
         campaigns, pool, windows = await _campaigns(ladder, d["brand_id"],
                                                     families)
         windows = {"settled_through": ladder.get("settled_through"),
@@ -905,9 +1021,10 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # degrade to absent rather than failing the pack: no impact order, no
     # scorecard measurement, the old `dimensions` table.
     if ladder.get("available"):
-        impact_ok, impact_why, impact_rows = await _impact(brand, campaigns)
-        dims_by_goal = await _dimensions_by_goal(brand, windows)
-        family_bands = await _family_bands(brand)
+        impact_ok, impact_why, impact_rows = _attach_impact(
+            await impact_task, campaigns)
+        dims_by_goal = await dims_task
+        family_bands = await bands_task
     else:
         impact_ok, impact_why, impact_rows = False, ladder.get("why"), []
         dims_by_goal = None
@@ -990,15 +1107,8 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # are left out rather than sent as a NULL bucket that costs prompt budget
     # to say nothing.
     dimensions = {}
-    for dim in ("hook", "offer", "audience", "format"):
-        rows = await fetch_all(
-            """
-            select value, ads_run, spend, conversions, rates,
-                   optimization_goals, optimization_goal_count,
-                   comparable_on_cost, spend_sufficient, rank_within_goal
-              from ads.facet_performance(%s::uuid, %s, %s, %s)
-             order by spend desc nulls last
-            """, (d["brand_id"], d["since"], d["until"], dim))
+    for dim, task in facet_tasks.items():
+        rows = await task
         # Capped by SPEND, which the ORDER BY has already applied, and
         # TRIMMED PER ROW: a facet_performance row is ~500 characters, ~380 of
         # them eight rates where the model reads two plus the goal array where
@@ -1030,25 +1140,8 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # numbers, it resolved the contradiction the wrong way and wrote "every ad
     # is untagged" -- suppressing the analysis the tagging pass existed to
     # enable. So both are reported, each saying which question it answers.
-    angle_coverage = await fetch_one(
-        """
-        select total_spend, tagged_spend, untagged_ads, untagged_spend,
-               stale_tag_ads, stale_tag_spend
-          from ads.untagged_spend(%s::uuid, %s, %s)
-        """, (d["brand_id"], d["since"], d["until"]))
-
-    facet_coverage = await fetch_one(
-        """
-        select count(*)::int                                     as ads,
-               count(*) filter (where fe.ad_key is not null)::int as with_a_facet,
-               count(*) filter (where fe.hook is not null)::int   as with_a_hook,
-               count(*) filter (where fe.offer is not null)::int  as with_an_offer
-          from (select distinct f.ad_key
-                  from ads.fact_ad_day f
-                 where f.brand_id = %s::uuid
-                   and f.day between %s and %s) spent
-          left join ads.facet_effective fe on fe.ad_key = spent.ad_key
-        """, (d["brand_id"], d["since"], d["until"]))
+    angle_coverage = await angle_coverage_task
+    facet_coverage = await facet_coverage_task
 
     untagged = {
         "angle_attribution": {
@@ -1069,7 +1162,7 @@ async def creative_pack(brand: str, days: int, until=None) -> dict:
     # panel shows. It no longer reaches the model or the rating: "1 of 5
     # symptoms over 28 days" turned ten campaigns red on its own. The triage
     # reads 017's per-window fatigue legs through intel/diagnose.py instead.
-    fatigue = await metrics.fatigue(brand, days, until, 100.0, False)
+    fatigue = await fatigue_task
 
     return {
         "verb": "creative_pack",

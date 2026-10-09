@@ -28,8 +28,9 @@ concluding that something is broken.
    • the dashboard, on 127.0.0.1:8001
    • python -m intel, python -m meta_ads
 
-  ledger: ads.schema_migrations, files 001…019
-          (001…019 applied; 019 is the family baselines)
+  ledger: ads.schema_migrations, files 001…020
+          (001…020 applied; 019 is the family baselines,
+           020 the untagged_spend speed-up)
 ```
 
 **The `public.meta_*` DDL is not in this repo.** Those tables exist and are

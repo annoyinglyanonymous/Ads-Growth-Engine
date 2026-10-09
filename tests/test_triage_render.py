@@ -672,3 +672,18 @@ def test_a_file_without_family_bands_prints_no_table():
     pub.pop("family_bands")
     assert "family-bands" not in _page(pub)
     assert "family-bands" not in _page(_load("report"), by_goal=False)
+
+
+def test_a_range_from_too_few_weeks_is_not_printed_as_a_range():
+    # One campaign-week is its own p25 and p75, so the cell would read
+    # "$70.97–$70.97". Under 8 weeks (019's p_min_band_weeks) it says so.
+    pub = _load("report_v3")
+    for r in pub["family_bands"]:
+        if r["family"] == "m_and_a" and r["metric"] == "cpa":
+            r.update(campaign_weeks=1, p25=70.97, p50=70.97, p75=70.97)
+    bands = _between(_page(pub), '<details class="fu-more family-bands"', "</details>")
+    ma = re.findall(r"<tr><td class=\"name\">(.*?)</tr>", bands, re.S)[0]
+    assert "$70.97" not in ma and "too few weeks" in ma
+    assert "1 campaign-week(s); a range needs 8" in ma
+    # The rest of the row still prints its ranges.
+    assert "0.95–1.38%" in ma and "$18.40–$23.60" in ma

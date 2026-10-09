@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     #: than growth-engine's 5 because this process is a dashboard and a CLI,
     #: not the write path, and pooler connections are a shared budget across
     #: both repos.
+    #:
+    #: It is also the concurrency bound for one page: creative_pack and the
+    #: /angles route start their reads together and queue for these
+    #: connections (psycopg_pool's wait timeout is 30s; the deepest queue, a
+    #: /suggestions render, waits well under that). Measured 2026-10-06: 6
+    #: saved ~0.5s of a ~5-6s pack over 3 -- the wall time is mostly the
+    #: dependency chain, not the queue -- so this stays small rather than
+    #: spending session-mode pooler budget shared with growth-engine.
     pool_min_size: int = 1
     pool_max_size: int = 3
 

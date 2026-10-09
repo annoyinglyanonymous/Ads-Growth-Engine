@@ -185,7 +185,7 @@ async def fatigue(slug: str, window_days: int = 7, until: date | None = None,
     asof = until or settled or date.today()
     unsettled = max(0, (asof - settled).days) if settled else 0
 
-    rows = await fetch_all(
+    listed = fetch_all(
         """
         select ad_key, entity_name, optimization_goal, recent_since, recent_until,
                days_observed, spend_recent, impressions_recent, confident,
@@ -201,11 +201,15 @@ async def fatigue(slug: str, window_days: int = 7, until: date | None = None,
     # will not widen those while resolving which function you meant, so the
     # call fails with "function ads.fatigue(...) does not exist" -- a message
     # that sends you looking for a missing migration rather than a cast.
-    suppressed = await fetch_one(
+    counted = fetch_one(
         "select count(*) as n from ads.fatigue(%s, %s, %s::int, %s::numeric) "
         "where not confident and score > 0",
         (b["id"], asof, window_days, min_spend),
     )
+    # Independent reads: one round trip of wall time rather than two.
+    # gather_in_order keeps the sequential error semantics (the rows' failure
+    # is the one raised).
+    rows, suppressed = await context.gather_in_order(listed, counted)
     return {
         "verb": "fatigue", "brand": b["slug"], "brand_id": str(b["id"]),
         "asof": asof, "window_days": window_days, "min_spend": min_spend,
