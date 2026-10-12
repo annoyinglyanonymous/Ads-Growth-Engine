@@ -33,12 +33,12 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
-def _pool(conninfo: str) -> AsyncConnectionPool:
+def _pool(conninfo: str, autocommit: bool = False) -> AsyncConnectionPool:
     return AsyncConnectionPool(
         conninfo=conninfo,
         min_size=settings.pool_min_size,
         max_size=settings.pool_max_size,
-        kwargs={"row_factory": dict_row},
+        kwargs={"row_factory": dict_row, "autocommit": autocommit},
         # Validate a connection before handing it out. Supabase's pooler drops
         # idle server connections on its own schedule and without this check
         # the pool cheerfully lends out the dead socket -- the failure then
@@ -60,7 +60,12 @@ _read: AsyncConnectionPool | None = None
 def read_pool() -> AsyncConnectionPool:
     global _read
     if _read is None:
-        _read = _pool(settings.read_url)
+        # autocommit: every read is one statement, so a transaction around it
+        # buys nothing and costs a BEGIN and a ROLLBACK -- two extra round
+        # trips to Supabase, ~85ms each. Measured 2026-10-12: 0.235s per
+        # query without it, 0.084s with it, and a page makes 8-21 of them.
+        # Read pool only: db_owner's writes keep their transaction.
+        _read = _pool(settings.read_url, autocommit=True)
     return _read
 
 

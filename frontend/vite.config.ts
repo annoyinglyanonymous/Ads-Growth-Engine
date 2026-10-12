@@ -8,10 +8,11 @@ import react from "@vitejs/plugin-react";
 // ADS_API=http://127.0.0.1:8101 npm run dev  points it at another port.
 const API = process.env.ADS_API || "http://127.0.0.1:8001";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
-  // Built into static/app/, which main.py already serves under /static.
-  base: "/static/app/",
+  // Built into static/app/, which main.py already serves under /static. The
+  // dev server stays at / so the routes (/, /brief, ...) match.
+  base: command === "build" ? "/static/app/" : "/",
   build: { outDir: "../static/app", emptyOutDir: true },
   server: {
     host: "127.0.0.1",
@@ -30,4 +31,4 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
   },
-});
+}));
