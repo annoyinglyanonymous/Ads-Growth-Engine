@@ -17,6 +17,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -33,7 +34,8 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
-def _pool(conninfo: str, autocommit: bool = False) -> AsyncConnectionPool:
+def _pool(conninfo: str, autocommit: bool = False,
+          check: bool = True) -> AsyncConnectionPool:
     return AsyncConnectionPool(
         conninfo=conninfo,
         min_size=settings.pool_min_size,
@@ -43,8 +45,10 @@ def _pool(conninfo: str, autocommit: bool = False) -> AsyncConnectionPool:
         # idle server connections on its own schedule and without this check
         # the pool cheerfully lends out the dead socket -- the failure then
         # surfaces as an OperationalError inside whatever query ran first,
-        # which reads as a bug in that query.
-        check=AsyncConnectionPool.check_connection,
+        # which reads as a bug in that query. The read pool turns it off and
+        # retries instead (see _retrying): the check is a round trip on every
+        # query, and a read can simply be run again.
+        check=AsyncConnectionPool.check_connection if check else None,
         max_idle=settings.pool_max_idle,
         # Opened explicitly, so importing this module never blocks on the
         # network -- a CLI that only prints --help should not need a database.
@@ -64,8 +68,9 @@ def read_pool() -> AsyncConnectionPool:
         # buys nothing and costs a BEGIN and a ROLLBACK -- two extra round
         # trips to Supabase, ~85ms each. Measured 2026-10-12: 0.235s per
         # query without it, 0.084s with it, and a page makes 8-21 of them.
-        # Read pool only: db_owner's writes keep their transaction.
-        _read = _pool(settings.read_url, autocommit=True)
+        # Read pool only: db_owner's writes keep their transaction, and their
+        # pre-flight check.
+        _read = _pool(settings.read_url, autocommit=True, check=False)
     return _read
 
 
@@ -87,13 +92,29 @@ async def _cursor() -> AsyncIterator:
         yield cur
 
 
+async def _retrying(sql: str, params: tuple, one: bool):
+    """Run a read; on a dropped connection, run it once more.
+
+    This replaces the pool's check-before-lending, which cost a round trip
+    (~85ms to Supabase) on every query to catch the rare socket the pooler
+    closed while it sat idle. Now the dead socket surfaces as an
+    OperationalError here, the pool discards it on return, and the second
+    attempt gets a live connection. Safe only because these are reads in
+    autocommit: running one twice changes nothing.
+    """
+    for attempt in (1, 2):
+        try:
+            async with _cursor() as cur:
+                await cur.execute(sql, params)
+                return await (cur.fetchone() if one else cur.fetchall())
+        except psycopg.OperationalError:
+            if attempt == 2:
+                raise
+
+
 async def fetch_all(sql: str, params: tuple = ()) -> list[dict]:
-    async with _cursor() as cur:
-        await cur.execute(sql, params)
-        return await cur.fetchall()
+    return await _retrying(sql, params, one=False)
 
 
 async def fetch_one(sql: str, params: tuple = ()) -> dict | None:
-    async with _cursor() as cur:
-        await cur.execute(sql, params)
-        return await cur.fetchone()
+    return await _retrying(sql, params, one=True)

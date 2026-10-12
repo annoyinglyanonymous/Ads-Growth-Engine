@@ -20,16 +20,18 @@ a conclusion in growth-engine's UI, where a person is signed in and attributable
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import subprocess
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 import ask
 import chat
@@ -126,6 +128,27 @@ async def _latest_day(brand_slug: str) -> date | None:
     return await context.latest_day(brand_slug)
 
 
+async def _end_and_brand(brand_slug: str, until: str | None = None):
+    """The window end, with the brand and its settled edge looked up beside it.
+
+    Called inside context.one_request(), so the brand and settled-edge answers
+    are memoised and every verb the page runs next finds them already there.
+    Concurrent rather than one after the other: each is a round trip to
+    Supabase, and none needs the others' answer.
+    """
+    async def warm():
+        b = await context.brand(brand_slug)
+        await context.settled_through(b["id"])
+
+    end, _ = await context.gather_in_order(
+        _day_or_latest(until, brand_slug), warm())
+    return end
+
+
+async def _day_or_latest(until: str | None, brand_slug: str) -> date | None:
+    return _day(until) or await _latest_day(brand_slug)
+
+
 def _fail(nav: str, exc: Exception):
     """One sentence on the page, never a traceback.
 
@@ -134,14 +157,88 @@ def _fail(nav: str, exc: Exception):
     page that explains itself, the way growth-engine's /ads renders for a
     missing Meta token. 200, with `error` set: the page draws ErrorPage.
     """
-    return JSONResponse({
+    resp = JSONResponse({
         "nav": nav, "brand": None, "settled": None, "caveat": None,
         "error": str(exc).strip().splitlines()[0] if str(exc) else repr(exc),
         "detail": str(exc),
     }, status_code=200)
+    # Never cached: the fix for an error is usually outside this process, and
+    # the next load should see it.
+    resp.cacheable = False
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# THE PAGE CACHE.
+#
+# A page's data is ten to twenty round trips to Supabase, ~85ms each, and it
+# changes only when something writes: an import, a published report or brief,
+# a ledger update. So each /api answer is kept, keyed on the page and its
+# query string, and served again while the DATA STAMP it was built under still
+# holds. The stamp costs one round trip -- ads.pull's row count and latest
+# start/finish, the newest file under suggestions/, briefs/ and outcomes/, and
+# today's date (the settled edge and "today" move with it).
+#
+# What the stamp cannot see is a person's own SQL -- signing an angle, setting
+# started_on -- so an answer is also dropped after CACHE_TTL_S. Refresh clears
+# everything. Per process and in memory: a restart starts cold, which is the
+# point of keeping it this simple.
+# ---------------------------------------------------------------------------
+
+CACHE_TTL_S = 300
+CACHE_MAX = 64
+DATA_DIRS = (ROOT / "suggestions", ROOT / "briefs", ROOT / "outcomes")
+
+#: (handler, query) -> (stamp, monotonic time stored, JSON body)
+_cache: dict[tuple, tuple[tuple, float, bytes]] = {}
+
+
+async def _data_stamp() -> tuple:
+    row = await fetch_one(
+        "select count(*) as runs, "
+        "       max(coalesce(finished_at, started_at)) as last_at "
+        "  from ads.pull") or {}
+    newest = 0.0
+    for d in DATA_DIRS:
+        try:
+            # The directory's own mtime moves when a file is added or removed;
+            # each file's moves when it is rewritten in place.
+            newest = max([newest, d.stat().st_mtime,
+                          *(f.stat().st_mtime for f in d.iterdir())])
+        except OSError:
+            continue
+    return (date.today(), row.get("runs"), row.get("last_at"), newest)
+
+
+def _cached(handler):
+    """Serve `handler`'s JSON from _cache while the data stamp holds.
+
+    functools.wraps keeps the handler's signature, which is what FastAPI reads
+    the query parameters from. A stamp that cannot be read means no cache for
+    that request, never a stale answer.
+    """
+    @functools.wraps(handler)
+    async def wrapper(**kwargs):
+        try:
+            stamp = await _data_stamp()
+        except Exception:  # noqa: BLE001 -- the handler reports its own failure
+            return await handler(**kwargs)
+        key = (handler.__name__, tuple(sorted(kwargs.items())))
+        hit = _cache.get(key)
+        if (hit and hit[0] == stamp
+                and time.monotonic() - hit[1] < CACHE_TTL_S):
+            return Response(hit[2], media_type="application/json")
+        resp = await handler(**kwargs)
+        if resp.status_code == 200 and getattr(resp, "cacheable", True):
+            if len(_cache) >= CACHE_MAX:
+                _cache.pop(next(iter(_cache)))
+            _cache[key] = (stamp, time.monotonic(), resp.body)
+        return resp
+    return wrapper
 
 
 @router.get("/api/")
+@_cached
 async def overview(brand: str = "renegade", days: int = 28,
                    level: str = "ad", until: str | None = None):
     """The window ends at the settled edge unless `until` says otherwise.
@@ -153,22 +250,44 @@ async def overview(brand: str = "renegade", days: int = 28,
     unsettled_days with it, so the page can show the number AND say what it is.
     """
     try:
-        end = _day(until) or await _latest_day(brand)
-        d = await metrics.overview(brand, days, end, level, limit=200)
-        cmp_ = await metrics.compare(brand, days, end, level, limit=500)
+        with context.one_request():
+            end = await _end_and_brand(brand, until)
+            # The window is known before any metric is read, so the six reads
+            # below run concurrently instead of in a row.
+            f = await metrics._frame(brand, days, end)
+            win = (f["brand_id"], f["since"], f["until"])
+            d, cmp_, agg, brand_cmp, series, first = await context.gather_in_order(
+                metrics.overview(brand, days, end, level, limit=200),
+                metrics.compare(brand, days, end, level, limit=500),
+                # Brand totals for the tiles. One row, straight from the
+                # function -- no summing here and no rate recomputed. Until
+                # 011 there was no brand level, so this page summed campaign
+                # rows and then divided, which is the trap ads.rate exists to
+                # prevent and which 003's first line forbids.
+                fetch_one(
+                    "select spend, conversions, impressions, clicks, link_clicks, rates, "
+                    "       currencies "
+                    "  from ads.window_metrics(%s, %s, %s, 'brand')", win),
+                fetch_one(
+                    "select current_m, prior_m, delta, pct "
+                    "  from ads.compare(%s, %s, %s, 'brand')", win),
+                fetch_all(
+                    "select day, sum(spend) as spend, sum(conversions)::bigint as conversions "
+                    "  from ads.fact_ad_day "
+                    " where brand_id = %s and day between %s and %s "
+                    " group by day order by day", win),
+                # The first day this brand has any data, so the page can
+                # withhold a spend or conversions delta measured against a
+                # prior window the import had barely reached -- the proxy the
+                # brief uses, and for the same reason: a "+3,191%" that is a
+                # fact about the importer is worse than no figure.
+                fetch_one(
+                    "select min(day) as first_day from ads.fact_ad_day where brand_id = %s",
+                    (f["brand_id"],)))
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail("overview", exc)
 
-    # Brand totals for the tiles. One row, straight from the function -- no
-    # summing here and no rate recomputed. Until 011 there was no brand level,
-    # so this page summed campaign rows and then divided, which is the trap
-    # ads.rate exists to prevent and which 003's first line forbids.
-    agg = await fetch_one(
-        "select spend, conversions, impressions, clicks, link_clicks, rates, "
-        "       currencies "
-        "  from ads.window_metrics(%s, %s, %s, 'brand')",
-        (d["brand_id"], d["since"], d["until"]),
-    ) or {}
+    agg = agg or {}
     if not agg:
         # No brand row means no ad-days in the window at all. Every field is
         # None rather than 0, because "nothing imported" and "spent nothing"
@@ -192,28 +311,10 @@ async def overview(brand: str = "renegade", days: int = 28,
     # its own contiguous prior window. A summed per-ad CPA delta is not the
     # brand CPA delta -- CPA is not additive -- which is why this tile carried
     # no movement before there was a function that returned one.
-    brand_cmp = await fetch_one(
-        "select current_m, prior_m, delta, pct "
-        "  from ads.compare(%s, %s, %s, 'brand')",
-        (d["brand_id"], d["since"], d["until"]),
-    ) or {}
+    brand_cmp = brand_cmp or {}
     deltas = _brand_delta(brand_cmp, {r["entity_key"]: r for r in cmp_["rows"]})
 
-    series = await fetch_all(
-        "select day, sum(spend) as spend, sum(conversions)::bigint as conversions "
-        "  from ads.fact_ad_day "
-        " where brand_id = %s and day between %s and %s "
-        " group by day order by day",
-        (d["brand_id"], d["since"], d["until"]),
-    )
-    # The first day this brand has any data, so the page can withhold a spend
-    # or conversions delta measured against a prior window the import had
-    # barely reached -- the proxy the brief uses, and for the same reason: a
-    # "+3,191%" that is a fact about the importer is worse than no figure.
-    first = await fetch_one(
-        "select min(day) as first_day from ads.fact_ad_day where brand_id = %s",
-        (d["brand_id"],),
-    ) or {}
+    first = first or {}
     return _page("overview", d,
                  agg=agg, deltas=deltas, level=level, days=days,
                  until=until, first_day=first.get("first_day"),
@@ -248,6 +349,7 @@ def _brand_delta(brand_cmp: dict, per_ad: dict) -> dict:
 
 
 @router.get("/api/brief")
+@_cached
 async def brief_page(brand: str = "renegade",
                      days: int | None = None, product: str | None = None):
     """The PUBLISHED weekly brief, rendered whole. Live only when asked.
@@ -358,20 +460,25 @@ async def ask_json(q: str = "", brand: str = "renegade"):
 
 
 @router.get("/api/why")
+@_cached
 async def why(brand: str = "renegade", days: int = 7):
     try:
-        d = await metrics.why(brand, days, await _latest_day(brand), limit=40)
+        with context.one_request():
+            d = await metrics.why(brand, days, await _end_and_brand(brand),
+                                  limit=40)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail("why", exc)
     return _page("why", d, days=days)
 
 
 @router.get("/api/creative")
+@_cached
 async def creative(brand: str = "renegade", window: int = 7,
                    min_spend: float = 100.0, unconfident: int = 0):
     try:
-        d = await metrics.fatigue(brand, window, await _latest_day(brand),
-                                  min_spend, bool(unconfident))
+        with context.one_request():
+            d = await metrics.fatigue(brand, window, await _end_and_brand(brand),
+                                      min_spend, bool(unconfident))
     except (UnknownBrand, NotConfigured, ValueError) as exc:
         return _fail("creative", exc)
 
@@ -401,6 +508,7 @@ async def creative(brand: str = "renegade", window: int = 7,
 
 
 @router.get("/api/angles")
+@_cached
 async def angles(brand: str = "renegade", days: int = 90,
                  product: str | None = None):
     try:
@@ -425,6 +533,7 @@ async def angles(brand: str = "renegade", days: int = 90,
 
 
 @router.get("/api/experiments")
+@_cached
 async def experiments(brand: str = "renegade",
                       days: int = 14):
     """The log, and underneath it the tests the report recommends.
@@ -473,13 +582,9 @@ async def experiments(brand: str = "renegade",
 
 
 @router.get("/api/ad/{ad_key}")
+@_cached
 async def ad_detail(ad_key: str, brand: str = "renegade",
                     days: int = 14):
-    try:
-        d = await metrics.ad(ad_key, days=90)
-    except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail("overview", exc)
-
     # The panel is best-effort and the page is not. Every sentence in it comes
     # from a verb that can fail on its own -- a brand with no active account
     # has no settled edge, and ads.fatigue returns nothing for an ad that ran
@@ -488,12 +593,7 @@ async def ad_detail(ad_key: str, brand: str = "renegade",
     # The settled edge only, not the readings: the panel they used to feed is
     # gone, and building a fact pack on every page load to render nothing is a
     # round trip nobody asked for. /ad/<key>/analyse.json builds it on demand.
-    settled = None
-    try:
-        settled = await context.settled_through((await context.brand(brand))["id"])
-    except (UnknownBrand, NotConfigured, ValueError):
-        pass
-
+    #
     # THE RULES' READINGS COME BACK, and they lead the page. They are free --
     # rules over a fact pack, no model -- so this is the "analysis first" the
     # dashboard now opens every page with; the model's longer read stays behind
@@ -501,17 +601,35 @@ async def ad_detail(ad_key: str, brand: str = "renegade",
     # a fatigue or bridge verb failing is no reason to lose the copy, the
     # charts and the daily table. `totals` is the ad's own window, from the
     # same function every other tile reads.
-    reading, totals = None, None
+    #
+    # The ad, the settled edge and the readings run concurrently; the last
+    # two swallow their own failures.
+    async def settled_edge():
+        try:
+            return await context.settled_through(
+                (await context.brand(brand))["id"])
+        except (UnknownBrand, NotConfigured, ValueError):
+            return None
+
+    async def readings():
+        try:
+            reading = await ad_readings_mod.ad_reading(brand, ad_key, days)
+            f = await metrics._frame(brand, days, None)
+            totals = await fetch_one(
+                "select spend, conversions, impressions, rates "
+                "  from ads.window_metrics(%s::uuid, %s, %s, 'ad') "
+                " where entity_key = %s::uuid",
+                (f["brand_id"], f["since"], f["until"], ad_key))
+            return reading, totals
+        except Exception:  # noqa: BLE001 -- the page must render without the panel
+            return None, None
+
     try:
-        reading = await ad_readings_mod.ad_reading(brand, ad_key, days)
-        f = await metrics._frame(brand, days, None)
-        totals = await fetch_one(
-            "select spend, conversions, impressions, rates "
-            "  from ads.window_metrics(%s::uuid, %s, %s, 'ad') "
-            " where entity_key = %s::uuid",
-            (f["brand_id"], f["since"], f["until"], ad_key))
-    except Exception:  # noqa: BLE001 -- the page must render without the panel
-        pass
+        with context.one_request():
+            d, settled, (reading, totals) = await context.gather_in_order(
+                metrics.ad(ad_key, days=90), settled_edge(), readings())
+    except (UnknownBrand, NotConfigured, ValueError) as exc:
+        return _fail("overview", exc)
 
     daily = list(reversed(d["daily"]))
     return _page("overview", {"brand": brand},
@@ -521,6 +639,7 @@ async def ad_detail(ad_key: str, brand: str = "renegade",
 
 
 @router.get("/api/suggestions")
+@_cached
 async def suggestions(brand: str = "renegade",
                       days: int = 28):
     """The latest published suggestion, and the evidence it was written from.
@@ -733,6 +852,10 @@ def _spawn_detached(cmd: list[str]) -> None:
 @router.post("/refresh")
 async def refresh(brand: str = "renegade"):
     """Start an insights pull. 202 if it started, 409 if one is already going."""
+    # A person asking for fresh numbers should never be shown kept ones. The
+    # stamp would catch the pull's ads.pull row anyway; this covers the
+    # minutes before it is written.
+    _cache.clear()
     try:
         b = await context.brand(brand)
     except UnknownBrand as exc:

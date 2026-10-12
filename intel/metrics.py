@@ -101,7 +101,8 @@ async def why(slug: str, days: int = 7, until: date | None = None,
     everything would be the interesting half of a lie.
     """
     f = await _frame(slug, days, until)
-    rows = await fetch_all(
+    # Four independent reads of one window, run concurrently.
+    rows, totals, bridge, changes = await context.gather_in_order(fetch_all(
         """
         select ad_key, entity_name, spend_current, spend_prior,
                conv_current, conv_prior, cpa_current, cpa_prior,
@@ -110,8 +111,7 @@ async def why(slug: str, days: int = 7, until: date | None = None,
          limit %s
         """,
         (f["brand_id"], f["since"], f["until"], limit),
-    )
-    totals = await fetch_one(
+    ), fetch_one(
         """
         select sum(total_effect)                                   as cpa_change,
                sum(rate_effect)                                    as rate_effect,
@@ -121,20 +121,18 @@ async def why(slug: str, days: int = 7, until: date | None = None,
           from ads.cpa_bridge(%s, %s, %s)
         """,
         (f["brand_id"], f["since"], f["until"]),
-    )
     # The part of the move the split cannot assign, and how much it covers --
     # from the function the brief reads, so the two pages cannot disagree.
     # Without unattributable_effect, rate + mix does not add up to the net and
     # a reader who checks the arithmetic trusts neither number.
-    bridge = await fetch_one(
+    ), fetch_one(
         """
         select unattributable_effect, attributable_share, attributable_ads
           from ads.cpa_bridge_totals(%s, %s, %s)
         """,
         (f["brand_id"], f["since"], f["until"]),
-    )
+    ), _changes(f["brand_id"], f["since"], f["until"]))
     totals = {**(totals or {}), **(bridge or {})}
-    changes = await _changes(f["brand_id"], f["since"], f["until"])
     return {"verb": "why", **f, "totals": totals,
             "row_count": len(rows), "rows": rows,
             "structure_changes": changes}
@@ -225,7 +223,9 @@ async def fatigue(slug: str, window_days: int = 7, until: date | None = None,
 
 async def ad(ad_key: str, days: int = 90) -> dict:
     """One ad: what it is, what it said, what it did, what we think it is."""
-    head = await fetch_one(
+    # Five independent reads keyed on ad_key, run concurrently. A missing ad
+    # still raises below; the other four will simply have found nothing.
+    head, copy, facet, review, series = await context.gather_in_order(fetch_one(
         """
         select d.ad_key, d.platform, d.platform_ad_id, d.brand_id, d.name,
                d.status, d.effective_status, d.format, d.cta, d.link_url,
@@ -239,14 +239,9 @@ async def ad(ad_key: str, days: int = 90) -> dict:
          where d.ad_key = %s
         """,
         (ad_key,),
-    )
-    if not head:
-        raise ValueError(f"no ad with ad_key {ad_key}")
-
-    copy = await fetch_one(
+    ), fetch_one(
         "select copy_hash, texts, first_headline, first_body "
-        "from ads.ad_copy where ad_key = %s", (ad_key,))
-    facet = await fetch_one(
+        "from ads.ad_copy where ad_key = %s", (ad_key,)), fetch_one(
         """
         select fa.angle_id, ang.slug as angle_slug, ang.name as angle_name,
                ang.family, fa.hook, fa.offer, fa.audience, fa.source,
@@ -266,11 +261,9 @@ async def ad(ad_key: str, days: int = 90) -> dict:
          order by (fa.copy_hash = c.copy_hash) desc nulls last,
                   fa.created_at desc
          limit 1
-        """, (ad_key,))
-    review = await fetch_one(
+        """, (ad_key,)), fetch_one(
         "select overall, angle_observed, reviewed_at, reviewed_by "
-        "from ads.ad_review_latest where ad_key = %s", (ad_key,))
-    series = await fetch_all(
+        "from ads.ad_review_latest where ad_key = %s", (ad_key,)), fetch_all(
         """
         select day, impressions, clicks, link_clicks, spend, conversions,
                landing_page_views, frequency_this_day, reach_this_day
@@ -278,7 +271,9 @@ async def ad(ad_key: str, days: int = 90) -> dict:
          where ad_key = %s
          order by day desc
          limit %s
-        """, (ad_key, days))
+        """, (ad_key, days)))
+    if not head:
+        raise ValueError(f"no ad with ad_key {ad_key}")
 
     # A tag made against different wording than the ad currently runs. The
     # (ad_key, copy_hash) key means this cannot silently happen -- but it can

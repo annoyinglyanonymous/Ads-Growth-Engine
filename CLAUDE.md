@@ -360,6 +360,17 @@ tokens, a native `<title>` on every point). The one button is still Refresh
 `python -m main` says `NOT BUILT` at startup when `static/app/index.html` is
 missing, and every page URL answers 503 with the command that builds it.
 
+**Page data is cached** (`ui._cached`, in memory, per process). Each `/api`
+answer is served again while its data stamp holds: `ads.pull`'s row count and
+latest start/finish, the newest file under `suggestions/`, `briefs/` and
+`outcomes/`, and today's date. Entries also expire after 5 minutes, which is
+what picks up a person's own SQL (signing an angle, setting `started_on`).
+Refresh clears it, and error pages are never cached. Supabase is ~85ms away,
+which also explains the read pool's settings: it runs in autocommit with no
+pre-flight check (a read that hits a dropped connection is retried once), and
+handlers run independent reads concurrently with `context.gather_in_order`
+inside `context.one_request()`.
+
 ## Warehoused vs live
 
 Almost everything here is **warehoused**: `meta_ads/` imports daily rows into
