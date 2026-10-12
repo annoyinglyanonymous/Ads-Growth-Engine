@@ -46,6 +46,13 @@ async def lifespan(app: FastAPI):
 
     print("  This app reads. It approves nothing and never pulls in-process.")
     print("  Refresh spawns scripts\\sync.py detached, like the scheduler.")
+    # The pages are a React build. Said at startup for the same reason the
+    # database is: a missing build otherwise surfaces as a 503 on whichever
+    # page happens to load first, and the fix is one command.
+    if not ui.APP_INDEX.is_file():
+        print("  NOT BUILT: static/app/index.html is missing. In frontend/: "
+              "npm install && npm run build  (or npm run dev for 5173).",
+              file=sys.stderr)
     yield
     await db.close_read()
 
@@ -53,7 +60,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Ads Intelligence", lifespan=lifespan, docs_url=None,
               redoc_url=None)
 
-app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+# static/ holds only the React build (static/app/, gitignored), so on a fresh
+# clone the directory does not exist yet. check_dir=False lets the app start
+# and say NOT BUILT instead of refusing to start over a folder npm creates.
+app.mount("/static", StaticFiles(directory=str(ROOT / "static"), check_dir=False),
+          name="static")
 
 import ui  # noqa: E402 -- must come after `app` exists, as in growth-engine
 
@@ -67,6 +78,9 @@ async def health():
 
 @app.exception_handler(404)
 async def not_a_page(request, exc):
+    # A page URL the server does not know is a 404 here, not the shell: the
+    # React router would draw a blank column for it, and a blank column and a
+    # slow page look the same. ui.PAGES is the list; App.tsx mirrors it.
     if "text/html" in (request.headers.get("accept") or ""):
         return HTMLResponse(
             "<h1>Not a page</h1><p><a href='/'>Overview</a></p>", status_code=404)

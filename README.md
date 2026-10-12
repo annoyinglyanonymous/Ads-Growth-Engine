@@ -201,6 +201,12 @@ python -m main                             # dashboard, 127.0.0.1:8001
 python -m pytest
 ```
 
+The dashboard's pages are a React app in `frontend/`: `npm install` once, then
+`npm run build` (into `static/app/`, which `python -m main` serves) or `npm run
+dev` for hot reload on 127.0.0.1:5173 against the API on 8001. Every page URL
+has a `/api` twin that returns its data as JSON from the same verb the CLI
+runs; `CLAUDE.md` has the shape under **The dashboard is a React app**.
+
 `127.0.0.1`, never `localhost` — on Windows `localhost` resolves `::1` first and
 uvicorn bound to `127.0.0.1` is not listening there, which looks like a refused
 connection against an app that is plainly running. Port 8001 because

@@ -1,0 +1,43 @@
+/* Inline SVG icons, ported from templates/_icons.html.
+ *
+ * This repo loads no script from a CDN; the one external request in the whole
+ * app is the font stylesheet. So the paths are here, drawn on Lucide's 24x24
+ * grid with its 2px stroke. `currentColor` everywhere: an icon inherits the
+ * colour of whatever it is standing in, which is what makes one component
+ * work in the rail, in a pill and in a button.
+ */
+
+import type { ReactElement } from "react";
+
+const PATHS: Record<string, ReactElement> = {
+  overview: <><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></>,
+  why: <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />,
+  creative: <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="1.6" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></>,
+  angles: <><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z" /><circle cx="7.5" cy="7.5" r="1.1" /></>,
+  experiments: <><path d="M10 2v7.5a2 2 0 0 1-.2.9L4.7 20.6a1 1 0 0 0 .9 1.4h12.8a1 1 0 0 0 .9-1.4l-5.1-10.2a2 2 0 0 1-.2-.9V2" /><path d="M8.5 2h7" /><path d="M7 16h10" /></>,
+  status: <><path d="M3.3 19a10 10 0 1 1 17.4 0" /><path d="m12 14 4-4" /></>,
+  search: <><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>,
+  download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><path d="M12 15V3" /></>,
+  chevron: <path d="m6 9 6 6 6-6" />,
+  "arrow-up": <><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></>,
+  "arrow-right": <path d="m9 18 6-6-6-6" />,
+  suggest: <><path d="M9 18h6" /><path d="M10 22h4" /><path d="M15.1 14c.3-1.2 1-2 1.9-3a6 6 0 1 0-10 0c.9 1 1.6 1.8 1.9 3" /></>,
+  ask: <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z" />,
+  warn: <><path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></>,
+  clock: <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>,
+  database: <><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14a9 3 0 0 0 18 0V5" /><path d="M3 12a9 3 0 0 0 18 0" /></>,
+  filters: <><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3" /><path d="M14 2v4M8 10v4M16 18v4" /></>,
+  live: <><circle cx="12" cy="12" r="2.5" /><path d="M16.2 7.8a6 6 0 0 1 0 8.4" /><path d="M7.8 16.2a6 6 0 0 1 0-8.4" /><path d="M19.1 4.9a10 10 0 0 1 0 14.2" /><path d="M4.9 19.1a10 10 0 0 1 0-14.2" /></>,
+};
+
+export type IconName = keyof typeof PATHS;
+
+export function Icon({ name, size = 16 }: { name: string; size?: number }) {
+  return (
+    <svg className="ico" width={size} height={size} viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+         aria-hidden="true" focusable="false">
+      {PATHS[name] ?? PATHS.overview}
+    </svg>
+  );
+}

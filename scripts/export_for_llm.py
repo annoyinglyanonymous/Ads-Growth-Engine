@@ -61,9 +61,12 @@ BUNDLES = [
      "call a Postgres function, and shape the result.",
      lambda r: r.startswith("intel/")),
     ("05-dashboard",
-     "The read surface: routes, hand-rolled SVG charts, templates, ask box.",
-     lambda r: r.startswith(("templates/", "static/")) or r in {
-         "ui.py", "ask.py", "charts.py", "main.py"}),
+     "The read surface: the JSON routes, and the React app that draws them "
+     "(frontend/src: pages, the chart and formatter ports, the shell).",
+     lambda r: (r.startswith("frontend/src/") and not r.endswith(".test.tsx")
+                and not r.endswith(".cases.json"))
+     or r in {"ui.py", "ask.py", "charts.py", "main.py", "frontend/package.json",
+              "frontend/vite.config.ts", "frontend/index.html"}),
     ("06-plumbing",
      "Settings, the three connection pools, the migration runner, scripts.",
      lambda r: r in {"config.py", "db.py", "db_owner.py", "ads_migrate.py",

@@ -42,3 +42,6 @@ tags/
 # the person's overrides.json. Per-machine, like suggestions/ -- derived from
 # the published files plus SQL reads.
 outcomes/
+
+# The React build (cd frontend && npm run build). main.py says so when it is missing.
+static/app/

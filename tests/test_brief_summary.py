@@ -100,11 +100,12 @@ def test_both_ask_endpoints_are_posts():
 
 
 def test_the_pages_use_the_generic_ask_handler():
-    """One script, driven by two attributes. A page-specific block for each
-    button is how the two drift apart in their error handling."""
-    js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-    assert 'querySelectorAll("[data-ask-url]")' in js
-    assert 'getElementById("analyse-ad")' not in js, "the old ad-only block is still there"
-    for tpl in ("ad.html", "brief.html"):
-        html = (ROOT / "templates" / tpl).read_text(encoding="utf-8")
-        assert "data-ask-url=" in html and "data-ask-target=" in html, tpl
+    """One hook, driven by a URL. A page-specific fetch for each button is how
+    the two drift apart in their error handling."""
+    src = ROOT / "frontend" / "src"
+    hook = (src / "components" / "AskButton.tsx").read_text(encoding="utf-8")
+    assert "export function useAnalysis(url: string)" in hook
+    for page, url in (("AdPage.tsx", "/analyse.json"), ("BriefPage.tsx", "/brief/summary.json")):
+        tsx = (src / "pages" / page).read_text(encoding="utf-8")
+        assert "useAnalysis(" in tsx and 'from "../components/AskButton"' in tsx, page
+        assert url in tsx, f"{page} does not post to {url}"

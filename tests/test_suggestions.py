@@ -604,19 +604,20 @@ def test_the_page_has_no_button_and_no_endpoint_to_press():
     stored answer and there is nothing to click.
     """
     src = (ROOT / "ui.py").read_text(encoding="utf-8")
-    assert '@router.get("/suggestions", response_class=HTMLResponse)' in src
+    assert '@router.get("/api/suggestions")' in src
     assert "/suggestions.json" not in src, (
         "the on-demand endpoint is still there; a button will grow back")
 
-    html = (ROOT / "templates" / "suggestions.html").read_text(encoding="utf-8")
-    assert "data-ask-url=" not in html, "the page still carries an ask button"
+    html = (ROOT / "frontend" / "src" / "pages" / "SuggestionsPage.tsx").read_text(encoding="utf-8")
+    assert "AskButton" not in html and "useAnalysis" not in html, (
+        "the page still carries an ask button")
     assert not re.search(r"<script", html, re.I), "the page grew a script tag"
     assert not re.search(r"<button", html, re.I), "the page grew a button"
 
 
 def test_the_page_says_so_when_nothing_has_been_published():
     """An empty page and a broken one look identical unless it says which."""
-    html = (ROOT / "templates" / "suggestions.html").read_text(encoding="utf-8")
+    html = (ROOT / "frontend" / "src" / "pages" / "SuggestionsPage.tsx").read_text(encoding="utf-8")
     assert "No suggestion has been published" in html
     assert "scripts/suggest.py" in html, (
         "the empty state must name the command that fills it")
@@ -655,10 +656,11 @@ def test_the_suggestion_is_published_after_the_lock_is_released():
 
 
 def test_the_rail_carries_it():
-    base = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
-    assert "'/suggestions'" in base, "the page is unreachable from the rail"
-    icons = (ROOT / "templates" / "_icons.html").read_text(encoding="utf-8")
-    assert "'suggest'" in icons, "the rail glyph falls back to 'overview'"
+    src = ROOT / "frontend" / "src" / "components"
+    base = (src / "Layout.tsx").read_text(encoding="utf-8")
+    assert '"/suggestions"' in base, "the page is unreachable from the rail"
+    icons = (src / "Icon.tsx").read_text(encoding="utf-8")
+    assert re.search(r"^\s*suggest:", icons, re.M), "the rail glyph falls back to 'overview'"
 
 
 def test_every_pack_section_reaches_the_model(monkeypatch):
@@ -786,10 +788,16 @@ def test_the_prompt_asks_for_all_three_ratings():
     assert "exactly once" in p
 
 
+def _triage_source() -> str:
+    """Triage.tsx and the macros it split into components/triage/."""
+    comp = ROOT / "frontend" / "src" / "components"
+    files = [comp / "Triage.tsx", *sorted((comp / "triage").glob("*.ts*"))]
+    return "\n".join(f.read_text(encoding="utf-8") for f in files)
+
 def test_the_page_renders_the_cards_when_they_exist():
-    html = (ROOT / "templates" / "_triage.html").read_text(encoding="utf-8")
+    html = _triage_source()
     for r in ("red", "yellow", "green"):
-        assert f"'{r}'" in html, f"{r} cards are never rendered"
+        assert re.search(rf"[\"']{r}[\"']", html), f"{r} cards are never rendered"
     assert not re.search(r"<script|<button", html, re.I)
 
 
@@ -821,9 +829,9 @@ def test_the_prompt_pairs_each_observation_with_a_recommendation():
 def test_the_groups_fold_without_a_script():
     """Twenty-four open cards is a wall. Each group is a <details> that
     opens on a click, which needs no script and no button."""
-    html = (ROOT / "templates" / "_triage.html").read_text(encoding="utf-8")
-    assert '<details class="tgroup' in html and "<summary>" in html
-    assert "<details open" not in html, "a group starts open"
+    html = _triage_source()
+    assert re.search(r"<details[^>]*tgroup", html) and "<summary>" in html
+    assert not re.search(r"<details[^>]*\bopen\b", html), "a group starts open"
     assert "How to fix it" in html
 
 
@@ -2120,13 +2128,15 @@ def test_a_report_built_from_the_pack_renders(monkeypatch):
     published = jsonable_encoder({"published_at": "2026-10-01T09:00:00",
                                   "until": "2026-09-21", "previous_file": None,
                                   "triage": triage})
-    html = ui.templates.env.get_template("_triage.html").render(
-        published=published)
-    assert html.count('<details class="tcamp">') == 2
-    assert "Campaign X" in html and "Campaign Y" in html
-    assert "provisional" in html, "the unsettled rung is not marked"
-    assert "Judging the copy on one week." in html
-    assert not re.search(r"<script|<button", html, re.I)
+    # The rendering itself is frontend/src/components/Triage.test.tsx's job,
+    # against the fixtures in tests/fixtures/suggestions/. What this checks is
+    # that the document the page will receive is whole: one entry per
+    # campaign, the unsettled rung present to be marked provisional, the
+    # not_yet line carried through -- and that it serialises.
+    doc = json.dumps(published)
+    assert [c["campaign"] for c in published["triage"]] == ["Campaign X", "Campaign Y"]
+    assert "unsettled" in doc, "the unsettled rung is not in the document"
+    assert "Judging the copy on one week." in doc
 
 
 def test_not_yet_keeps_one_line_per_thing_and_the_diagnosis_wins():
@@ -2840,11 +2850,11 @@ def test_publish_wires_the_ledger_the_summary_and_the_order(monkeypatch,
                for m in logged)
     assert any("outcomes ledger, 2 entr(ies)" in m for m in logged)
     assert any("causal phrase" in m for m in logged)
-    # What was published renders, buckets in order.
-    html = ui.templates.env.get_template("_triage.html").render(
-        published=doc)
-    assert html.index("Camp A") < html.index("Camp B")
-    assert 'data-bucket="act"' in html and 'data-bucket="monitor"' in html
+    # What was published is in bucket order: the page groups act before
+    # monitor, and creative.sort_triage has already put the entries that way.
+    names = [c["campaign"] for c in doc["triage"]]
+    assert names.index("Camp A") < names.index("Camp B")
+    assert {c["bucket"] for c in doc["triage"]} >= {"act", "monitor"}
 
 
 def test_a_bad_overrides_file_is_logged_and_ignored(monkeypatch):

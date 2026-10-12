@@ -206,57 +206,23 @@ def test_launches_and_recommended_tests_come_off_the_ledger():
     assert exp_mod.recommended_tests(None) == []
 
 
-def _render(**ctx):
-    import ui
-    base = {"nav": "experiments", "brand": "renegade", "settled": "2026-10-07",
-            "caveat": None, "until": None, "today": "2026-10-10", "days": 14,
-            "ideas": None, "has_ledger": True}
-    base.update(ctx)
-    return ui.templates.env.get_template("experiments.html").render(**base)
-
-
-def test_the_page_shows_the_detected_launch_and_the_exact_confirm_sql():
-    led = _ledger_for_page()
-    rows = exp_mod.with_launches(_rows(), led)
-    html = _render(d={"rows": rows, "awaiting_launch": 1}, rows=rows,
-                   recommended=exp_mod.recommended_tests(led),
-                   unfiled=exp_mod.launched_unfiled(led),
-                   launches=[r for r in rows if r["launch"]])
-    assert "Launch detected 2026-10-03 (strong, tagged utm_content=EXP-i1)" in html
-    sql = re.search(r"<pre[^>]*>(.*?)</pre>", html, re.S).group(1)
-    sql = sql.replace("&#39;", "'").replace("&#34;", '"')
-    assert sql == (
-        "update ads.experiment\n"
-        "   set started_on = date '2026-10-03'\n"
-        " where brand_id = (select id from ads.brand where slug = 'renegade')\n"
-        "   and name     = 'i1 | Camp A | creative: it''s new'\n"
-        "   and started_on is null;")
-    # Tests the report recommends: the ledger's, not propose's.
-    assert "Tests the report recommends" in html
-    assert "utm_content=EXP-i2" in html and "one fewer question" in html
-    assert "2026-10-05" in html and 'href="/suggestions?brand=renegade"' in html
-    assert "Source: <code>intel propose</code>" not in html
-    assert "Launched, not filed yet" in html and "no decision spend" in html
-
-
-def test_the_page_falls_back_to_propose_when_the_ledger_is_empty():
-    ideas = {"proposals": [], "proposal_count": 0, "diagnoses": [],
-             "observations": [], "settled_through": None}
-    html = _render(d={"rows": [], "awaiting_launch": 0}, ideas=ideas,
-                   has_ledger=False, recommended=[], unfiled=[], launches=[])
-    assert "Source: <code>intel propose</code>" in html
-    assert "Tests the report recommends" not in html
+#: The page itself -- the detected launch line and the exact started_on
+#: statement with name and date filled in -- renders in React now, and its
+#: tests are frontend/src/pages/ExperimentsPage.test.tsx (run by
+#: tests/test_frontend.py). What stays here is what the page must and must
+#: not contain as source.
+PAGE = ROOT / "frontend" / "src" / "pages" / "ExperimentsPage.tsx"
 
 
 def test_the_template_has_no_script_and_no_button():
-    # base.html carries the site's one script and the Refresh button; the
-    # page's own template adds neither.
-    tpl = (ROOT / "templates" / "experiments.html").read_text(encoding="utf-8")
+    # Layout.tsx carries the site's one button (Refresh); the page adds
+    # neither a button nor a control that would start or conclude a test.
+    tpl = PAGE.read_text(encoding="utf-8")
     assert not re.search(r"<script|<button", tpl, re.I)
 
 
 def test_the_confirm_sql_lives_in_the_template_not_in_a_read_module():
-    tpl = (ROOT / "templates" / "experiments.html").read_text(encoding="utf-8")
+    tpl = PAGE.read_text(encoding="utf-8")
     assert "and started_on is null;" in tpl
     src = (ROOT / "intel" / "experiments.py").read_text(encoding="utf-8")
     assert "update ads." not in src

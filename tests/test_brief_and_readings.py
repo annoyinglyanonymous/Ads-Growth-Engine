@@ -313,8 +313,10 @@ def test_brief_does_not_import_the_writer():
 # of zeroes. Nothing in the suite rendered a page, so nothing caught it.
 # ---------------------------------------------------------------------------
 
-PAGES = ("/brief", "/", "/why", "/creative", "/angles", "/experiments",
-         "/ask", "/suggestions")
+#: The /api twins of the page URLs. The page itself is the React shell, one
+#: file for every URL; what can fail with no data is the handler behind it.
+PAGES = ("/api/brief", "/api/", "/api/why", "/api/creative", "/api/angles",
+         "/api/experiments", "/api/ask", "/api/suggestions")
 
 
 @pytest.fixture(scope="module")
@@ -336,9 +338,13 @@ def pages() -> dict[str, str]:
 
 
 def test_every_page_renders_with_no_data(pages):
+    import json as _json
     for path, body in pages.items():
         assert body.strip(), f"{path} rendered nothing"
         assert "Traceback" not in body, f"{path} rendered a traceback"
+        doc = _json.loads(body)
+        # ui._fail answers 200 with `error` set; a page with data carries `d`.
+        assert "error" in doc or "d" in doc, f"{path} answered neither data nor a sentence"
 
 
 def test_the_overview_tiles_never_render_an_absent_figure_as_zero():
@@ -375,26 +381,6 @@ def test_the_overview_tiles_never_render_an_absent_figure_as_zero():
     # And a real zero still renders as a zero -- the guard must not swallow a
     # genuine "nothing was spent".
     assert charts.money(0) == "$0.00"
-
-
-def test_a_missing_value_renders_as_a_dash_not_a_traceback():
-    """charts._f must survive jinja2's StrictUndefined.
-
-    A template asking for a key the data does not have gets an Undefined, and
-    float(Undefined) raises UndefinedError -- a TemplateError, so neither of
-    the exceptions _f originally guarded. The result was a 500 on a page whose
-    only problem was an absent number, which is the wrong failure: every other
-    missing value in charts.py renders "--".
-    """
-    from jinja2 import StrictUndefined
-
-    import charts
-
-    missing = StrictUndefined(name="cpa")
-    assert charts.money(missing) == "--"
-    assert charts.num(missing) == "--"
-    assert charts.pct(missing) == "--"
-    assert charts.fmt(missing, "cpa") == "--"
 
 
 # ---------------------------------------------------------- the published brief

@@ -289,6 +289,7 @@ python -m intel coverage --brand renegade
 python -m intel ad-readings --brand renegade --key <ad_key>
 
 python -m main                               # the dashboard, 127.0.0.1:8001
+cd frontend && npm run build                 # the pages; see the next section
 python ads_migrate.py --status
 
 python -m meta_ads --list-accounts
@@ -315,6 +316,49 @@ status` reports `healthy: false`, and the dashboard's import card goes amber on
 behalf of an account nobody reads. A scheduled task that reports failure on
 every run is a task nobody checks. Deactivate it. The test account
 `act_9105140029692` was exactly this, and is deactivated (`active: false`).
+
+## The dashboard is a React app
+
+```
+frontend/              Vite + React + TypeScript. One page per URL, in src/pages/.
+  npm install
+  npm run dev          127.0.0.1:5173, proxying every data URL to :8001
+  npm run build        -> static/app/ (gitignored), which main.py serves
+  npm test             vitest; tests/test_frontend.py runs it from pytest too
+```
+
+`ui.py` serves the built `index.html` for every URL in `ui.PAGES` and answers
+the page's data at `/api/<the same path>`, with the same query string --
+`/creative?window=14` is still a link somebody can send. The JSON is exactly
+what the Jinja context used to be (`d`, `settled`, `brand`, the handler's
+extras), so **every page still calls the same function the agent calls**, and
+a page never derives a figure: it formats what the verb returned. `ui._fail`
+answers 200 with `error` set and the page draws `ErrorPage`; a 404 from a data
+URL is reported as a stale server process, because that is what it has always
+turned out to be.
+
+Two things are pinned across the language boundary:
+
+- **Formatting.** `charts.py` still formats every figure a sentence states
+  (`intel/prose.py`, `intel/readings.py`, `brief_render.py`), and
+  `frontend/src/lib/format.ts` formats the tiles beside those sentences.
+  `frontend/src/lib/format.cases.json` is one set of answers both are held to
+  (`tests/test_format_parity.py`, `format.test.ts`): a formatter change one
+  side does not share fails a test. After a deliberate change, regenerate with
+  `python tests/test_format_parity.py --write` and make `format.ts` agree.
+- **The palette.** `tests/test_formatters_and_palette.py` holds
+  `frontend/src/styles/base.css` and every page source to blue-and-white and
+  one theme. `components/Triage.tsx` and `styles/triage.css` are the one
+  exception, by name.
+
+The charts are `frontend/src/components/charts.tsx`: the geometry `charts.py`
+used to draw, with the same rules (single-series, no dual axis, colours as
+tokens, a native `<title>` on every point). The one button is still Refresh
+(`components/Freshness.tsx`); the two model-asking buttons are
+`components/AskButton.tsx`; /suggestions still has neither.
+
+`python -m main` says `NOT BUILT` at startup when `static/app/index.html` is
+missing, and every page URL answers 503 with the command that builds it.
 
 ## Warehoused vs live
 
@@ -570,9 +614,10 @@ fact.
 Output is `suggestions/YYYY-MM-DD-<brand>.json` -- one per brand per day,
 gitignored, `"shape": 2`, with the facts as sent stored beside it so it can be
 checked later. Older files (`problems` or `changes`) still render.
-`templates/_triage.html` is the one template allowed red, amber and green: a
-user-granted exception, scoped by name in
-`tests/test_charts_and_templates.py`. Everything else stays under the rule.
+`frontend/src/components/Triage.tsx` (and `styles/triage.css`) is the one
+component allowed red, amber and green: a user-granted exception, scoped by
+name in `tests/test_formatters_and_palette.py`. Everything else stays under
+the rule.
 The published file also carries `account_summary`, `impact_available` and
 `outcomes` (`{"available", "measurement_available", "scorecard"}`); each act
 or test issue carries an `outcome` tag from the ledger.

@@ -27,13 +27,11 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 import ask
-import charts
 import chat
 from config import NotConfigured
 from db import fetch_all, fetch_one
@@ -49,90 +47,61 @@ from intel import outcomes as outcomes_mod
 from intel.context import UnknownBrand
 
 ROOT = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=str(ROOT / "templates"))
 
-# Formatting helpers, registered as globals because macro bodies do not see
-# page scope. Same device growth-engine uses for field_labels/capped.
-#: A summary sentence that restates the CPA move -- "CPA +22%.", "CPA is up
-#: 4.80% on the prior 7 days..." -- which the row's chips already show.
-_FIGURE_LEAD = re.compile(r"^CPA (is )?([+\-−\d]|up\b|down\b|fell\b|rose\b)")
-#: A summary sentence that gives advice. The advice belongs to the bucket's own
-#: issue, and the model's one-liner sometimes names a secondary issue's.
-_ADVICE = re.compile(r"^(Worth|Test|Monitor|Narrow|Cut|Pause|Stop|Shift|Move|Keep|"
-                     r"Refresh|Nothing to change)\b")
-_SENTENCE = re.compile(r".+?[.!?](?=\s|$)")
-_PRIORITY = {"primary": 0, "secondary": 1}
-
-
-def reason_line(c: dict) -> str:
-    """The part of a campaign's one-line summary its row does not already show.
-
-    A round-2 summary is four short sentences: the CPA move, the stage that
-    appears to contribute most, the advice, the confidence. On the folded row
-    the move is in the 7d / 14d chips beside it and the confidence is in the
-    opened panel, so they are dropped here. So is the advice -- not because it
-    is wrong to show, but because the summary sometimes carries a secondary
-    issue's advice ("Worth testing the form") under an Act heading, and the
-    row must not contradict its group. What is left is the reading.
-
-    A cut, never a rewrite: every word printed is the summary's own, so
-    check_figures has already seen it. When nothing would be left, the whole
-    summary is returned.
-    """
-    s = re.sub(r"\s+", " ", str(c.get("summary") or c.get("headline") or c.get("why") or "")).strip()
-    parts = [p.strip() for p in (_SENTENCE.findall(s) or [s])]
-    chips = isinstance(c.get("movement"), dict) and bool(c["movement"])
-    keep = [p for p in parts
-            if not (chips and _FIGURE_LEAD.match(p))
-            and not re.search(r"confidence\.$", p, re.I)
-            and not _ADVICE.match(p)]
-    return " ".join(keep) if keep else s
-
-
-def lead_issue(c: dict) -> dict:
-    """The issue a campaign's bucket came from: the strongest type, primary first.
-
-    creative.bucket_of sets the bucket from the strongest recommendation among
-    the issues, which need not be the primary one -- a campaign can be Act on a
-    secondary delivery cut while its primary issue is a test. The opened card
-    leads with the issue that put it in its group.
-    """
-    iss = [i for i in (c.get("issues") or []) if isinstance(i, dict)]
-    want = str(c.get("bucket") or "").lower()
-    same = [i for i in iss
-            if str(((i.get("recommendation") or {}).get("type")) or "").lower() == want]
-    same.sort(key=lambda i: _PRIORITY.get(i.get("priority"), 2))
-    return (same or iss or [{}])[0]
-
-
-templates.env.globals.update(
-    money=charts.money, num=charts.num, pct=charts.pct, fmt=charts.fmt,
-    signed_pct=charts.signed_pct,
-    line_chart=charts.line_chart, bar_chart=charts.bar_chart,
-    sparkline=charts.sparkline, column_chart=charts.column_chart,
-    split_bar=charts.split_bar, effect_bars=charts.effect_bars,
-    window_dots=charts.window_dots, paired_moves=charts.paired_moves,
-    words=charts.words, meter=charts.meter, ago=charts.ago,
-    reason_line=reason_line, lead_issue=lead_issue,
-)
+#: The React build (frontend/, `npm run build`). Every page URL serves its
+#: index.html and the page fetches its data from the /api twin of that URL.
+APP_INDEX = ROOT / "static" / "app" / "index.html"
 
 router = APIRouter(include_in_schema=False)
 
 
-def _page(request: Request, template: str, nav: str, data: dict, **extra):
-    return templates.TemplateResponse(request, template, {
+# ---------------------------------------------------------------------------
+# Pages.
+#
+# A page URL serves the React shell; the shell asks /api/<the same path> for
+# its data. ONE URL PER PAGE, as before: /creative?window=14 is still a link
+# somebody can send, and the query string goes to the API untouched.
+# ---------------------------------------------------------------------------
+
+PAGES = ("/", "/brief", "/why", "/creative", "/angles", "/experiments",
+         "/suggestions", "/ask", "/ad/{ad_key}")
+
+
+async def _shell(ad_key: str | None = None):
+    if not APP_INDEX.is_file():
+        # Said on the page rather than as a 404: a missing build is a state of
+        # the checkout, and the fix is one command.
+        return HTMLResponse(
+            "<h1>The dashboard has not been built</h1>"
+            "<p>Run <code>npm install</code> and <code>npm run build</code> in "
+            "<code>frontend/</code>, then reload. "
+            "(<code>npm run dev</code> serves it with hot reload on "
+            "127.0.0.1:5173.)</p>", status_code=503)
+    return FileResponse(APP_INDEX, headers={"Cache-Control": "no-cache"})
+
+
+for _path in PAGES:
+    router.add_api_route(_path, _shell, methods=["GET"],
+                         response_class=HTMLResponse)
+
+
+def _page(nav: str, data: dict, **extra):
+    """A page's data: what the template used to be handed, as JSON.
+
+    The keys are the old template context's, so a page reads `d`, `settled`
+    and `brand` where it always did. jsonable_encoder because every verb
+    returns dates and Decimals.
+    """
+    return JSONResponse(jsonable_encoder({
         "nav": nav,
         "brand": data.get("brand"),
         "settled": data.get("settled_through"),
         "caveat": data.get("caveat"),
         "d": data,
-        # Defaults for every page, because base.html reads both and Jinja is
-        # StrictUndefined -- a page that does not take `until` would otherwise
-        # 500 on the banner rather than simply not showing it. `extra` wins.
         "until": None,
         "today": date.today().isoformat(),
         **extra,
-    })
+    }))
 
 
 def _day(value: str | None) -> date | None:
@@ -157,23 +126,23 @@ async def _latest_day(brand_slug: str) -> date | None:
     return await context.latest_day(brand_slug)
 
 
-def _fail(request: Request, nav: str, exc: Exception):
+def _fail(nav: str, exc: Exception):
     """One sentence on the page, never a traceback.
 
     A NotConfigured here almost always means ADS_DATABASE_URL_RO is unset,
     which is a state of the install rather than a fault -- so it renders as a
     page that explains itself, the way growth-engine's /ads renders for a
-    missing Meta token.
+    missing Meta token. 200, with `error` set: the page draws ErrorPage.
     """
-    return templates.TemplateResponse(request, "error.html", {
+    return JSONResponse({
         "nav": nav, "brand": None, "settled": None, "caveat": None,
         "error": str(exc).strip().splitlines()[0] if str(exc) else repr(exc),
         "detail": str(exc),
     }, status_code=200)
 
 
-@router.get("/", response_class=HTMLResponse)
-async def overview(request: Request, brand: str = "renegade", days: int = 28,
+@router.get("/api/")
+async def overview(brand: str = "renegade", days: int = 28,
                    level: str = "ad", until: str | None = None):
     """The window ends at the settled edge unless `until` says otherwise.
 
@@ -188,7 +157,7 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
         d = await metrics.overview(brand, days, end, level, limit=200)
         cmp_ = await metrics.compare(brand, days, end, level, limit=500)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "overview", exc)
+        return _fail("overview", exc)
 
     # Brand totals for the tiles. One row, straight from the function -- no
     # summing here and no rate recomputed. Until 011 there was no brand level,
@@ -209,11 +178,11 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
         # the same "--".
         agg = {k: None for k in ("spend", "conversions", "impressions",
                                  "clicks", "link_clicks", "currencies")}
-        # The eight keys ads.rate returns, all null -- not {}. The templates
-        # reach rates.cpa and rates.link_ctr directly, and Jinja is configured
-        # StrictUndefined, so an empty dict raises where a null renders "--".
-        # Mirroring the function's real shape is what keeps the no-data page on
-        # the same code path as every other page.
+        # The eight keys ads.rate returns, all null -- not {}. The page reads
+        # rates.cpa and rates.link_ctr directly, and a null renders "--" where
+        # a missing key would be a different code path. Mirroring the
+        # function's real shape is what keeps the no-data page on the same
+        # path as every other page.
         agg["rates"] = {k: None for k in
                         ("ctr", "link_ctr", "cpm", "cpc", "cost_per_link_click",
                          "cpa", "conversion_rate", "lp_view_rate")}
@@ -245,7 +214,7 @@ async def overview(request: Request, brand: str = "renegade", days: int = 28,
         "select min(day) as first_day from ads.fact_ad_day where brand_id = %s",
         (d["brand_id"],),
     ) or {}
-    return _page(request, "overview.html", "overview", d,
+    return _page("overview", d,
                  agg=agg, deltas=deltas, level=level, days=days,
                  until=until, first_day=first.get("first_day"),
                  prior_since=d["since"] - timedelta(days=days),
@@ -278,8 +247,8 @@ def _brand_delta(brand_cmp: dict, per_ad: dict) -> dict:
             "disappeared": sum(1 for r in per_ad.values() if r["disappeared"])}
 
 
-@router.get("/brief", response_class=HTMLResponse)
-async def brief_page(request: Request, brand: str = "renegade",
+@router.get("/api/brief")
+async def brief_page(brand: str = "renegade",
                      days: int | None = None, product: str | None = None):
     """The PUBLISHED weekly brief, rendered whole. Live only when asked.
 
@@ -305,8 +274,8 @@ async def brief_page(request: Request, brand: str = "renegade",
             d = await brief_mod.brief(brand, days or 7, None, product)
             d.setdefault("summary", None)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "brief", exc)
-    return _page(request, "brief.html", "brief", d, days=d["days"],
+        return _fail("brief", exc)
+    return _page("brief", d, days=d["days"],
                  product=product, live=live,
                  prior_since=d["since"] - timedelta(days=d["days"]))
 
@@ -333,59 +302,18 @@ async def brief_page(request: Request, brand: str = "renegade",
 # the template makes with it is between two dates.
 
 
-@router.get("/ask", response_class=HTMLResponse)
-async def ask_page(request: Request, q: str = "", brand: str = "renegade"):
-    """A question, answered twice: in prose, and in the verb's own JSON.
+@router.get("/api/ask")
+async def ask_page(brand: str = "renegade"):
+    """The Ask page's frame: the verb list. The answers are not here.
 
-    The prose comes from a Claude Code session (chat.py) that runs the read
-    verbs itself. The JSON below it is the router's answer to the same
-    question, and it is not redundant -- it is how a figure in the prose gets
-    checked against the verb that produced it. Two accounts of the same
-    numbers would normally be the thing to avoid; here one of them is the
-    receipt for the other.
-
-    The prose half is slow (tens of seconds) and costs real money per
-    question, so it is attempted only when a question was asked, and its
-    failure never costs the routed JSON.
+    The page asks /ask.json and /ask/prose.json itself, the way the overview's
+    box does, so a question costs its model call once, from the browser, and
+    the routed JSON arrives as the receipt underneath the prose -- one of the
+    two accounts of the same numbers is the check on the other.
     """
-    answer, failed = None, None
-    reply, reply_error = None, None
-
-    if q.strip():
-        try:
-            out = await chat.answer(q, brand)
-            if out.get("ok"):
-                reply = out
-            else:
-                reply_error = out.get("error")
-        except chat.ChatUnavailable as exc:
-            reply_error = str(exc)
-        except Exception as exc:  # pragma: no cover - defensive
-            # A failure in the prose half must not take the routed answer down
-            # with it: the JSON is the part that is always correct.
-            reply_error = f"{type(exc).__name__}: {str(exc)[:200]}"
-
-    if q.strip():
-        try:
-            # jsonable_encoder before the template, not tojson inside it: every
-            # verb returns dates and Decimals, and Jinja's tojson raises on
-            # both. The JSON route already encodes; this makes the two paths
-            # render the same bytes instead of one of them 500ing.
-            answer = jsonable_encoder(await ask.answer(q, brand))
-        except ask.Unroutable as exc:
-            # Only surfaced when the prose half did NOT answer. The router
-            # matches a regex against a fixed verb list and fails on most
-            # naturally-worded questions -- "which is the best performing ad
-            # today" matches nothing -- while the session answers them fine.
-            # Showing both put a red error directly above a correct answer.
-            failed = None if reply else str(exc)
-        except (UnknownBrand, NotConfigured, ValueError) as exc:
-            failed = str(exc).strip().splitlines()[0]
-    return templates.TemplateResponse(request, "ask.html", {
+    return JSONResponse({
         "nav": "overview", "brand": brand, "settled": None, "caveat": None,
-        "d": {"brand": brand}, "q": q, "answer": answer, "failed": failed,
-        "reply": reply, "reply_error": reply_error,
-        "verbs": ask.VERBS,
+        "d": {"brand": brand}, "verbs": ask.VERBS,
         "until": None, "today": date.today().isoformat(),
     })
 
@@ -398,8 +326,8 @@ async def ask_prose(q: str = "", brand: str = "renegade"):
     opposite costs. /ask.json routes a regex and returns in about a second for
     nothing; this spawns a Claude Code session, takes the better part of two
     minutes and costs real money. A box that invites typing should not spend
-    that on every keystroke without the page saying so, and app.js fires this
-    one second and renders it as it arrives.
+    that on every keystroke without the page saying so, and the ask box fires
+    this one second and renders it as it arrives.
 
     Errors come back 200 with an `error` key, like /ask.json: a failure here
     must not blank the routed answer the widget already drew.
@@ -415,7 +343,7 @@ async def ask_prose(q: str = "", brand: str = "renegade"):
 
 @router.get("/ask.json")
 async def ask_json(q: str = "", brand: str = "renegade"):
-    """What app.js calls so the answer lands in place instead of a new page.
+    """What the ask box calls so the answer lands in place, not on a new page.
 
     Errors come back 200 with an `error` key rather than as a status code: a
     question that matched no verb is a fact about the question, not a fault in
@@ -429,23 +357,23 @@ async def ask_json(q: str = "", brand: str = "renegade"):
         return JSONResponse({"error": str(exc).strip().splitlines()[0]})
 
 
-@router.get("/why", response_class=HTMLResponse)
-async def why(request: Request, brand: str = "renegade", days: int = 7):
+@router.get("/api/why")
+async def why(brand: str = "renegade", days: int = 7):
     try:
         d = await metrics.why(brand, days, await _latest_day(brand), limit=40)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "why", exc)
-    return _page(request, "why.html", "why", d, days=days)
+        return _fail("why", exc)
+    return _page("why", d, days=days)
 
 
-@router.get("/creative", response_class=HTMLResponse)
-async def creative(request: Request, brand: str = "renegade", window: int = 7,
+@router.get("/api/creative")
+async def creative(brand: str = "renegade", window: int = 7,
                    min_spend: float = 100.0, unconfident: int = 0):
     try:
         d = await metrics.fatigue(brand, window, await _latest_day(brand),
                                   min_spend, bool(unconfident))
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "creative", exc)
+        return _fail("creative", exc)
 
     # A CTR shape per row. Read in one query rather than one per ad: a fatigue
     # table is routinely forty rows and forty round trips through a pooler is a
@@ -467,13 +395,13 @@ async def creative(request: Request, brand: str = "renegade", window: int = 7,
         ):
             spark.setdefault(row["ad_key"], []).append(
                 (row["rates"] or {}).get("link_ctr"))
-    return _page(request, "creative.html", "creative", d,
+    return _page("creative", d,
                  window=window, min_spend=min_spend,
                  unconfident=unconfident, spark=spark)
 
 
-@router.get("/angles", response_class=HTMLResponse)
-async def angles(request: Request, brand: str = "renegade", days: int = 90,
+@router.get("/api/angles")
+async def angles(brand: str = "renegade", days: int = 90,
                  product: str | None = None):
     try:
         # Four independent reads, run concurrently and sharing one brand and
@@ -489,15 +417,15 @@ async def angles(request: Request, brand: str = "renegade", days: int = 90,
                 # things.
                 angles_mod.label_coverage(brand, days, None))
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "angles", exc)
+        return _fail("angles", exc)
     tested = d["tested"] + d["under_spent"]
-    return _page(request, "angles.html", "angles", d, days=days,
+    return _page("angles", d, days=days,
                  candidates=cand["rows"], queue=q, labels=labels,
                  bars=[(r["angle_name"], r["cpa"]) for r in tested])
 
 
-@router.get("/experiments", response_class=HTMLResponse)
-async def experiments(request: Request, brand: str = "renegade",
+@router.get("/api/experiments")
+async def experiments(brand: str = "renegade",
                       days: int = 14):
     """The log, and underneath it the tests the report recommends.
 
@@ -514,7 +442,7 @@ async def experiments(request: Request, brand: str = "renegade",
     try:
         d = await exp_mod.experiments(brand)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "experiments", exc)
+        return _fail("experiments", exc)
     try:
         ledger = outcomes_mod.load(brand)
     except (OSError, ValueError):
@@ -535,8 +463,8 @@ async def experiments(request: Request, brand: str = "renegade",
             ideas = await propose_mod.propose(brand, days)
             settled, caveat = ideas.get("settled_through"), ideas.get("caveat")
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "experiments", exc)
-    return _page(request, "experiments.html", "experiments", d,
+        return _fail("experiments", exc)
+    return _page("experiments", d,
                  ideas=ideas, days=days, settled=settled, caveat=caveat,
                  has_ledger=has_ledger,
                  recommended=exp_mod.recommended_tests(ledger),
@@ -544,13 +472,13 @@ async def experiments(request: Request, brand: str = "renegade",
                  launches=[r for r in rows if r.get("launch")])
 
 
-@router.get("/ad/{ad_key}", response_class=HTMLResponse)
-async def ad_detail(request: Request, ad_key: str, brand: str = "renegade",
+@router.get("/api/ad/{ad_key}")
+async def ad_detail(ad_key: str, brand: str = "renegade",
                     days: int = 14):
     try:
         d = await metrics.ad(ad_key, days=90)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "overview", exc)
+        return _fail("overview", exc)
 
     # The panel is best-effort and the page is not. Every sentence in it comes
     # from a verb that can fail on its own -- a brand with no active account
@@ -586,14 +514,14 @@ async def ad_detail(request: Request, ad_key: str, brand: str = "renegade",
         pass
 
     daily = list(reversed(d["daily"]))
-    return _page(request, "ad.html", "overview", {"brand": brand},
+    return _page("overview", {"brand": brand},
                  ad=d, days=days, settled=settled, reading=reading, totals=totals,
                  spend_series=[(r["day"], r["spend"]) for r in daily],
                  conv_series=[(r["day"], r["conversions"]) for r in daily])
 
 
-@router.get("/suggestions", response_class=HTMLResponse)
-async def suggestions(request: Request, brand: str = "renegade",
+@router.get("/api/suggestions")
+async def suggestions(brand: str = "renegade",
                       days: int = 28):
     """The latest published suggestion, and the evidence it was written from.
 
@@ -613,7 +541,7 @@ async def suggestions(request: Request, brand: str = "renegade",
         # same end scripts/suggest.py wrote its prose against.
         pack = await creative_mod.creative_pack(brand, days, None)
     except (UnknownBrand, NotConfigured, ValueError) as exc:
-        return _fail(request, "suggestions", exc)
+        return _fail("suggestions", exc)
 
     published = creative_mod.latest_suggestion(brand)
     if published:
@@ -621,7 +549,7 @@ async def suggestions(request: Request, brand: str = "renegade",
         # the file is a fact about then. Writing it into the document would
         # freeze an age that only ever gets older.
         published["age_hours"] = creative_mod.age_hours(published)
-    return _page(request, "suggestions.html", "suggestions", pack, days=days,
+    return _page("suggestions", pack, days=days,
                  settled=pack.get("settled_through"), published=published)
 
 

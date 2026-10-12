@@ -54,7 +54,7 @@ def _readings_for(doc: dict, section: str) -> str:
         subj = (r.get("subject") or {}).get("name")
         head = f"**{subj}** " if subj else ""
         # The rule name, the provisional flag and the pointers a rule fired on
-        # are no longer printed -- see templates/brief.html's reading() macro
+        # are no longer printed -- see frontend/src/pages/BriefPage.tsx
         # for the reasoning. They are still on every reading and still in
         # briefs/<date>-<brand>.json, and readings.py still refuses to let a
         # rule state a figure it cannot cite. Only the display changed.
@@ -274,7 +274,7 @@ def markdown(doc: dict) -> str:
     # `doc["gaps"]` are still built by intel/brief.py and still written to the
     # json, so nothing stopped being COMPUTED -- a section that failed to load
     # is still recorded as absent rather than as empty. It is simply no longer
-    # printed. Re-add nine lines here and in templates/brief.html to bring it
+    # printed. Re-add nine lines here and in BriefPage.tsx to bring it
     # back; the data has been waiting the whole time.
 
     return "\n\n".join(x for x in p if x and x.strip())
